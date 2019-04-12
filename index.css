@@ -3,11 +3,12 @@ body{
 	padding: 0px;
 	margin: 0px;
 	font-family: 'Open Sans', sans-serif;
+	-webkit-tap-highlight-color:  rgba(255, 255, 255, 0);
 }
 
 .header_div{
 	width: 100%;
-	box-shadow: 0.5px 0.5px #BDB9B9;
+	box-shadow: 0 5px 3px -3px #777;
 	padding: 10px;
 	margin:0px;
 }
@@ -44,6 +45,7 @@ body{
     overflow: hidden;
     display: inline-block;
     font-family: 'Open Sans', sans-serif;
+    font-size: 22px;
     padding: 10px;
     border: 1px solid #fff;
     border-radius: 6px;
@@ -102,6 +104,7 @@ footer{
 	padding: 0px;
 	margin: 0px;
 	font-family: 'Open Sans', sans-serif;
+	-webkit-tap-highlight-color:  rgba(255, 255, 255, 0);
 }
 
 .header_div{
