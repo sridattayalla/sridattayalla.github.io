@@ -108,10 +108,14 @@ footer{
 }
 
 .header_div{
-	width: 100%;
-	box-shadow: 0.5px 0.5px #BDB9B9;
+	width: 60%;
 	padding: 10px;
-	margin:0px;
+	position: sticky;
+	margin: auto;
+	display: flex;
+	flex-direction: row;
+	justify-content: center;
+	text-align: center;
 }
 
 .header_buttons_div{
@@ -126,6 +130,7 @@ footer{
 	cursor:pointer;
 	overflow: hidden;
 	display: inline-block;
+	vertical-align: middle;
 }
 
 .nav_bar_image{
@@ -136,7 +141,8 @@ footer{
 }
 
 .nav_bar_buttons{
-	font-size: 16px;
+	text-align: center;
+	font-size: 22px;
 	color: #000;
 	vertical-align: middle;
 	margin-left: 30px;
@@ -159,6 +165,45 @@ footer{
  	border-radius: 6px;
  	padding: 10px;
 
+}
+
+.github_button{
+	width: 150px;
+	vertical-align: middle;
+	display: inline-block;
+	border: 1px solid #000;
+	font-family: 'Open Sans', sans-serif;
+	font-size: 22px;
+	position: relative;
+	margin-left: 70px;
+	color: #000;
+}
+
+.github_button:hover{
+	background-color: #000;
+	color: #fff;
+}
+
+.github_button:hover .github_img{
+	content: url("icons/github-logo-white.svg");
+}
+
+.github_button img{
+	display: block;
+	float: left;
+	height: 30px;
+	vertical-align: middle;
+	margin-left: 10px;
+	margin: 10px;
+}
+
+.github_button span{
+	display: block;
+	position: absolute;
+  	top: 50%;
+  	left: 40%;
+  	-ms-transform: translateY(-50%);
+  	transform: translateY(-50%);
 }
 
 .nav_bar_buttons:focus {outline:0;}
@@ -186,6 +231,56 @@ footer{
     font-size: 22px;
     display: none;
 
+}
+
+.home_div{
+	width: 100%;
+	height: 100vh;
+	margin: auto;
+	display: flex;
+}
+
+.name_div{
+	display: block;
+	margin:0 auto;
+	margin-top: 20%;
+	line-height: 0.7;
+}
+
+.projects-wrapper{
+	width: 60%;
+	padding-top: 100px;
+	margin: auto;
+	margin-bottom: 20px;
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	font-family: 'Open Sans', sans-serif;
+}
+
+.projects-wrapper > div{
+	margin: auto;
+	width : 70%;
+	padding: 10px;
+	background-color: #fff;
+	box-shadow:0 1px 4px rgba(0, 0, 0, 0.3), 0 0 40px rgba(0, 0, 0, 0.1) inset;
+}
+
+.projects-wrapper > div:hover{
+	margin: auto;
+	width : 70%;
+	padding: 10px;
+	background-color: #fff;
+	box-shadow:0 4px 16px rgba(0, 0, 0, 0.3), 0 0 160px rgba(0, 0, 0, 0.1) inset;
+}
+
+.projects-wrapper img{
+	margin: auto;
+	width : 100%;
+}
+
+.projects-wrapper p2{
+	margin: 0 auto;
+	width : 100%;
 }
 
 footer{

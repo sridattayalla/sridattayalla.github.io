@@ -7,29 +7,55 @@
     <link href="https://fonts.googleapis.com/css?family=Open+Sans:400,600" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css?family=Lobster" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css?family=Righteous" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css?family=Hind+Siliguri" rel="stylesheet">
     <title>SriDattaYalla</title>
-    <link rel="icon" type="image/ico" href="icons/start-up.svg" />
+    <link rel="icon" type="image/ico" href="icons/logo.svg" />
     <script src="index.js"></script> 
+    <script src="particle.js"></script>
 </head>
 
 <body>
+    <div id='menu_sheet' class="menu_sheet">
+        <button class="sheet_buttons">Home</button>
+        <button class="sheet_buttons">Projects</button>
+        <button class="nav_bar_buttons">Skills</button>
+        <button class="sheet_buttons">Contact</button>
+    </div>
+
+    <div class="home_div">
+        <div class="name_div" >
+            <font face="Hind Siliguri" size="20" spacing="1">Hi, I'm <font color="#FB690E">Datta</font></font>
+            <p> I like to build wonderful Apps</p>
+        </div>
+    </div>
     <div class="header_div">
-    	<h2 class="my_name"><img src="icons/start-up.svg" alt="Rocket" class="nav_bar_image">Datta
+        <h2 class="my_name"><img src="icons/logo.svg" alt="Rocket" class="nav_bar_image">Datta
             <div class="header_buttons_div">
-                <button class="nav_bar_buttons">Home</button>
+                <button class="nav_bar_buttons" onclick="moveToTop()">Home</button>
                 <button class="nav_bar_buttons">Projects</button>
-                <button class="nav_bar_buttons">About</button>
-                <button class="nav_bar_buttons">People</button>
+                <button class="nav_bar_buttons">Skills</button>
+                <button class="nav_bar_buttons">Contact</button>
+                <a href="https://github.com/sridattayalla">
+                    <div class="github_button" onmouseover="hover(this);" onmouseout="unhover(this);" >
+                        <img id="github_img" src="icons/github-logo.svg" class="github_img">
+                        <span>Github</span>
+                    </div>
+                </a>
             </div>
             <img id="menu_icon" src="icons/menu.svg" class="menu_img" onclick="changeMenuSheetPosition()">
         </h2>
     </div>
 
-    <div id='menu_sheet' class="menu_sheet">
-        <button class="sheet_buttons">Home</button>
-        <button class="sheet_buttons">Projects</button>
-        <button class="sheet_buttons">About</button>
-        <button class="sheet_buttons">People</button>
+    <div class="projects-wrapper">
+        <div>
+            <h2>SlotSeed</h2>
+            <img src="icons/slotseed latest logo s.jpg">
+            <p>SlotSeed is a salon booking app. Book your next salon deal at best prices.</p>
+        </div>
+        <div>
+            <img src="icons/ic_launcher_compose-web.png">
+            <p>Kritique is feedback and project ideas sharing app developed for Student developer club android workshop.</p>
+        </div>
     </div>
     <footer></footer>
 </body>
