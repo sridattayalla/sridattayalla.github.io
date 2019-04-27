@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="95.055" height="62.793" viewBox="0 0 95.055 62.793">
+  <g id="Group_1" data-name="Group 1" transform="translate(-84 -41)">
+    <g id="Rectangle_3" data-name="Rectangle 3" transform="translate(84 41)" fill="#fff" stroke="#707070" stroke-width="1">
+      <path d="M.795,0H32.59A29.41,29.41,0,0,1,62,29.41v0A32.59,32.59,0,0,1,29.41,62H.795A.795.795,0,0,1,0,61.205V.795A.795.795,0,0,1,.795,0Z" stroke="none"/>
+      <path d="M.9.5H32.584A28.916,28.916,0,0,1,61.5,29.416v0A32.084,32.084,0,0,1,29.416,61.5H.9a.4.4,0,0,1-.4-.4V.9A.4.4,0,0,1,.9.5Z" fill="none"/>
+    </g>
+    <circle id="Ellipse_1" data-name="Ellipse 1" cx="10" cy="10" r="10" transform="translate(159 41)" fill="#707070"/>
+    <path id="Union_1" data-name="Union 1" d="M.779,32.372c4.891-6.7,5.078-17.621,5-21.2A9.5,9.5,0,1,1,24.7,10h.048a7.047,7.047,0,0,1-.118,1.161,9.46,9.46,0,0,1-2.2,5C16.9,24.711,3.165,34.294.465,34.293-.2,34.292-.2,33.706.779,32.372Z" transform="translate(153.797 69)" fill="none" stroke="#707070" stroke-width="1"/>
+  </g>
+</svg>

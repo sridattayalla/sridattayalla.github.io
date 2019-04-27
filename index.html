@@ -1,77 +1,113 @@
-<!DOCTYPEhtml>
+<!DOCTYPE html>
 <html>
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
-    <link href="index.css" rel="stylesheet" type="text/css">
-    <link href="https://fonts.googleapis.com/css?family=Open+Sans:400,600" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css?family=Lobster" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css?family=Righteous" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css?family=Hind+Siliguri" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css?family=Open+Sans:600" rel="stylesheet">
-    <title>SriDattaYalla</title>
-    <link rel="icon" type="image/ico" href="icons/logo.svg" />
-    <script src="index.js"></script> 
-    <script src="particle.js"></script>
+	<title>Sri Datta Yalla</title>
+	<meta charset="utf-8">
+	<link rel="stylesheet" type="text/css" href="css/home.css">
+	<link rel="stylesheet" type="text/css" href="css/about.css">
+	<link rel="stylesheet" type="text/css" href="css/projects.css">
+	<link rel="stylesheet" type="text/css" href="css/contact.css">
+	<script type="text/javascript" src="js/jquery-3.4.0.min.js"></script>
+	<script type="text/javascript" src="js/index.js"></script>
+	<link href="https://fonts.googleapis.com/css?family=Roboto" rel="stylesheet">
 </head>
-
 <body>
-    <div id='menu_sheet' class="menu_sheet">
-        <button class="sheet_buttons">Home</button>
-        <button class="sheet_buttons">Projects</button>
-        <button class="sheet_buttons">Skills</button>
-        <button class="sheet_buttons">Contact</button>
-    </div>
+	<div class="nav">
+		<img src="icons/hero.svg" id="logo">
+		<div class="menu">
+			<button id="home-button">Home</button>
+			<button id="about-button" type="button">About me</button>
+			<button id="projects-button">Projects</button>
+			<button id="contact-button">Contact me</button>
+		</div>
+	</div>
 
-    <div class="home_div">
-        <div class="name_div" >
-            <!--<font face="Hind Siliguri" size="20" spacing="1">Hi, I'm <font color="#FB690E">Sri Datta</font></font>-->
-            <h1>hi I'm</h1>
-            <h1>Sri Datta</h1>
-            <p> I'm an under graduate student, part time android and web developer</p>
-        </div>
-    </div>
-    <div class="header_div">
-        <h2 class="my_name"><img src="icons/logo.svg" alt="Rocket" class="nav_bar_image">Datta
-            <div class="header_buttons_div">
-                <button class="nav_bar_buttons" onclick="moveToTop()">Home</button>
-                <button class="nav_bar_buttons">Projects</button>
-                <button class="nav_bar_buttons">Skills</button>
-                <button class="nav_bar_buttons">Contact</button>
-                <a href="https://github.com/sridattayalla">
-                    <div class="github_button" onmouseover="hover(this);" onmouseout="unhover(this);" >
-                        <img id="github_img" src="icons/github-logo.svg" class="github_img">
-                        <span>Github</span>
-                    </div>
-                </a>
-            </div>
-            <img id="menu_icon" src="icons/menu.svg" class="menu_img" onclick="changeMenuSheetPosition()">
-        </h2>
-    </div>
+	<div class="home">
+		<h1>hi </br>
+			I'm Sri Datta
+		</h1>
+		<p>
+			Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+		</p>
+	</div>
 
-    <div class="projects-wrapper">
-        <div class="project_div">
-            <div class="project_title_div">
-                <img src="icons/slotseed latest logo s.png">
-                <span class="project_name">SlotSeed</span>
-            </div>
-            <p>SlotSeed is a salon booking app. Book your next salon deal at best prices.</p>
-        </div>
-        <div class="project_div">
-            <div class="project_title_div">
-                <img src="icons/ic_launcher_compose-web.png">
-                <span class="project_name">Kritique</span>
-            </div>
-            <p>Kritique is feedback and project ideas sharing app developed for Student developer club android workshop.</p>
-        </div>
-        <div class="project_div">
-            <div class="project_title_div">
-                <img src="icons/college_assistant.png">
-                <span class="project_name">College Assistant</span>
-            </div>
-            <p>A college administration app.</p>
-        </div>
-    </div>
-    <footer></footer>
+	<div class="about-me" id="about-me">
+		<h1>About me</h1>
+
+		<div class="about-container">
+			<div class="about-skill">
+				<img src="vectors/coding.png">
+				<div class="skill-details">
+					<h3>Mobile Apps</h3>
+					<p>It is a long established fact that a reader will be distracted by the readable content of a page when looking at its layout. The point of using Lorem Ipsum is that it has a more-or-less normal distribution of letters, as opposed to using.</p>
+				</div>
+			</div>
+			<div class="about-skill">
+				<img src="vectors/application.png">
+				<div class="skill-details">
+					<h3>Web Apps</h3>
+					<p>It is a long established fact that a reader will be distracted by the readable content of a page when looking at its layout. The point of using Lorem Ipsum is that it has a more-or-less normal distribution of letters, as opposed to using.</p>
+				</div>
+			</div>
+			<div class="about-skill">
+				<img src="vectors/data-analysis-symbol.png">
+				<div class="skill-details">
+					<h3>Data Analytics</h3>
+					<p>It is a long established fact that a reader will be distracted by the readable content of a page when looking at its layout. The point of using Lorem Ipsum is that it has a more-or-less normal distribution of letters, as opposed to using.</p>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="projects">
+		<h1>Projects</h1>
+
+		<div class="projects-container">
+			<div class="each-project">
+				<img src="vectors/launch.png">
+				<div class="project-details">
+					<h3>Rocket App</h3>
+					<p>There are many variations of passages of Lorem Ipsum available, but the majority have suffered alteration in some form, by injected humour, or randomised words which don't look even slightly believable. If you are going to use a passage of Lorem Ipsum, you need to be sure there isn't anything embarrassing hidden in the middle of text.</p>
+					<button>More details</button>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="contact-me">
+		<h1>Contact me</h1>
+
+		<div class="contact-container">
+			<div class="about-contact">
+				<img src="vectors/gmail.png">
+				<div class="contact-details">
+					<h3>Email</h3>
+					<p>It is a long established fact that a reader will be distracted by the readable content of a page when looking at its layout. </p>
+				</div>
+				<button id="email-button">Ask me</button>
+			</div>
+			<div class="about-contact">
+				<img src="vectors/linkedin.png">
+				<div class="contact-details">
+					<h3>LinkedIn</h3>
+					<p>It is a long established fact that a reader will be distracted by the readable content of a page when looking at its layout.</p>
+				</div>
+				<button id="linkedin-button">Connet me</button>
+			</div>
+			<div class="about-contact">
+				<img src="vectors/github-logo.png">
+				<div class="contact-details">
+					<h3>Github</h3>
+					<p>It is a long established fact that a reader will be distracted by the readable content of a page when looking at its layout.</p>
+				</div>
+				<button id="github-button">Follow me</button>
+			</div>
+		</div>
+	</div>
+
+	<div class="footer">
+		<p>©Sri Datta Yalla | 2019</p>
+	</div>
+
 </body>
 </html>
