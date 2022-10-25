@@ -1,29 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
 	<meta charset="UTF-8">
 	<meta http-equiv="X-UA-Compatible" content="IE=edge">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Sri Datta Yalla</title>
 </head>
+
 <body>
-	<textarea name="" id="" rows="35"></textarea>
+	<textarea name="" id="thoght" rows="35"></textarea>
 	<style>
 		textarea {
 			outline: none;
 			width: 100%;
+			max-width: 70rem;
 			-webkit-box-sizing: border-box;
-       -moz-box-sizing: border-box;
-            box-sizing: border-box;
-			padding: 2rem;
+			-moz-box-sizing: border-box;
+			box-sizing: border-box;
+			padding: 1rem;
 			border: none;
 			font-size: x-large;
 			background: none;
 			font-family: 'Gaegu';
+			margin: auto;
 		}
 
 		body {
 			background-image: url('./dot-grid.svg');
+			display: flex;
+			align-items: center;
 		}
 
 		@font-face {
@@ -33,5 +39,9 @@
 			font-style: normal;
 		}
 	</style>
+	<script>
+		document.getElementById("thoght").focus();
+	</script>
 </body>
+
 </html>
