@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>End to End: One Request, Start to Finish — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="e2e">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Five — The Frontier</p>
+    <h1>End to End: One Request, Start to Finish</h1>
+    <p class="lede">Every page so far built one mechanism or priced
+    one cost. This page runs a single request through all of it —
+    from the moment your code sends a messages array, through doors
+    and templates and loops, to the last piece of text rendered on
+    a screen. Nothing new gets built here; everything gets
+    used.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-send">What leaves your machine</a></li>
+        <li><a href="#sec-door">Through the provider's door</a></li>
+        <li><a href="#sec-string">The string the model actually sees</a></li>
+        <li><a href="#sec-run">The seconds you wait</a></li>
+        <li><a href="#sec-stream">What comes back, and what it costs</a></li>
+        <li><a href="#sec-perceive">Three perceptions, mapped</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-send">
+      <h2>What leaves your machine</h2>
+      <p>You do not send a chat. You send a structured request: an
+      array of messages — each one a role and a string of text —
+      plus the sampler's parameters and a stream flag asking the
+      server to answer in pieces as they are produced
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>The roles are a fiction that survives exactly one step:
+      system, user, assistant — three labels that matter at the
+      template and then vanish. The parameters are the knobs the
+      sampling page turned — temperature, top-p — sent along for
+      every step of the loop
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>Why a stream flag at all? Because the machine cannot
+      hurry — one sweep per piece is the law — but a reader does
+      not wait for the last piece to start reading. Streaming does
+      not make the reply faster; it changes where the wait is
+      felt: the first piece lands at time-to-first-token, and the
+      rest arrives while you read the beginning.</p>
+    </section>
+
+    <section id="sec-door">
+      <h2>Through the provider's door</h2>
+      <p>The request crosses transport security and hits a
+      frontend: authenticate the key, check the rate limit — the
+      unglamorous machinery every web service shares
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>Then the interesting door: a scheduler picks which serving
+      instance takes the request, and its ledger is memory — room
+      for the weights plus the KV cache of every request already
+      in flight. This is the loop the serving page walked:
+      admission is continuous, requests join mid-flight, and the
+      block table grows as prompts arrive
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>Why memory and not arithmetic? The weights are spoken for
+      the moment the instance loads them; the only quantity that
+      grows with admissions is the cache of in-flight requests —
+      every accepted prompt adds keys and values for each of its
+      pieces in each layer. An instance turns requests away not
+      because its arithmetic is exhausted but because there is
+      nowhere left to put the bookkeeping of attention.</p>
+    </section>
+
+    <section id="sec-string">
+      <h2>The string the model actually sees</h2>
+      <p>Before any arithmetic, the messages array becomes one flat
+      token string — the chat template the post-training page
+      dissected. Role labels turn into special delimiters; the
+      model never sees the word user or assistant, only the pieces
+      that spell the marks around each turn
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>Then the tokenizer cuts the string into pieces. What the
+      model receives — all it ever receives — is that one
+      sequence, with a role's worth of delimiters around each
+      turn
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>There is no session inside the machine, no memory, no
+      role state — the delimiters are the entire protocol. An
+      assistant turn ends where its mark says it ends; a new user
+      turn begins where the next one says so. Every behavior the
+      post-training page attributed to roles lives in how training
+      conditioned the model on these marks
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 220"><title>One request's path: the messages array crosses the provider's door, becomes one token string, feeds prefill and the decode loop, and pieces stream back as labeled text events</title>
+          <text x="320" y="24" text-anchor="middle" font-size="11" class="t-dim">request path</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="20" y="40" width="86" height="44"/>
+          <text x="63" y="58" text-anchor="middle" font-size="12">client</text>
+          <text x="63" y="76" text-anchor="middle" font-size="10" class="t-dim">messages array</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="126" y="40" width="86" height="44"/>
+          <text x="169" y="58" text-anchor="middle" font-size="12">door</text>
+          <text x="169" y="76" text-anchor="middle" font-size="10" class="t-dim">auth, rate limit</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="232" y="40" width="96" height="44"/>
+          <text x="280" y="58" text-anchor="middle" font-size="12">scheduler</text>
+          <text x="280" y="76" text-anchor="middle" font-size="10" class="t-dim">room in VRAM</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="348" y="40" width="96" height="44"/>
+          <text x="396" y="58" text-anchor="middle" font-size="12">template</text>
+          <text x="396" y="76" text-anchor="middle" font-size="10" class="t-dim">one token string</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="464" y="40" width="136" height="44"/>
+          <text x="532" y="58" text-anchor="middle" font-size="12">the model</text>
+          <text x="532" y="76" text-anchor="middle" font-size="10" class="t-dim">prefill, then decode</text>
+          <line class="s-ink" stroke-width="1.5" x1="106" y1="62" x2="126" y2="62"/>
+          <line class="s-ink" stroke-width="1.5" x1="212" y1="62" x2="232" y2="62"/>
+          <line class="s-ink" stroke-width="1.5" x1="328" y1="62" x2="348" y2="62"/>
+          <line class="s-ink" stroke-width="1.5" x1="444" y1="62" x2="464" y2="62"/>
+          <line class="s-ink" stroke-width="1.5" x1="532" y1="84" x2="532" y2="150"/>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="464" y="150" width="136" height="44"/>
+          <text x="532" y="168" text-anchor="middle" font-size="12">detokenize</text>
+          <text x="532" y="186" text-anchor="middle" font-size="10" class="t-dim">bytes to UTF-8</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="348" y="150" width="96" height="44"/>
+          <text x="396" y="168" text-anchor="middle" font-size="12">SSE deltas</text>
+          <text x="396" y="186" text-anchor="middle" font-size="10" class="t-dim">data: events</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="126" y="150" width="206" height="44"/>
+          <text x="229" y="168" text-anchor="middle" font-size="12">your screen</text>
+          <text x="229" y="186" text-anchor="middle" font-size="10" class="t-dim">deltas rendered as they arrive</text>
+          <line class="s-ink" stroke-width="1.5" x1="464" y1="172" x2="444" y2="172"/>
+          <line class="s-ink" stroke-width="1.5" x1="348" y1="172" x2="332" y2="172"/>
+          <text x="320" y="210" text-anchor="middle" font-size="11" class="t-dim">reply path</text>
+        </svg>
+        <figcaption>From the messages array to the screen: the
+        request crosses the door, becomes one token string, feeds
+        the model, and pieces stream back as labeled text events
+        rendered as they arrive.</figcaption>
+      </figure>
+    </section>
+
+    <section id="sec-run">
+      <h2>The seconds you wait</h2>
+      <p>Now the loop page's clock runs. Prefill: one compute-bound
+      sweep over every prompt piece, filling the KV cache; the
+      first sample comes out the far end, and time-to-first-token
+      is done
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>Perceived latency has one more term before any arithmetic:
+      the queue. A request admitted behind a burst waits its turn
+      at the scheduler, and on a busy endpoint that wait can
+      dominate everything the machine itself does
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>Then decode: sample a piece, append it, forward, repeat —
+      memory-bound, one sweep of the weights per piece, the ceiling
+      the loop page priced. Your perceived typing speed is that
+      decode rate bent by batch pressure: shared with other
+      requests, it settles well under the lone-request ceiling. A
+      hosted reply moving at sixty pieces a second is a busy
+      machine, not a broken one
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>That ceiling, concretely: a lone seven-billion-weight
+      model runs at roughly one hundred forty-six pieces a second
+      on one class of card. A hosted reply moving at sixty is
+      sharing the card: every step of the batch carries more
+      arithmetic on the same weight read, and as that intensity
+      climbs toward the card's balance point, each step takes
+      longer for every request riding it.</p>
+      <p>Three things stop it: the end-of-sequence piece, a
+      piece-count limit from the request, or the client hanging
+      up. On stop, usage is tallied — prompt pieces against
+      completion pieces
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+    </section>
+
+    <section id="sec-stream">
+      <h2>What comes back, and what it costs</h2>
+      <p>With the stream flag set, the reply travels as
+      server-sent events: the HTTP response stays open, and the
+      server pushes small labeled chunks down it — each a data
+      line carrying a delta, a fragment of text, framed by a blank
+      line, with terminal events closing the stream. Without the
+      flag, the server buffers everything and returns one
+      structured blob at the end
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>The deltas are text, and turning pieces into text is not
+      instant: detokenization happens on the fly, and a multi-byte
+      character split across a piece boundary is buffered until
+      its bytes complete
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>The bill arrives with the usage tally, and its shape is
+      the lesson: input and output are priced separately, output
+      several times higher per piece — the phase asymmetry of the
+      loop, reflected in a rate card. Input pieces share one
+      parallel sweep; every output piece demands its own serial
+      pass
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the same words, two prices</p>
+        <div class="worked-body">
+<pre><code class="language-text">the same words, two prices
+(one rate card, dated snapshot; prices move;
+the asymmetry is the point):
+
+  input:   $2.50 per 1M pieces
+  output:  $10.00 per 1M pieces   (4x)
+
+  a request: 4,000 prompt pieces,
+             500 completion pieces
+
+  input cost:   4000/1M * $2.50  = $0.010
+  output cost:   500/1M * $10.00 = $0.005
+  total:                          $0.015
+
+  the prompt is eight times longer
+  and costs only twice as much</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="sec-perceive">
+      <h2>Three perceptions, mapped</h2>
+      <p>It forgot what we said yesterday. The model is stateless
+      between requests: nothing persists. Yesterday's turns were
+      either re-sent as part of today's context — re-prefilled,
+      re-cached — or never sent at all
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>And a conversation compounds. Turn by turn the request
+      grows — today's prompt carries every earlier turn plus the
+      new one, because the machine keeps nothing between requests.
+      The cost of a long chat is not storage but repetition: each
+      reply is computed against the entire history again, prefilled
+      fresh unless the engine held on to the cached remains of the
+      same prefix.</p>
+      <p>It knows about one thing but not another. The known thing
+      was in the pretraining corpus before the knowledge cutoff;
+      the other was not — and nothing at inference reads a
+      database unless the application builds retrieval or tools
+      around the model
+      <a class="prov" data-src="research/e2e.md" href="links.html#s-e2e" title="e2e — research/e2e.md">[e2e]</a>.</p>
+      <p>One page remains: the machine whole — what changed in the
+      years while this machinery was being built, and the open
+      questions it left behind.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A chat request is a messages array plus sampler
+        parameters; roles are labels a template turns into
+        delimiters — the model only ever sees one token
+        string.</li>
+        <li>Admission is a memory ledger: the scheduler weighs
+        the weights plus in-flight KV cache, and requests join a
+        continuously running batch.</li>
+        <li>Your seconds map to machinery: time-to-first-token is
+        queueing plus prefill; typing speed is the decode rate —
+        the loop's ceiling bent by batch pressure.</li>
+        <li>Streaming is server-sent events over an open response:
+        data-line deltas, on-the-fly detokenization that buffers
+        characters split across piece boundaries, terminal events
+        to close.</li>
+        <li>Output is priced several times above input per piece —
+        the serial decode pass reflected in a rate card — and the
+        model is stateless between requests, its knowledge frozen
+        at the pretraining cutoff.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="context.html"><span class="cap">Previous</span><span class="pg-title">Long Context: Extending the Window</span></a>
+    <a class="pager-card" rel="next" href="finale.html"><span class="cap">Next</span><span class="pg-title">The Whole Machine</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Box: The One-Word Heap Pointer — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="box">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Four — The Heap Menu</p>
+    <h1>Box: The One-Word Heap Pointer</h1>
+    <p class="lede">The last page ended on the menu's smallest entry. A
+    Box is one word — a single pointer to a heap cell — and it owns
+    whatever sits in that cell: allocating is <code>Box::new</code>,
+    freeing is the owner's death, and nothing about it is implicit. One
+    word buys a fixed size, a heap address, and a clean transfer of
+    ownership — this page is about what each of those costs and
+    pays.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#one-word-owner">The one-word owner</a></li>
+        <li><a href="#moving-a-box">Moving a Box moves the value</a></li>
+        <li><a href="#the-type-that-contains-itself">The type that contains itself</a></li>
+        <li><a href="#one-word-breaks-the-cycle">One word breaks the cycle</a></li>
+        <li><a href="#beyond-one-word">Beyond one word</a></li>
+      </ol>
+    </nav>
+
+    <section id="one-word-owner">
+      <h2>The one-word owner</h2>
+      <p>The previous page sized it: a Box is one word, the same as a
+      bare reference — the smallest owner in the language. Writing
+      <code>Box::new(value)</code> allocates a heap cell, moves the
+      value into it, and hands you the word that points there. When the
+      box dies, the value in the cell dies with it and the cell is
+      returned. There is no other machinery: no header on the cell, no
+      count, no collector walking by.</p>
+      <p>What the word buys is worth naming, because the rest of the
+      heap menu is built from it. An <dfn><a href="glossary.html#t-indirection">indirection</a></dfn>
+      is a pointer step between you and a value — one hop: you hold the
+      address, the address holds the value. Inline values have none; a
+      Box adds exactly one. That single hop is what keeps the allocation
+      visible in the type: the reader of <code>Box&lt;String&gt;</code>
+      sees one heap cell and one pointer step, and can price the
+      line.</p>
+      <p>Notice what does not differ between <code>Box&lt;T&gt;</code>
+      and <code>&amp;T</code>: the size. Both are one word; both point
+      at a T. What differs is the policy the word carries — the box
+      owns its cell and frees it at death; the reference views a cell
+      someone else owns and frees nothing. The word is the same shape;
+      the responsibility is the type. That is the deepest habit of this
+      language: size in the layout, policy in the type.</p>
+      <p>Why not box implicitly, as Java and Python do for nearly every
+      object? Because implicit placement would hide exactly what this
+      design exposes: the cost — an allocation and a pointer step on
+      every access, invisible in the source — and the lifetime — a free
+      that happens when the collector chooses, not at a named owner's
+      death. The book's chapter on Box announces its subject plainly:
+      <em>"using Box&lt;T&gt; to point to data on the heap"</em> — and
+      the design reason is the one this book keeps repeating: visible
+      cost, deterministic
+      free.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+    </section>
+
+    <section id="moving-a-box">
+      <h2>Moving a Box moves the value</h2>
+      <p>A Box is an owner, so everything Part Two said about owners
+      applies unchanged. It is not Copy: assigning or passing it moves
+      it, and the move hands over the allocation — the new owner's word
+      points at the same cell, and the free happens at the last owner's
+      death, exactly once.</p>
+      <p>One behavior is unique to Box. It is the only owner on the
+      menu whose value you can move out by dereferencing:</p>
+      <figure class="codeblock accept">
+        <figcaption>box_move_out.rs — lifting the value out of the box</figcaption>
+<pre data-verify="run" data-expect="hello"><code class="language-rust">fn main() {
+    let b = Box::new(String::from("hello"));
+    let s = *b;
+    println!("{s}");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">hello</code></pre>
+      </figure>
+      <p>The line <code>let s = *b;</code> walks the pointer, lifts the
+      whole String — its words and its buffer — out of the cell, and
+      leaves the box holding nothing. The empty cell is freed when
+      <code>b</code> leaves scope; the String dies wherever
+      <code>s</code> dies. No other owner on the menu allows this:
+      moving a value out of a dereference would leave the owner unable
+      to honor what it still owes. Box owes exactly one thing — free
+      the cell — and that duty stays provable after the value
+      leaves.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+    </section>
+
+    <section id="the-type-that-contains-itself">
+      <h2>The type that contains itself</h2>
+      <p>The need for the one-word owner shows up the moment a type
+      wants to contain itself. A linked list is the classic: a node is
+      either the end of the list, or a value plus the rest of the list
+      — and the rest of the list is another node. Written out
+      directly:</p>
+      <figure class="codeblock reject">
+        <figcaption>e0072.rs — a list that contains itself</figcaption>
+<pre data-verify="fail" data-error="E0072"><code class="language-rust">enum List { Cons(i32, List), Nil }
+
+fn main() {
+    let l = List::Cons(1, List::Cons(2, List::Nil));
+    match l {
+        List::Cons(head, _) =&gt; println!("head {head}"),
+        List::Nil =&gt; println!("empty"),
+    }
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>rustc's refusal, captured</figcaption>
+<pre><code class="language-text">error[E0072]: recursive type `List` has infinite size
+ --&gt; e0072.rs:1:1
+  |
+1 | enum List { Cons(i32, List), Nil }
+  | ^^^^^^^^^             ---- recursive without indirection
+  |
+help: insert some indirection (e.g., a `Box`, `Rc`, or `&amp;`) to break the cycle
+  |
+1 | enum List { Cons(i32, Box&lt;List&gt;), Nil }
+  |                       ++++    +
+...</code></pre>
+      </figure>
+      <p>Read the error's language: <em>recursive without
+      indirection</em>. A <dfn><a href="glossary.html#t-recursive-type">recursive
+      type</a></dfn> is a type whose definition contains a value of
+      that same type — <code>Cons(i32, List)</code> qualifies. Rust
+      sizes every type before the program runs: a fixed number of
+      bytes, computed eagerly from the definition. A List containing a
+      List containing a List without end has no finite size, and the
+      compiler says so at the definition itself — <em>has infinite
+      size</em> — rather than at any use.</p>
+      <p>The comparison explains why this error surprises programmers
+      arriving from the other languages. In Java, a field of type Node
+      is already a reference — the pointer step is implicit in every
+      field, so <code>class Node { Node next; }</code> compiles, and
+      every node is a separate heap object. In C, the same type is
+      written with the step showing — <code>struct Node { struct Node *next; }</code> —
+      because a value that contains itself by value has no size in any
+      of these languages. Rust lands with C and goes further: the step
+      is written, visible, and counted, and the checker proves the
+      chain it builds is
+      freed.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+      <p>This is the only recursion error Rust has. There is no lazy
+      sizing, no runtime-resizable type slot, no tagged-union escape
+      hatch with a size decided later: the size of every type is
+      settled at compile time, and the fix is always the same shape —
+      insert a pointer step. The help line names the candidates:
+      <em>insert some indirection (e.g., a Box, Rc, or &amp;)</em>.
+      This page's candidate is the one-word
+      one.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+    </section>
+
+    <section id="one-word-breaks-the-cycle">
+      <h2>One word breaks the cycle</h2>
+      <p>The fix works because of the size fact from the last page: a
+      Box is one word no matter what it points at.
+      <code>Box&lt;List&gt;</code> is a pointer — a fixed, finite size
+      — regardless of how big a List is. The regress stops: each node
+      holds an integer, one pointer word, and nothing else.</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 140"><title>A one-word local points to a chain of heap nodes; each node holds a value and one pointer word; the chain terminates at Nil</title>
+          <text class="t-dim" x="40" y="36" font-size="12">stack frame</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="40" y="48" width="56" height="28" rx="4"/>
+          <text x="68" y="66" text-anchor="middle" font-size="12">l</text>
+          <text class="t-dim" x="200" y="28" font-size="12">heap</text>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="200" y="48" width="52" height="28" rx="4"/>
+          <text x="226" y="66" text-anchor="middle" font-size="12">1</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="252" y="48" width="60" height="28" rx="4"/>
+          <text x="282" y="66" text-anchor="middle" font-size="12">ptr</text>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="352" y="48" width="52" height="28" rx="4"/>
+          <text x="378" y="66" text-anchor="middle" font-size="12">2</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="404" y="48" width="60" height="28" rx="4"/>
+          <text x="434" y="66" text-anchor="middle" font-size="12">ptr</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="504" y="48" width="56" height="28" rx="4"/>
+          <text x="532" y="66" text-anchor="middle" font-size="12">Nil</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M96 62H196"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M190 56l8 6-8 6"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M312 62H348"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M342 56l8 6-8 6"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M464 62H500"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M494 56l8 6-8 6"/>
+          <text class="t-dim" x="40" y="120" font-size="12">every node is one fixed size; the last pointer says Nil — the chain ends</text>
+        </svg>
+        <figcaption>Indirection breaks the infinite regress: each link
+        is one pointer word, and the chain ends.</figcaption>
+      </figure>
+      <p>Stated and run, with the destructuring match doing double duty
+      as the ownership demonstration:</p>
+      <figure class="codeblock accept">
+        <figcaption>box_fix.rs — the list with one word between its nodes</figcaption>
+<pre data-verify="run" data-expect="tail head 2"><code class="language-rust">enum List {
+    Cons(i32, Box&lt;List&gt;),
+    Nil,
+}
+
+fn main() {
+    let l = List::Cons(1, Box::new(List::Cons(2, Box::new(List::Nil))));
+    match l {
+        List::Cons(head, rest) =&gt; {
+            println!("head {head}");
+            match *rest {
+                List::Cons(h, _) =&gt; println!("tail head {h}"),
+                List::Nil =&gt; println!("tail empty"),
+            }
+        }
+        List::Nil =&gt; println!("empty"),
+    }
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">head 1
+tail head 2</code></pre>
+      </figure>
+      <p>Two ownership facts are visible in that run. The outer
+      <code>match l</code> consumes the list — each arm takes its node
+      by value, because matching an owner moves into the arms. And
+      <code>match *rest</code> dereferences the inner box to keep
+      matching: the tail's value lifts out of its cell, the cell dies
+      at the scope's end, and the chain unwinds node by node as the
+      arms finish. Ownership transfer, indirection, and deterministic
+      free — one program, all three, and no collector anywhere near
+      it.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+    </section>
+
+    <section id="beyond-one-word">
+      <h2>Beyond one word</h2>
+      <p>One word is not always the whole story, and the last page
+      named the exception: a reference to a value reached through a
+      trait is a fat pointer — two words, the address plus the pointer
+      to the trait implementations. The boxed version has the same
+      shape: a Box holding such a value is also a fat pointer, two
+      words, with the same second word doing the same job. The traits
+      part of this book owns what that second word calls and how; the
+      fact this page needs is only its
+      size.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+      <p>Box has exactly one owner; graphs want many. Rust makes that
+      an explicit, typed decision — the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A Box is one word — a heap pointer that owns its cell:
+        Box::new allocates, the owner's death frees, nothing implicit
+        anywhere.</li>
+        <li>Indirection is one pointer step between you and the value;
+        Box adds exactly one, and the type shows where.</li>
+        <li>Box is the only owner you can move a value out of by
+        dereferencing — its single duty, freeing the cell, stays
+        provable after the value leaves.</li>
+        <li>A recursive type contains itself; Rust sizes every type
+        eagerly at compile time, so the definition without a pointer
+        step has no finite size — E0072 names it.</li>
+        <li>Box&lt;List&gt; breaks the cycle: one word regardless of
+        contents, and the chain ends where the last pointer says
+        Nil.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="stack-and-heap.html"><span class="cap">Previous</span><span class="pg-title">Stack and Heap: Owners and Views</span></a>
+    <a class="pager-card" rel="next" href="rc-arc.html"><span class="cap">Next</span><span class="pg-title">Rc and Arc: Opting Into Shared Ownership</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

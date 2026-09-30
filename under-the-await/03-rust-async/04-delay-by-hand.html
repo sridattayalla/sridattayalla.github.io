@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Writing a Future by hand — Under the Await</title>
+  <meta name="description" content="A complete Delay future built from std alone: an enum state machine, a waker slot shared with a timer thread, and a poll that honors the whole contract.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p03-04">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Writing a Future by hand</h1>
+
+      <p>You know the trait, the contract, and the wake-up mechanism. Time to pay
+        off all three at once by building a real future with real behavior: a
+        <code>Delay</code> that completes after a deadline, using nothing but the
+        standard library. No <code>async</code>, no <code>.await</code>, no
+        Tokio. When it is done you will have seen, in about eighty lines, every
+        structural trick that the compiler will later do for you automatically;
+        page 5 is exactly that comparison, side by side.</p>
+
+      <h2>The design in one breath</h2>
+
+      <p>A <code>Delay</code> is created with a duration. Being a
+        <a href="02-future-trait.html">lazy</a> value, it does nothing until its
+        first <code>poll</code>. On that first poll it arms a plain OS thread
+        that sleeps until the deadline and then fires the
+        <a href="03-waker-and-context.html">waker</a>. Every later poll just
+        checks the clock: past the deadline means <code>Ready</code>, otherwise
+        <code>Pending</code> again with the waker safely stored. Three states,
+        one helper thread, one shared slot. Here is the shape:</p>
+
+      <pre><code class="language-rust">use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// One slot, shared between the future and its timer thread.
+type WakerSlot = Arc&lt;Mutex&lt;Option&lt;Waker&gt;&gt;&gt;;
+
+enum State {
+    Started { deadline: Instant },
+    Sleeping { deadline: Instant, slot: WakerSlot },
+    Done,
+}
+
+struct Delay {
+    state: State,
+}</code></pre>
+
+      <p>Each piece of <code>WakerSlot</code> earns its keep. The
+        <code>Option</code> because the slot starts empty and only fills on the
+        first poll. The <code>Mutex</code> because two threads touch it: the
+        driving thread stores the waker, the timer thread takes it out. The
+        <code>Arc</code> because both sides need to own it, and the
+        <a href="01-rust-recap.html">atomics inside</a> make that sharing legal
+        across threads. And <code>Waker</code> itself is exactly the cheap,
+        thread-safe handle from page 3.</p>
+
+      <p>The state enum is the future's brain. <code>Started</code> means
+        "never polled, no timer yet". <code>Sleeping</code> means "timer armed,
+        waker stashed, waiting". <code>Done</code> is the terminal state that
+        makes polling after completion panic loudly instead of corrupting
+        anything, honoring rule 4 of the contract. Notice what the enum is:
+        a hand-rolled version of exactly the <a href="../02-concurrency-models/04-stackless-coroutines.html">suspended-coroutine
+        state</a> idea from Part 2. Keep that in mind; it becomes the punchline
+        of page 5.</p>
+
+      <h2>poll, first arm: arming the timer</h2>
+
+      <pre><code class="language-rust">impl Future for Delay {
+    type Output = ();
+
+    fn poll(mut self: Pin&lt;&amp;mut Self&gt;, cx: &amp;mut Context&lt;'_&gt;) -&gt; Poll&lt;()&gt; {
+        match std::mem::replace(&amp;mut self.state, State::Done) {
+            State::Started { deadline } =&gt; {
+                // First poll: create the slot and store the waker (rule 3).
+                let slot: WakerSlot = Arc::new(Mutex::new(None));
+                {
+                    let mut guard = slot.lock().unwrap();
+                    *guard = Some(cx.waker().clone());
+                }
+                let thread_slot = Arc::clone(&amp;slot);
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                thread::spawn(move || {
+                    thread::sleep(remaining);
+                    if let Some(waker) = thread_slot.lock().unwrap().take() {
+                        waker.wake();
+                    }
+                });
+                self.state = State::Sleeping { deadline, slot };
+                Poll::Pending
+            }</code></pre>
+
+      <p>Walk it slowly; every line is a decision.</p>
+
+      <p><code>std::mem::replace(&amp;mut self.state, State::Done)</code> moves
+        the current state out and leaves a placeholder behind, all in one
+        atomic-looking step, so the <code>match</code> can take the enum apart
+        by value. Each arm then writes the <em>next</em> state back into
+        <code>self.state</code> before returning. If an arm forgets, the
+        placeholder <code>Done</code> is waiting to make the bug loud on the
+        next poll. This move-out-then-restore dance is the standard idiom for
+        advancing an enum state machine through a mutable reference, and it is
+        precisely what the compiler-generated version of this code does
+        internally.</p>
+
+      <!-- fs: research/rust-async.md §1 — poll contract: on Pending the future must store a clone of the waker from cx before returning -->
+      <p>The <code>Started</code> arm runs only once. It creates the empty
+        slot, locks it, and stores a <em>clone</em> of
+        <code>cx.waker()</code>. That clone, taken before any
+        <code>Pending</code> is returned, is contract rule 3 in the flesh:
+        if we return <code>Pending</code> without saving a way to be re-polled,
+        we may never be asked again. The braces around the lock are not
+        decoration: they end the mutex guard's lifetime before the next
+        statement, so the compiler lets us move <code>slot</code> into the new
+        state afterwards.</p>
+
+      <p>Then the timer thread. <code>thread::spawn</code> takes a closure that
+        <em>moves</em> in its own <code>Arc</code> clone of the slot, sleeps for
+        the time remaining until the deadline, then locks the slot and calls
+        <code>take()</code>. <code>take</code> swaps the waker out, leaving
+        <code>None</code>: the wake fires exactly once, and if anything polls
+        the future again later, the <code>will_wake</code> check you will see
+        below re-fills the slot. Firing the waker from a plain helper thread
+        is completely legal, because a <code>Waker</code> may be invoked from
+        any thread at all; that freedom was the whole point of page 3.</p>
+
+      <p>Finally the state advances to <code>Sleeping</code>, carrying both the
+        deadline and the slot as fields, and the method returns
+        <code>Pending</code>. Total work on the driving thread: a few
+        allocations plus one new thread. No waiting. That is what "poll must
+        return quickly" looks like in practice.</p>
+
+      <h2>poll, second arm: checking the clock</h2>
+
+      <pre><code class="language-rust">            State::Sleeping { deadline, slot } =&gt; {
+                if Instant::now() &gt;= deadline {
+                    self.state = State::Done;
+                    return Poll::Ready(());
+                }
+                // Not finished: make sure the CURRENT waker is stored.
+                {
+                    let mut guard = slot.lock().unwrap();
+                    match &amp;*guard {
+                        Some(w) if w.will_wake(cx.waker()) =&gt; {}
+                        _ =&gt; *guard = Some(cx.waker().clone()),
+                    }
+                }
+                self.state = State::Sleeping { deadline, slot };
+                Poll::Pending
+            }
+            State::Done =&gt; panic!("Delay polled after completion"),
+        }
+    }
+}</code></pre>
+
+      <p>The <code>Sleeping</code> arm is deliberately boring, and its boredom
+        is the contract. First question: is the deadline past? If yes, write
+        <code>Done</code> and return <code>Ready</code>; rule 1 says finish the
+        moment you can. If no, re-store the waker before returning
+        <code>Pending</code> again.</p>
+
+      <!-- fs: research/rust-async.md §1 — most-recent-waker rule: on each poll, replace the stored waker with the one from the current cx; research/rust-async.md §2 — will_wake lets a future skip replacing an equivalent stored waker -->
+      <p>Why re-store, when the first arm already stored one? Because of the
+        most-recent-waker rule: only the waker from the <em>latest</em>
+        <code>poll</code> is guaranteed to reach the right place. A future can
+        be handed to a different engine, or the engine can rebuild its wakers;
+        an old stored handle might then wake the void. So each poll refreshes
+        the slot, with the small mercy of <code>will_wake</code>: if the stored
+        waker already wakes the same thing, skip the clone. This re-check
+        matters most when the poll is <em>spurious</em>, a courtesy wake with
+        nothing ready; the arm handles that case for free, because "deadline
+        not past" falls through to the same refresh-and-Pending path.</p>
+
+      <p>And the <code>Done</code> arm is the tripwire from page 2's rule 4:
+        polling a finished future is a bug, and this future makes it a loud,
+        local, debuggable one.</p>
+
+      <h2>The constructor, and a demonstration</h2>
+
+      <pre><code class="language-rust">fn delay(how_long: Duration) -&gt; Delay {
+    Delay {
+        state: State::Started {
+            deadline: Instant::now() + how_long,
+        },
+    }
+}</code></pre>
+
+      <p>The constructor only builds the <code>Started</code> state. No timer
+        is started, no thread exists, nothing is registered anywhere: the
+        future is inert until polled, exactly as promised on page 2. Now a
+        demonstration that drives the future with no machinery beyond a loop.
+        We need <em>some</em> waker to build the <code>cx</code> argument, so
+        here is the smallest useful one: a flag-setter, straight from the page 3
+        pattern.</p>
+
+      <pre><code class="language-rust">use std::sync::atomic::{AtomicBool, Ordering};
+
+struct FlagWaker(AtomicBool);
+
+impl Wake for FlagWaker {
+    fn wake(self: Arc&lt;Self&gt;) {
+        self.0.store(true, Ordering::Release);
+    }
+}</code></pre>
+
+      <p>A wake is nothing but a flag flip with release ordering, which
+        the waiting side will read with acquire ordering, the cheapest
+        thread-safe mailbox in the language. Now a demonstration that
+        drives the future with no machinery beyond a loop: build the
+        future, wrap the flag in a waker, poll, and between attempts,
+        spin until the flag moves.</p>
+
+      <pre><code class="language-rust">fn main() {
+    let started = Instant::now();
+    let mut delay = delay(Duration::from_millis(50));
+
+    let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
+    let waker = Waker::from(Arc::clone(&amp;flag));
+    let mut cx = Context::from_waker(&amp;waker);
+
+    loop {
+        match Pin::new(&amp;mut delay).poll(&amp;mut cx) {
+            Poll::Ready(()) =&gt; {
+                println!("done after {:?}", started.elapsed());
+                return;
+            }
+            Poll::Pending =&gt; {
+                while !flag.0.load(Ordering::Acquire) {
+                    thread::yield_now(); // busy-wait: page 7 fixes this
+                }
+                flag.0.store(false, Ordering::Release);
+            }
+        }
+    }
+}</code></pre>
+
+      <p>Run it and you get <code>done after 50.1…ms</code>-ish, the exact
+        digits depending on your operating system. Now trace the two polls across
+        time, because the timeline is the whole story:</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 230" role="img" aria-label="Timeline with two lanes: the driving thread polls at t=0, gets Pending, waits; the timer thread sleeps until the deadline, takes the waker and fires it; the driving thread polls again and gets Ready">
+          <title>Two polls and one wake, across two threads</title>
+          <text class="label" x="10" y="28">driving thread</text>
+          <line class="lane" x1="10" y1="40" x2="630" y2="40"/>
+          <rect class="box" x="30" y="50" width="90" height="44" rx="8"/>
+          <text class="label mono" x="75" y="70" text-anchor="middle">poll #1</text>
+          <text class="label muted" x="75" y="86" text-anchor="middle">t = 0</text>
+          <rect class="box" x="150" y="50" width="110" height="44" rx="8"/>
+          <text class="label" x="205" y="70" text-anchor="middle">Pending</text>
+          <text class="label muted" x="205" y="86" text-anchor="middle">waker stored</text>
+          <rect class="box" x="300" y="50" width="120" height="44" rx="8"/>
+          <text class="label" x="360" y="70" text-anchor="middle">waiting on</text>
+          <text class="label" x="360" y="86" text-anchor="middle">the flag</text>
+          <rect class="box" x="470" y="50" width="90" height="44" rx="8"/>
+          <text class="label mono" x="515" y="70" text-anchor="middle">poll #2</text>
+          <text class="label muted" x="515" y="86" text-anchor="middle">Ready</text>
+          <text class="label" x="10" y="138">timer thread</text>
+          <line class="lane" x1="10" y1="150" x2="630" y2="150"/>
+          <rect class="box" x="30" y="160" width="100" height="44" rx="8"/>
+          <text class="label" x="80" y="180" text-anchor="middle">spawned at</text>
+          <text class="label" x="80" y="196" text-anchor="middle">first poll</text>
+          <rect class="box" x="170" y="160" width="200" height="44" rx="8"/>
+          <text class="label" x="270" y="180" text-anchor="middle">sleeps until the deadline</text>
+          <text class="label muted" x="270" y="196" text-anchor="middle">t = 0 … deadline</text>
+          <rect class="box accent" x="410" y="160" width="200" height="44" rx="8"/>
+          <text class="label mono" x="510" y="180" text-anchor="middle">take() + wake()</text>
+          <text class="label muted" x="510" y="196" text-anchor="middle">t = deadline</text>
+          <line class="arrow accent" x1="510" y1="160" x2="515" y2="96"/>
+          <polygon class="arrow-head accent" points="510,98 520,98 515,88"/>
+        </svg>
+        <figcaption>Figure 1: poll number one arms the timer; the timer thread
+          wakes the flag; poll number two sees the deadline has passed and
+          finishes.</figcaption>
+      </figure>
+
+      <p>At <em>t</em> equal to zero, <code>poll</code> runs the
+        <code>Started</code> arm: slot created, waker cloned in, timer thread
+        created, state advanced to <code>Sleeping</code>, <code>Pending</code>
+        returned. The driving thread then spins politely on the flag. At
+        <em>t</em> equal to the deadline, the timer thread wakes, takes the
+        waker out of the slot, and fires it, which sets the flag. The driving
+        thread notices, clears the flag, and calls <code>poll</code> again.
+        This time the <code>Sleeping</code> arm runs, the deadline check
+        succeeds, the state becomes <code>Done</code>, and
+        <code>Ready</code> pops out. That is one complete async operation, hand
+        cranked, with every contract rule visible.</p>
+
+      <div class="pitfall">
+        <p>Delete the single line <code>*guard = Some(cx.waker().clone());</code>
+          from the <code>Started</code> arm and run the program again. The timer
+          thread wakes, locks the slot, finds <code>None</code>, and fires
+          nothing. The flag is never set. The driving loop spins forever. There
+          is no error, no warning, no deadlock detector: just a future that is
+          never polled again, anywhere, silently, until the process dies.
+          Forgetting to store the waker before returning <code>Pending</code>
+          is <em>the</em> classic hand-written-future bug, and it is why the
+          contract states rule 3 in bold ink. When a real application hangs in
+          exactly this way, with work asleep that should have finished, this
+          missing line is one of the first suspects.</p>
+      </div>
+
+      <div class="warning">
+        <p>Notice where the sleeping happens: in a separate thread, never
+          inside <code>poll</code>. If the <code>Started</code> arm had simply
+          called <code>thread::sleep</code> and returned
+          <code>Ready</code> afterwards, it would have worked in this
+          single-future demo, and it would have been a silent disaster in any
+          real engine: for fifty milliseconds, the thread driving futures would
+          be frozen, and every other future behind it would starve. This is the
+          <a href="../02-concurrency-models/02-callbacks-and-event-loops.html">cooperative
+          fairness rule</a> from Part 2 wearing Rust clothes: work between
+          polls must be short, and waiting must be someone else's job.</p>
+      </div>
+
+      <p>One honest confession before moving on. A thread per timer is a
+        fine teaching implement and a terrible production one; real engines
+        keep every sleeping future's deadline in one sorted or wheeled
+        structure and use a single timer source for all of them. You will
+        meet that machinery in Part 4. The <code>Delay</code> here is the
+        honest std-only version of the idea, and its structure, one state
+        enum plus one wake-up path, is exactly what the big machinery
+        drives.</p>
+
+      <p>Which raises the question you should already be asking. This was
+        eighty lines for one <em>sleep</em>. Nobody writes a networked
+        application as thousands of hand-rolled state machines. Right: nobody
+        does. The compiler does, from <code>async</code> and
+        <code>.await</code>. Next page, we catch it in the act, with the async
+        version of a small state machine and its hand-written twin side by
+        side.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A <code>Delay</code> future is an enum state machine
+            (<code>Started</code>, <code>Sleeping</code>, <code>Done</code>)
+            advanced one state per poll, with <code>mem::replace</code> as the
+            move-out-and-restore idiom.</li>
+          <li>The waker slot <code>Arc&lt;Mutex&lt;Option&lt;Waker&gt;&gt;&gt;</code>
+            is shared with a timer thread that sleeps until the deadline and
+            fires the waker exactly once via <code>take()</code>.</li>
+          <li>Rule 3 is load-bearing: return <code>Pending</code> without
+            storing the waker, and the future hangs forever with no error
+            anywhere.</li>
+          <li>Each poll refreshes the stored waker (most-recent-waker rule),
+            with <code>will_wake</code> as the cheap skip when nothing
+            changed.</li>
+          <li>All waiting happens off to the side, in the timer thread;
+            <code>poll</code> itself only arms, checks, and returns.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

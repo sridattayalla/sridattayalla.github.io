@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<!-- Deliberately broken fixture: seeds every error class the checker must catch. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Wrong Title</title>
+</head>
+<body data-page="wrong">
+<main>
+<h2>Deliberately broken</h2>
+<p>Early use of quantization before its defining page.</p>
+<p>The magic answer is 42 with no citation anywhere nearby.</p>
+<p>A dangling link to <a href="missing-page.html">nowhere</a>.</p>
+<p>An outbound link to <a href="https://example.com/x">example</a>.</p>
+<p>A remote image <img src="http://example.com/i.png" alt="remote">.</p>
+<!-- term-ok: legitimate forward reference, silenced by the escape hatch -->
+<p>The token count stays small.</p>
+<pre><code class="language-js">var x = 1</code></pre>
+<pre><code class="language-python">a
+b
+c
+d
+e
+f
+g
+h
+i
+j
+k
+l
+m
+n
+o
+p
+q
+r
+s
+t
+u
+v
+w
+x
+y
+z
+aa
+bb
+cc
+dd
+ee
+ff</code></pre>
+<svg width="10" height="10"><rect width="10" height="10"/></svg>
+<p>A claim with a broken citation <a class="prov" data-src="research/missing.md" href="#top">[x]</a> marked 7 here.</p>
+<aside class="takeaways">
+<ul>
+<li>Only two takeaways here.</li>
+<li>Both are wrong.</li>
+</ul>
+</aside>
+</main>
+</body>
+</html>

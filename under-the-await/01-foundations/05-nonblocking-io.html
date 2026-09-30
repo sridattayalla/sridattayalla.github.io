@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Non-blocking I/O — Under the Await</title>
+  <meta name="description" content="O_NONBLOCK, EAGAIN, and readiness: how a socket learns to say not ready yet instead of confiscating your thread, plus the busy-poll trap.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-05">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Non-blocking I/O</h1>
+
+      <p>The previous chapter ended with a contract: you ask the kernel for
+        data, and your thread does not come back without it. This chapter
+        breaks that contract, on purpose, by flipping one bit in the
+        kernel's bookkeeping for a descriptor. The flip is small. The new
+        vocabulary it creates, a socket that answers "not ready yet"
+        instead of confiscating your thread, is the foundation everything
+        in the rest of this book is built on. It also introduces a trap
+        that has burned every programmer who ever found it, so we will
+        step on that too, deliberately, before learning to avoid it.</p>
+
+      <h2>Flipping the contract</h2>
+
+      <p>Every descriptor carries mode flags in the kernel's bookkeeping,
+        and one of them is <code>O_NONBLOCK</code>. Set it, and the
+        descriptor becomes non-blocking: the kernel promises that calls on
+        it will never put your thread to sleep. If the operation can be
+        finished right now, it is. If it cannot, the call fails
+        immediately instead, and you learn about it through the error
+        convention from <a href="03-syscalls-and-file-descriptors.html">chapter 3</a>. On an already-open descriptor you flip
+        the flag with <code>fcntl</code>:</p>
+
+      <pre><code class="language-c">#include &lt;fcntl.h&gt;
+#include &lt;unistd.h&gt;
+
+/* switch an already-open descriptor into non-blocking mode */
+int flags = fcntl(fd, F_GETFL, 0);
+if (flags &lt; 0) {
+    perror("fcntl F_GETFL");
+    return 1;
+}
+if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) &lt; 0) {
+    perror("fcntl F_SETFL");
+    return 1;
+}</code></pre>
+
+      <p>Now ask an empty socket for data:</p>
+
+      <pre><code class="language-c">char buf[256];
+ssize_t n = read(fd, buf, sizeof buf);
+
+if (n &gt;= 0) {
+    /* got it: n bytes were waiting */
+} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    /* nothing waiting: the answer is "not ready yet", not "broken" */
+} else {
+    perror("read");
+}</code></pre>
+
+      <p>That <code>EAGAIN</code> is the star of the chapter. Where a
+        blocking socket would have carried your thread off to the wait
+        queue from <a href="04-blocking-io-and-c10k.html">chapter 4</a>, the non-blocking one returns
+        <code>-1</code> instantly with <code>errno</code> set to
+        <code>EAGAIN</code>, "try again". POSIX permits a second spelling,
+        <code>EWOULDBLOCK</code>, for exactly this case, and portable code
+        checks for both; on Linux they are the same number. The crucial
+        reading is that <code>EAGAIN</code> is not an error in the
+        everyday sense. Nothing is broken. The question was just asked a
+        moment too early, and it may well have a different answer a
+        millisecond from now. The same answer can come from
+        <code>write</code> when the socket's outgoing buffer is full: not
+        broken, merely full, try again.</p>
+
+      <p>One bookkeeping detail worth noticing: the flag lives on the
+        descriptor, not on the call. Once flipped, every operation through
+        that descriptor follows the new contract, reads, writes, even
+        <code>accept</code> on a listening socket, until you flip it back.
+        Non-blocking is therefore a property of the arrangement between
+        you and the kernel, recorded kernel-side, exactly like the
+        descriptor's other open-file bookkeeping from chapter 3. Two
+        descriptors for the same socket can even disagree, though you
+        would need <code>dup</code> and a good reason to want that.</p>
+
+      <h2>Two different questions</h2>
+
+      <p>Stop and appreciate what just changed, because it is easy to
+        wave past. Under the blocking contract there is one question:
+        "give me data, and take as long as you need". The kernel answers
+        by owning your thread for the duration. Under the non-blocking
+        contract the question splits in two. There is still "give me
+        data", answered with bytes or with <code>EAGAIN</code>. And there
+        is now a second, separable question hiding inside the failure:
+        "was there data at all?" That second question has a name. A
+        descriptor is ready when the thing behind it has something for
+        you right now: bytes to read, or room to write. Readiness is a
+        property of the moment, and <code>EAGAIN</code> is how the kernel
+        says "no, not at this instant", without promising anything about
+        the next one.</p>
+
+      <p>Feel the shape of a server built on this. One thread holds
+        descriptors for three sockets and visits them in turn: ask A,
+        <code>EAGAIN</code>; ask B, <code>EAGAIN</code>; ask C, five
+        hundred bytes, process them, reply. No thread was ever
+        confiscated, so the same thread really is serving three clients,
+        and nothing stops it from serving three thousand. This is the
+        first honest glimpse of the design this whole book walks toward.
+        Its flaw is equally visible: on a quiet day, almost every visit
+        returns <code>EAGAIN</code>, so the thread spends its life asking
+        questions whose answers are almost always no. Visiting in turn
+        is exactly the busy loop below, wearing better clothes.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 190" role="img">
+          <title>The same read on an empty socket under the blocking and non-blocking contracts</title>
+          <text class="label muted" x="40" y="47" text-anchor="start">blocking:</text>
+          <rect class="box" x="140" y="25" width="90" height="36" rx="6"/>
+          <text class="label mono" x="185" y="48" text-anchor="middle">read()</text>
+          <line class="arrow" x1="230" y1="43" x2="272" y2="43"/>
+          <polygon class="arrow-head" points="272,38 282,43 272,48"/>
+          <rect class="box" x="286" y="25" width="180" height="36" rx="6"/>
+          <text class="label" x="376" y="48" text-anchor="middle">asleep on the wait queue</text>
+          <line class="arrow" x1="466" y1="43" x2="508" y2="43"/>
+          <polygon class="arrow-head" points="508,38 518,43 508,48"/>
+          <rect class="box" x="522" y="25" width="100" height="36" rx="6"/>
+          <text class="label" x="572" y="48" text-anchor="middle">data, later</text>
+          <line class="lane" x1="30" y1="95" x2="630" y2="95"/>
+          <text class="label muted" x="40" y="137" text-anchor="start">non-blocking:</text>
+          <rect class="box" x="140" y="115" width="90" height="36" rx="6"/>
+          <text class="label mono" x="185" y="138" text-anchor="middle">read()</text>
+          <line class="arrow" x1="230" y1="133" x2="272" y2="133"/>
+          <polygon class="arrow-head" points="272,128 282,133 272,138"/>
+          <rect class="box accent" x="286" y="115" width="180" height="36" rx="6"/>
+          <text class="label" x="376" y="138" text-anchor="middle">EAGAIN, right now</text>
+          <line class="arrow" x1="466" y1="133" x2="508" y2="133"/>
+          <polygon class="arrow-head" points="508,128 518,133 508,138"/>
+          <rect class="box" x="522" y="115" width="100" height="36" rx="6"/>
+          <text class="label" x="572" y="138" text-anchor="middle">still yours</text>
+        </svg>
+        <figcaption>Figure 1: the same empty-socket read under both
+          contracts. Below the line, the thread never leaves user
+          space.</figcaption>
+      </figure>
+
+      <p>The deep change is who owns the wait. A blocking call
+        confiscates your thread and hands the waiting to the kernel. A
+        non-blocking call keeps the thread and hands you the fact of
+        waiting. Nothing about the socket got faster; data still arrives
+        when it arrives. What changed is who is holding the thread while
+        the answer is pending, and therefore how many simultaneous
+        pendings one thread can juggle. In principle: all of them. In
+        practice, you are about to meet the catch.</p>
+
+      <h2>The busy-poll trap</h2>
+
+      <p>You have a socket that answers "not ready yet", and a program
+        that wants data. The obvious next move is to keep asking:</p>
+
+      <pre><code class="language-c">ssize_t n;
+for (;;) {
+    n = read(fd, buf, sizeof buf);
+    if (n &gt;= 0) break;                       /* got something */
+    if (errno != EAGAIN &amp;&amp; errno != EWOULDBLOCK) {
+        perror("read");
+        return 1;
+    }
+    /* nothing yet... so ask again, immediately */
+}</code></pre>
+
+      <p>This is busy-polling: retrying a non-blocking call in a tight
+        loop until it succeeds. It feels productive. It is the opposite.
+        Each <code>read</code> is a full trip through the kernel's door,
+        and a modern core can make millions of those trips per second,
+        so the loop ties up one entire core at flat-out usage doing literally
+        nothing. Your thread is runnable every instant, the kernel's
+        scheduling code sees a hungry worker, and every cycle it burns is
+        a cycle some other thread, on a machine with a real job, cannot
+        have. Multiply by one loop per connection and you have rebuilt
+        the C10K arithmetic from chapter 4 with a worse shape: before,
+        at least, the waiters were asleep.</p>
+
+      <div class="pitfall"><p>The trap catches good programmers because
+        the loop works. It returns correct data, quickly, and on a demo
+        with one connection the CPU meter is easy to ignore. Then it ships
+        to a server with a quiet socket per loop, and the machine runs
+        hot while accomplishing nothing. Any tight retry loop around
+        <code>EAGAIN</code>, without a sleep between attempts, is this
+        bug wearing a work uniform.</p></div>
+
+      <p>The textbook patch, sleeping between retries, fixes the CPU
+        crime but commits a smaller one: if you sleep a millisecond
+        between asks, you add up to that much delay to every arrival, and
+        you are still asking about one descriptor at a time. Sleeping in
+        a loop is busy-polling with a conscience. Neither version is what
+        you actually want.</p>
+
+      <h2>The missing half</h2>
+
+      <p>Line up what you have and what you need. You have sockets that
+        never confiscate a thread, and an error code that means "not
+        ready at this instant". You need to serve ten thousand of them
+        with a handful of threads. The naive loop fails because it keeps
+        asking each socket, one at a time, forever. What is missing is
+        the reverse arrangement: a single question, asked once, that
+        sleeps until any one of your many descriptors has something to
+        say, and then tells you which ones. One door-knock covering every
+        waiter, with your thread asleep in between, paying nothing while
+        nothing happens.</p>
+
+      <p>The kernel does have that question; Unix has actually grown
+        three successive answers to it over the decades, each fixing the
+        last one's scaling flaw. Finding out why the first two answers
+        were not good enough is the fastest way to understand why the
+        third one powers, nearly unchanged, every high-performance server
+        you have ever used. That story is the next chapter.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Setting <code>O_NONBLOCK</code> makes a descriptor
+            non-blocking: calls on it never put the calling thread to
+            sleep.</li>
+          <li>Reads on an empty non-blocking socket return
+            <code>-1</code> with <code>EAGAIN</code> (or
+            <code>EWOULDBLOCK</code>): not broken, just not ready
+            yet.</li>
+          <li>Readiness is a property of the instant: data to read or
+            room to write, right now; the failure code quietly answers
+            "is there data?" separately from "give me data".</li>
+          <li>Busy-polling, retrying against <code>EAGAIN</code> in a
+            tight loop, ties up a whole core while accomplishing nothing;
+            it is the classic misuse of non-blocking I/O.</li>
+          <li>What is still missing is one sleeping question covering
+            many descriptors at once, which is exactly where the next
+            chapter goes.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

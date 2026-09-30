@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The blocking pool — Under the Await</title>
+  <meta name="description" content="Why a worker must never sleep in the kernel, and the two escape hatches: spawn_blocking and block_in_place.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p04-04">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>The blocking pool</h1>
+
+      <p>Everything in this part so far serves one law: <strong>a worker
+        must never sleep inside the kernel</strong>. The
+        <a href="03-scheduler.html">scheduler page</a> showed workers
+        parking when idle, and that is fine, even healthy. The difference
+        between parking and blocking is who holds the leash. A parked worker
+        is idle by choice, asleep in epoll with the runtime able to shake it
+        awake the instant work arrives (the same
+        <a href="../03-rust-async/07-mini-executor.html">park and wake pair</a>
+        you built in Part 3, at runtime scale). A blocked worker is asleep
+        inside a syscall: <code>read</code> on a slow disk, a DNS lookup, a
+        <a href="../01-foundations/02-processes-threads-context-switches.html">std
+        mutex</a> held by someone else. The kernel holds that leash, and all
+        the runtime can do is wait for the syscall to return.</p>
+
+      <p>One blocked worker is one fewer lane for every task in the machine.
+        Every worker blocked is the nightmare: the queues stop draining, the
+        drivers have nobody to wake, timers stop firing, and the whole
+        runtime is frozen while every thread sits politely in the kernel.
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">Part 1</a>
+        showed what parked threads cost; here they cost the same and buy
+        nothing.</p>
+
+      <h2>What counts as blocking</h2>
+
+      <p>The usual suspects: file I/O on ordinary files, DNS resolution,
+        database clients built on synchronous APIs, foreign functions that
+        sleep, locks from <code>std::sync</code> held across a slow path.
+        Each one sends the calling thread into the kernel for an
+        unbounded nap, and none of them knows what a future is.</p>
+
+      <p>Heavy computation is a different crime with a different sentence.
+        A CPU loop never sleeps, so it does not lose the thread to the
+        kernel; it just refuses to yield, and the
+        <a href="03-scheduler.html">cooperative budget</a> eventually forces
+        it to the back of the queue. The budget can save you from compute.
+        Nothing in this runtime can save a worker from a syscall that
+        sleeps; the thread is simply gone until the kernel gives it back.
+        That is why blocking gets its own pool of threads to be wrong
+        in.</p>
+
+      <div class="pitfall">
+        <p>This is the single most common way to hurt a Tokio service, and
+          it looks so innocent:</p>
+        <pre><code class="language-rust">async fn bad() {
+    // the worker disappears into the kernel for the full second
+    std::thread::sleep(std::time::Duration::from_secs(1));
+}</code></pre>
+        <p>Every task queued behind <code>bad</code> on that worker now
+          waits a second, and every timer due in that second fires late.
+          Part 5’s <a href="../05-walkthroughs/05-pitfalls.html">pitfalls
+          page</a> starts with this exact mistake.</p>
+      </div>
+
+      <h2>spawn_blocking</h2>
+
+      <p>The clean tool is <strong><code>spawn_blocking</code></strong>: hand
+        the blocking closure to the <strong>blocking pool</strong>, a
+        separate set of plain OS threads whose entire job is to be allowed
+        to sleep in the kernel:</p>
+
+      <pre><code class="language-rust">#[tokio::main]
+async fn main() -&gt; std::io::Result&lt;()&gt; {
+    let contents = tokio::task::spawn_blocking(|| {
+        std::fs::read_to_string("Cargo.toml") // sleeps in the kernel
+    })
+    .await // our worker stays free while a pool thread reads
+    .expect("the closure panicked")?;
+
+    println!("{} bytes", contents.len());
+    Ok(())
+}</code></pre>
+
+      <p>Mechanically: the closure is queued; an idle pool thread picks it
+        up, or a fresh one is spawned if the cap allows; you get a
+        <a href="02-task-anatomy.html">JoinHandle</a> back, and awaiting it
+        parks <em>your task</em>, not your thread, until the result arrives.
+        Each pool thread runs one blocking call at a time: a thread stuck in
+        <code>read</code> cannot also take the next job, which is why the
+        pool grows rather than queues when work piles up.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 285" role="img">
+          <title>Workers versus the blocking pool: workers with run queues park in the drivers; the blocking pool is separate OS threads taking one blocking call each</title>
+          <text class="label muted" x="158" y="30" text-anchor="middle">workers</text>
+          <text class="label muted" x="508" y="30" text-anchor="middle">blocking pool</text>
+
+          <rect class="box" x="24" y="44" width="104" height="40" rx="8"/>
+          <text class="label" x="76" y="62" text-anchor="middle">worker 0</text>
+          <text class="label muted" x="76" y="78" text-anchor="middle">OS thread</text>
+          <rect class="box" x="150" y="44" width="130" height="40" rx="8"/>
+          <text class="label" x="215" y="62" text-anchor="middle">run queue</text>
+          <text class="label muted" x="215" y="78" text-anchor="middle">ring of 256</text>
+          <line class="arrow" x1="150" y1="64" x2="138" y2="64"/>
+          <polygon class="arrow-head" points="130,64 142,59 142,69"/>
+
+          <rect class="box" x="24" y="104" width="104" height="40" rx="8"/>
+          <text class="label" x="76" y="122" text-anchor="middle">worker 1</text>
+          <text class="label muted" x="76" y="138" text-anchor="middle">OS thread</text>
+          <rect class="box" x="150" y="104" width="130" height="40" rx="8"/>
+          <text class="label" x="215" y="122" text-anchor="middle">run queue</text>
+          <text class="label muted" x="215" y="138" text-anchor="middle">ring of 256</text>
+          <line class="arrow" x1="150" y1="124" x2="138" y2="124"/>
+          <polygon class="arrow-head" points="130,124 142,119 142,129"/>
+
+          <rect class="box" x="24" y="164" width="104" height="40" rx="8"/>
+          <text class="label" x="76" y="182" text-anchor="middle">worker 2</text>
+          <text class="label muted" x="76" y="198" text-anchor="middle">OS thread</text>
+          <rect class="box" x="150" y="164" width="130" height="40" rx="8"/>
+          <text class="label" x="215" y="182" text-anchor="middle">run queue</text>
+          <text class="label muted" x="215" y="198" text-anchor="middle">ring of 256</text>
+          <line class="arrow" x1="150" y1="184" x2="138" y2="184"/>
+          <polygon class="arrow-head" points="130,184 142,179 142,189"/>
+
+          <line class="lane" x1="16" y1="96" x2="300" y2="96"/>
+          <line class="lane" x1="16" y1="156" x2="300" y2="156"/>
+          <line class="lane" x1="16" y1="216" x2="300" y2="216"/>
+
+          <rect class="box" x="24" y="230" width="276" height="44" rx="8"/>
+          <text class="label" x="162" y="248" text-anchor="middle">the drivers</text>
+          <text class="label muted" x="162" y="266" text-anchor="middle">sockets + timers (pages 5 and 7)</text>
+          <line class="arrow" x1="76" y1="204" x2="76" y2="222"/>
+          <polygon class="arrow-head" points="76,230 70,218 82,218"/>
+
+          <rect class="box" x="400" y="44" width="216" height="180" rx="8"/>
+          <text class="label" x="508" y="66" text-anchor="middle">blocking pool</text>
+          <rect class="box" x="420" y="78" width="176" height="28" rx="4"/>
+          <text class="label muted" x="508" y="96" text-anchor="middle">submission queue</text>
+          <rect class="box" x="420" y="114" width="176" height="28" rx="4"/>
+          <text class="label muted" x="508" y="132" text-anchor="middle">thread · read()</text>
+          <rect class="box" x="420" y="148" width="176" height="28" rx="4"/>
+          <text class="label muted" x="508" y="166" text-anchor="middle">thread · DNS</text>
+          <rect class="box" x="420" y="182" width="176" height="28" rx="4"/>
+          <text class="label muted" x="508" y="200" text-anchor="middle">thread · hash loop</text>
+
+          <line class="arrow" x1="306" y1="92" x2="390" y2="92"/>
+          <polygon class="arrow-head" points="400,92 388,87 388,97"/>
+          <text class="label mono" x="288" y="82">spawn_blocking</text>
+
+          <line class="arrow accent" x1="400" y1="150" x2="318" y2="150"/>
+          <polygon class="arrow-head accent" points="310,150 322,145 322,155"/>
+          <text class="label accent" x="354" y="140" text-anchor="middle">JoinHandle</text>
+
+          <text class="label muted" x="508" y="248" text-anchor="middle">one blocking call per thread</text>
+        </svg>
+        <figcaption>Figure 1. Two worlds side by side. Workers poll tasks
+          and park in the drivers; pool threads sleep in the kernel without
+          hurting anyone. Results return through a JoinHandle you await from
+          async code.</figcaption>
+      </figure>
+
+      <p>The pool’s numbers, from the source. Pool threads are not
+        pre-created; they are spawned on demand, up to a default cap of 512
+        threads, and an idle one exits after 10 seconds with nothing to do.
+        <!-- fs: research/tokio-internals.md §5: max_blocking_threads default 512; KEEP_ALIVE = Duration::from_secs(10); threads spawned on demand -->
+        Both are builder knobs (<code>max_blocking_threads</code>,
+        <code>thread_keep_alive</code>). The true ceiling is slightly higher
+        than the knob suggests, because the conversion trick below borrows
+        threads outside the count: the cap works out to the blocking maximum
+        plus the worker count.
+        <!-- fs: research/tokio-internals.md §5: actual blocking-pool cap = max_blocking_threads + worker_threads -->
+        And the submission queue has no brake of its own: submit blocking
+        work faster than the pool can drain it and the queue simply grows.
+        If you expect bursts of blocking calls, bound them yourself.</p>
+
+      <p>Two sharp edges to keep in mind. A blocking closure cannot be
+        stopped once it has started: there is no suspension point inside
+        <code>read</code> for the runtime to leverage, no polite place to
+        intervene, so the runtime does not try. Related: at shutdown, the
+        runtime waits for blocking calls that have already started, which is
+        why a timed shutdown variant exists for programs that cannot afford
+        to wait. Design your blocking calls to be short, or to be
+        cancellable by their own logic (check a flag, poll a pipe), because
+        nobody can do it for you.</p>
+
+      <h2>block_in_place</h2>
+
+      <p>The second tool is rarer and stranger.
+        <strong><code>block_in_place</code></strong> does not send work to
+        the pool; it converts the worker you are standing on into blocking
+        duty. Before running your closure, the worker hands its entire
+        core, the run queue, the LIFO slot, all the bookkeeping from the
+        scheduler page, to a freshly spawned OS thread, and that thread
+        carries on scheduling while the original thread blocks:</p>
+
+      <pre><code class="language-rust">#[tokio::main]
+async fn main() {
+    let digest = tokio::task::block_in_place(|| {
+        hash_the_entire_file() // seconds of plain CPU, no awaits inside
+    });
+
+    println!("digest: {digest}");
+}</code></pre>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 220" role="img">
+          <title>block_in_place handoff: before, one worker thread owns the core; during the call, the core is handed to a fresh OS thread while the old thread runs the blocking closure</title>
+          <text class="label muted" x="320" y="26" text-anchor="middle">before: one thread owns everything</text>
+          <rect class="box" x="100" y="40" width="130" height="36" rx="8"/>
+          <text class="label" x="165" y="62" text-anchor="middle">worker thread</text>
+          <rect class="box accent" x="300" y="40" width="240" height="36" rx="8"/>
+          <text class="label" x="420" y="56" text-anchor="middle">worker core</text>
+          <text class="label muted" x="420" y="70" text-anchor="middle">queues · LIFO · budget</text>
+          <line class="arrow" x1="230" y1="58" x2="292" y2="58"/>
+          <polygon class="arrow-head" points="300,58 288,53 288,63"/>
+          <text class="label muted" x="262" y="48" text-anchor="middle">owns</text>
+
+          <text class="label muted" x="320" y="116" text-anchor="middle">during the call: the core moves out</text>
+          <rect class="box" x="40" y="130" width="170" height="44" rx="8"/>
+          <text class="label" x="125" y="148" text-anchor="middle">old thread</text>
+          <text class="label muted" x="125" y="164" text-anchor="middle">blocking closure</text>
+          <rect class="box" x="280" y="130" width="150" height="44" rx="8"/>
+          <text class="label" x="355" y="148" text-anchor="middle">fresh thread</text>
+          <text class="label muted" x="355" y="164" text-anchor="middle">just spawned</text>
+          <rect class="box accent" x="500" y="130" width="130" height="44" rx="8"/>
+          <text class="label" x="565" y="148" text-anchor="middle">worker core</text>
+          <text class="label muted" x="565" y="164" text-anchor="middle">keeps running</text>
+          <line class="arrow" x1="430" y1="152" x2="492" y2="152"/>
+          <polygon class="arrow-head" points="500,152 488,147 488,157"/>
+          <text class="label muted" x="462" y="142" text-anchor="middle">owns</text>
+
+          <text class="label muted" x="320" y="208" text-anchor="middle">the queues never stop; only this one thread stalls</text>
+        </svg>
+        <figcaption>Figure 2. The handoff. The old thread becomes, in
+          effect, an honorary member of the blocking pool for the duration
+          of one call.</figcaption>
+      </figure>
+
+      <p>The fine print matters. This only works on the multi-thread
+        runtime; on the current-thread flavor it panics, because there is no
+        sibling machinery to inherit the queues. Before handing off, the
+        worker moves its LIFO-slot task into the run queue so that task
+        stays stealable while its former owner is stuck.
+        <!-- fs: research/tokio-internals.md §5: block_in_place hands the worker Core to a newly-spawned OS thread; LIFO-slot task is moved into the run queue first -->
+        And anything else running concurrently inside the same task, a
+        sibling branch you are awaiting alongside, is suspended for the
+        whole duration: the task’s poll simply does not return until your
+        closure does.</p>
+
+      <p>When would you reach for this? Almost never by choice. It exists
+        for the cases where reorganizing the code is harder than the hack:
+        you are deep inside an interface that insists on being synchronous,
+        on a worker, with no way to move the work to the pool without
+        tearing apart a trait or a callback contract. For new code,
+        <code>spawn_blocking</code> is the honest tool: it says what it does
+        (run this elsewhere and await the result) where
+        <code>block_in_place</code> says something stranger (borrow this
+        thread’s identity and make the machine work around me).</p>
+
+      <h2>Why not just add workers</h2>
+
+      <p>The tempting alternative: run a hundred workers and let thirty of
+        them block. It fails on arithmetic you already know. Workers are
+        generalists: each one polls tasks, drains queues, and takes its turn
+        at the drivers, and the default count matches the CPU core count
+        because more workers than cores just
+        <a href="../01-foundations/02-processes-threads-context-switches.html">context-switch
+        and churn the cache</a> without adding capacity. A worker sitting in
+        a blocking <code>read</code> is the most expensive thread in the
+        process doing the least work: it carries a run queue nobody is
+        draining.</p>
+
+      <p>A pool thread is the opposite trade. It is a specialist with no
+        queue, no wakers, no fairness duties: born on demand, parked in the
+        kernel for seconds at a time, retired after 10 idle seconds. It is
+        a <a href="../02-concurrency-models/01-thread-pools.html">thread
+        pool from Part 2</a> in its plainest form, and that plainness is the
+        compliment. The split keeps each population shaped for its
+        workload: a few smart lanes for millions of tiny tasks, a dumb and
+        patient army for a few long sleeps.</p>
+
+      <h2>Choosing, in one breath</h2>
+
+      <ul>
+        <li>There is an await-ready API for it (sockets, timers, async
+          libraries)? Use it; that is what the drivers are for.</li>
+        <li>It must block (files, DNS, a synchronous client, a long CPU
+          loop)? <code>spawn_blocking</code>, and await the handle.</li>
+        <li>You are on a worker, cannot restructure, and the call is
+          unavoidable? <code>block_in_place</code>, with its fine print
+          read.</li>
+        <li>You are about to hold a std lock or sleep a thread inside async
+          code? Stop; that is the crime this whole page polices.</li>
+      </ul>
+
+      <!-- fs: research/tokio-internals.md §5: max_blocking_threads default 512; KEEP_ALIVE = Duration::from_secs(10); threads spawned on demand -->
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Parking is runtime-controlled idling; blocking is a
+            kernel-controlled nap. Workers may do the first and must never
+            do the second.</li>
+          <li><code>spawn_blocking</code> exiles blocking closures to a
+            separate pool of plain OS threads: 512 by default, spawned on
+            demand, retired after 10 idle seconds, one blocking call
+            each.</li>
+          <li>A blocking closure cannot be stopped once started, and
+            runtime shutdown waits for started ones; keep them short or
+            make them check a flag.</li>
+          <li><code>block_in_place</code> hands the worker’s whole core to
+            a fresh OS thread and runs the closure in place; multi-thread
+            runtime only, and sibling awaits in the same task stall until
+            it returns.</li>
+          <li>The pool is deliberately dumb, the plainest thread pool from
+            Part 2, because dumb is exactly right for work whose only
+            requirement is a thread that is allowed to sleep.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

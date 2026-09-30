@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The full-circle mental model — Under the Await</title>
+  <meta name="description" content="The whole book in one diagram: how an .await becomes a poll, a Pending parks a task, epoll or the timing wheel fires a wake, a worker adopts the task, and Ready resumes your code.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p05-06">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>The full-circle mental model</h1>
+
+      <p>Five parts ago, the question was why one connection per
+        thread dies at ten thousand connections, and what could
+        possibly replace it. You have since built the answer from
+        the kernel up: syscalls, readiness, state machines, wakers,
+        workers, drivers, channels. This page puts the whole thing
+        back together in one diagram and one loop, so that the next
+        time you stare at a hung <code>.await</code>, you can walk it
+        yourself, station by station, and know exactly which piece
+        to suspect.</p>
+
+      <h2>The loop</h2>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 700 440" role="img">
+          <title>Full circle: an await becomes a poll; Pending parks the task with a stashed waker; a packet or a deadline fires epoll or the timing wheel; the wake pushes the task onto a run queue; a worker adopts it and polls again; Ready resumes your code</title>
+          <ellipse class="lane" cx="350" cy="230" rx="225" ry="150"/>
+          <text class="label accent" x="350" y="225" text-anchor="middle">one lap per Pending</text>
+          <text class="label muted" x="350" y="247" text-anchor="middle">Ready leaves the circle</text>
+
+          <rect class="box" x="300" y="63" width="100" height="34" rx="8"/>
+          <text class="label" x="350" y="84" text-anchor="middle">poll</text>
+          <text class="label mono muted" x="350" y="112" text-anchor="middle">p03-02</text>
+
+          <rect class="box" x="439" y="107" width="142" height="34" rx="8"/>
+          <text class="label" x="510" y="128" text-anchor="middle">Pending + waker</text>
+          <text class="label mono muted" x="510" y="156" text-anchor="middle">p03-03</text>
+
+          <rect class="box" x="520" y="213" width="112" height="34" rx="8"/>
+          <text class="label" x="576" y="234" text-anchor="middle">task parks</text>
+          <text class="label mono muted" x="608" y="262" text-anchor="middle">p04-02</text>
+
+          <rect class="box" x="429" y="319" width="162" height="34" rx="8"/>
+          <text class="label" x="510" y="340" text-anchor="middle">packet / deadline</text>
+          <text class="label mono muted" x="525" y="375" text-anchor="middle">p01-04 · p04-07</text>
+
+          <rect class="box" x="285" y="363" width="132" height="34" rx="8"/>
+          <text class="label" x="351" y="384" text-anchor="middle">epoll + token</text>
+          <text class="label mono muted" x="351" y="412" text-anchor="middle">p01-06 · p04-05</text>
+
+          <rect class="box" x="106" y="319" width="172" height="34" rx="8"/>
+          <text class="label" x="192" y="340" text-anchor="middle">wake = queue push</text>
+          <text class="label mono muted" x="192" y="368" text-anchor="middle">p04-03</text>
+
+          <rect class="box" x="60" y="213" width="132" height="34" rx="8"/>
+          <text class="label" x="126" y="234" text-anchor="middle">worker adopts</text>
+          <text class="label mono muted" x="90" y="262" text-anchor="middle">p04-01</text>
+
+          <rect class="box accent" x="30" y="30" width="112" height="34" rx="8"/>
+          <text class="label mono" x="86" y="51" text-anchor="middle">your .await</text>
+          <text class="label mono muted" x="86" y="79" text-anchor="middle">p03-05</text>
+          <line class="arrow" x1="142" y1="47" x2="293" y2="72"/>
+          <polygon class="arrow-head" points="288,68 299,74 286,77"/>
+
+          <rect class="box accent" x="560" y="30" width="130" height="34" rx="8"/>
+          <text class="label mono" x="625" y="51" text-anchor="middle">code continues</text>
+          <line class="arrow" x1="400" y1="78" x2="553" y2="53"/>
+          <polygon class="arrow-head" points="545,50 558,52 547,58"/>
+          <text class="label accent mono" x="470" y="55" text-anchor="middle">Ready</text>
+
+          <line class="arrow" x1="396" y1="94" x2="433" y2="110"/>
+          <polygon class="arrow-head" points="428,103 437,112 424,111"/>
+          <line class="arrow" x1="575" y1="141" x2="575" y2="206"/>
+          <polygon class="arrow-head" points="570,198 575,210 580,198"/>
+          <line class="arrow" x1="545" y1="248" x2="544" y2="310"/>
+          <polygon class="arrow-head" points="539,303 544,314 549,303"/>
+          <line class="arrow" x1="455" y1="353" x2="397" y2="361"/>
+          <polygon class="arrow-head" points="405,356 393,362 406,365"/>
+          <line class="arrow" x1="283" y1="381" x2="275" y2="358"/>
+          <polygon class="arrow-head" points="282,364 274,355 273,367"/>
+          <line class="arrow" x1="165" y1="317" x2="165" y2="254"/>
+          <polygon class="arrow-head" points="160,258 165,250 170,258"/>
+          <line class="arrow" x1="150" y1="210" x2="287" y2="106"/>
+          <polygon class="arrow-head" points="297,99 290,110 285,103"/>
+        </svg>
+        <figcaption>Figure 1: every wait you will ever write. Your
+          code enters at the top left, and either comes back out at
+          the top right with a value, or takes another lap around
+          the circle. The tags name the page that owns each
+          station.</figcaption>
+      </figure>
+
+      <h2>The loop, narrated</h2>
+
+      <ol>
+        <li><strong>Your code awaits.</strong> The compiler already
+          turned the surrounding async function into a state machine,
+          and the await is the seam where it hands control away:
+          <a href="../03-rust-async/05-async-await-desugaring.html">the
+          desugaring</a> made poll out of your straight-line
+          code.</li>
+        <li><strong>Something polls it.</strong> At the very start
+          that something is
+          <a href="01-boot-sequence.html">block_on</a>; after the
+          first spawn it is a worker. Poll runs your code
+          synchronously until it reaches a wait:
+          <a href="../03-rust-async/02-future-trait.html">the
+          Future contract</a>.</li>
+        <li><strong>The wait is not ready.</strong> The future stashes
+          the waker that came with this poll, returns Pending, and
+          control flows back out to the executor:
+          <a href="../03-rust-async/03-waker-and-context.html">the
+          waker is the whole callback</a>, owned by the caller
+          instead of escaped into.</li>
+        <li><strong>The task parks.</strong> The state machine, boxed
+          and pinned on the heap, sits in no run queue at all; only
+          the driver's waiter lists remember it exists:
+          <a href="../04-tokio-internals/02-task-anatomy.html">task
+          anatomy</a>.</li>
+        <li><strong>The world moves.</strong> A packet lands in a
+          socket buffer somewhere in the kernel, or a deadline
+          expires inside the
+          <a href="../04-tokio-internals/07-time-driver.html">timing
+          wheel</a>; either way, something now knows what your task
+          was waiting to hear.</li>
+        <li><strong>Epoll reports, the token resolves.</strong> The
+          driver's single
+          <a href="../01-foundations/06-io-multiplexing-readiness.html">readiness
+          call</a> returns the ready file descriptor, and the
+          <a href="../04-tokio-internals/05-io-driver.html">token
+          maps it to the waker</a> stashed in step three.</li>
+        <li><strong>Wake means queue.</strong> The waker pushes the
+          task onto a run queue, a
+          <a href="../04-tokio-internals/03-scheduler.html">pointer
+          and nothing more</a>; that is all a wake has ever
+          been.</li>
+        <li><strong>A worker adopts and polls again.</strong> Through
+          the LIFO slot, the inject queue, or a steal from a
+          neighboring worker:
+          <a href="../04-tokio-internals/01-runtime-overview.html">the
+          runtime</a> closes the loop. This poll returns Ready and
+          your code exits at the top right, or Pending and the lap
+          begins again.</li>
+      </ol>
+
+      <h2>Five parts, one machine</h2>
+
+      <p><strong>Part 1 was the kernel half.</strong> Programs are
+        processes running
+        <a href="../01-foundations/01-how-programs-run.html">instructions
+        in user space</a>; threads are the kernel's unit of
+        execution, expensive in
+        <a href="../01-foundations/02-processes-threads-context-switches.html">stacks
+        and context switches</a>; input and output are
+        <a href="../01-foundations/03-syscalls-and-file-descriptors.html">syscalls
+        on file descriptors</a>; blocking on them
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">parks
+        a whole thread per waiter</a>; and readiness, EAGAIN plus
+        epoll, is the kernel's escape hatch from that arithmetic.</p>
+
+      <p><strong>Part 2 was the strategy half.</strong> Thread pools
+        recycle blockers but cannot manufacture concurrency;
+        callbacks and event loops scale but
+        <a href="../02-concurrency-models/02-callbacks-and-event-loops.html">tangle
+        control flow</a>; green threads buy ergonomics with stacks;
+        <a href="../02-concurrency-models/04-stackless-coroutines.html">stackless
+        coroutines</a> keep the ergonomics and drop the stacks; and
+        <a href="../02-concurrency-models/05-cooperative-scheduling.html">cooperative
+        scheduling</a> makes yielding the program's job, which is
+        exactly what await became.</p>
+
+      <p><strong>Part 3 was the language half.</strong> Rust made
+        await a return: a future is a poll-me state machine, the
+        waker is the callback reborn under executor control,
+        <a href="../03-rust-async/06-pin.html">Pin</a> keeps
+        self-referential state machines valid across those returns,
+        and fifty lines in
+        <a href="../03-rust-async/07-mini-executor.html">a mini
+        executor</a> proved the whole contract runs without any
+        runtime at all.</p>
+
+      <p><strong>Part 4 was the industrial half.</strong> Tokio wraps
+        epoll in a driver, futures in boxed tasks, and tasks in
+        workers with budgets, LIFO slots, and stealing; gives
+        blocking work a
+        <a href="../04-tokio-internals/04-blocking-pool.html">pool
+        of its own</a>; arms sleeps in a
+        <a href="../04-tokio-internals/07-time-driver.html">wheel</a>;
+        makes channels and
+        <a href="../04-tokio-internals/08-sync-primitives.html">locks
+        that park tasks</a> instead of threads; and defines
+        cancellation as
+        <a href="../04-tokio-internals/09-cancellation-and-select.html">an
+        ordinary drop</a> with rules you must respect.</p>
+
+      <p><strong>Part 5 was the practice half.</strong> The
+        <a href="01-boot-sequence.html">boot sequence</a> showed the
+        machine assembling itself; the
+        <a href="02-echo-server.html">echo server</a> showed every
+        await walking into it; the
+        <a href="03-join-select-timeout.html">combinators</a> showed
+        concurrency without tasks; the
+        <a href="04-pipelines-and-channels.html">pipelines</a>
+        showed tasks talking through bounded channels; and the
+        <a href="05-pitfalls.html">pitfalls</a> showed the five ways
+        the machine bites back when its rules are ignored.</p>
+
+      <h2>Walking a hung await</h2>
+
+      <p>The loop is not just a summary; it is a debugging protocol.
+        When a task never wakes, walk the circle and ask one
+        question per station. Was the future polled at all: is the
+        task in any queue, and did whoever spawned it keep it
+        alive? Did the poll reach the wait and stash the waker, or
+        did it panic or bail with an error before registering
+        interest anywhere? Did the world move: did the packet
+        actually arrive, the deadline actually pass? Did the wake
+        fire: does the token resolve to the waker that was stashed,
+        or did a losing select branch drop the interest on its way
+        out? Did the queue move: is a worker wedged inside a
+        blocking call, the first sin from the pitfalls page, or
+        starved by a task that refuses to yield? And did the
+        resumed poll finish, or is it looping on Pending because
+        the readiness it wanted was consumed by a racing branch?
+        Every async hang you will ever debug is one of those
+        stations failing, and every station has a chapter in this
+        book.</p>
+
+      <h2>What you actually saved</h2>
+
+      <p>Here is the answer to Part 1's question, properly stated.
+        Async did not remove the syscall: epoll still runs, packets
+        still cross the kernel boundary, and a read still ends in a
+        read. What async removed is the <em>waiter</em>. A parked
+        thread costs its full stack, 8 MB of reserved address space
+        by default on Linux, plus a kernel wait queue entry and a
+        context switch to return to it.
+        <!-- fs: research/os-io-primitives.md §1 — Linux default thread stack 8 MiB virtual -->
+        A parked task costs a few hundred bytes of heap and one
+        waker on a list. Ten thousand waiters stop being ten
+        thousand allocations of a scarce kernel resource and become
+        ten thousand cheap heap objects, invisible until the moment
+        their reason arrives. Concurrency stopped being a resource
+        you allocate and became a property of how you wait; that is
+        the entire dividend, and every page of this book was an
+        inventory of how it gets paid out.</p>
+
+      <p>The honesty clause: none of this is free. Every task is a
+        heap allocation, every lap around the circle is a poll,
+        every wake is a queue push and a scheduling decision, and
+        the combinators and channels add their own state machines
+        to yours. The machinery pays its way when waiters outnumber
+        cores by a wide margin; for a handful of long-running
+        blocking jobs, plain threads remain simpler, cheaper to
+        reason about, and fully supported by the same runtime
+        through the blocking pool. The mental model is not a
+        religion; it is a cost table. You now know what each kind
+        of waiting costs, where the cost is paid, and who pays it,
+        which was the point of walking under the await in the
+        first place.</p>
+
+      <h2>Further reading</h2>
+
+      <ul>
+        <li>The <a href="https:&#47;&#47;docs.rs/tokio/latest/tokio/runtime/">tokio::runtime
+          module documentation</a>, for the builder knobs and
+          shutdown semantics this book walked past.</li>
+        <li>The <a href="https:&#47;&#47;tokio.rs/blog/2019-10-scheduler/">Tokio
+          scheduler retrospective</a>, where the runtime team
+          explains the LIFO slot, budgets, and steal-half design in
+          their own words.</li>
+        <li>The <a href="https:&#47;&#47;github.com/tokio-rs/mio">mio
+          repository</a>, the thin readiness layer Tokio's I/O
+          driver stands on.</li>
+        <li><a href="http:&#47;&#47;www.kegel.com/c10k.html">The C10K
+          problem</a>, the 1999 page that named the arithmetic
+          Part 1 opened with.</li>
+        <li><a href="https:&#47;&#47;rust-lang.github.io/async-book/">Asynchronous
+          Programming in Rust</a>, the official book, for the
+          language-level details this book compressed.</li>
+      </ul>
+
+      <p>The next time a program of yours serves ten thousand
+        connections on a handful of threads, or times out a thousand
+        operations with one wheel, or shuts down a pipeline by
+        dropping a sender, you will not need this book: you will
+        need the loop. Follow the await into the poll, watch it
+        stash the waker and park, wait for the world to move, and
+        meet it again when a worker picks it up. Under every await
+        you ever write, the machine is doing exactly this, and
+        nothing else, until there is a reason.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>An <code>.await</code> is a poll that returned
+            Pending: the desugaring made poll out of your
+            straight-line code, and the await is the seam where it
+            hands control away.</li>
+          <li>The waker stashed with that poll is the resume
+            callback, the whole callback, owned by the caller
+            instead of escaped into.</li>
+          <li>Readiness arrives as an epoll event or a timing-wheel
+            tick: a packet lands or a deadline expires, and the
+            token maps it back to the stashed waker.</li>
+          <li>A wake is a queue push, a pointer and nothing more;
+            that is all a wake has ever been, and it hands the
+            parked task back to the scheduler's queues.</li>
+          <li>A worker adopts the task and polls again until Ready,
+            one lap per Pending: five parts, one machine, and under
+            every await you ever write the machine is doing exactly
+            this, and nothing else, until there is a reason.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Tokio runtime: an overview — Under the Await</title>
+  <meta name="description" content="The map of the whole Tokio runtime: worker threads, run queues, the inject queue, extra threads for blocking work, and the drivers, in one picture.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p04-01">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>The Tokio runtime: an overview</h1>
+
+      <p>Part 3 ended with you building an <a href="../03-rust-async/07-mini-executor.html">executor</a>
+        in about sixty lines of standard Rust. It polled a future, parked the
+        thread when the future said “not yet,” and woke up when the
+        <a href="../03-rust-async/03-waker-and-context.html">waker</a> fired.
+        It worked. It was also, deliberately, a toy: one thread, no sockets, no
+        timers, and fairness only if every future behaved. Point it at a real
+        server with ten thousand connections and it falls over in the first
+        minute.</p>
+
+      <p>Tokio is that same idea scaled up until it stops being a demo and
+        starts being infrastructure. This part of the book takes the machine
+        apart, bolt by bolt. This page is the map: every piece in one picture,
+        each piece named once, each with a pointer to the page that opens it.
+        Everything described here is Tokio 1.x, the line the Rust ecosystem has
+        converged on, and every number on the following pages was read out of
+        the runtime’s source, not out of a blog post’s memory.</p>
+
+      <h2>What “runtime” means</h2>
+
+      <p>Rust’s standard library ships the primitive and not the machine, as
+        <a href="../03-rust-async/08-why-stackless.html">Part 3’s closing page</a>
+        argued: <code>Future</code> exists in std, but nothing in std will poll
+        it for you. A <strong>runtime</strong> is the machine you add. It is
+        the whole bundle of threads, queues, and bookkeeping that sits between
+        “here is a future” and “that future finished.” When people say “the
+        Tokio runtime,” they mean, concretely:</p>
+
+      <ul>
+        <li>a small set of <strong>worker threads</strong>, each polling futures
+          in a tight loop;</li>
+        <li>the <strong>queues</strong> those workers pull from: one private
+          run queue per worker, plus one shared inject queue;</li>
+        <li>a <strong>pool of extra plain threads</strong> for work that must
+          never be allowed to stall a worker;</li>
+        <li>two <strong>drivers</strong> that talk to the kernel about sockets
+          and about time, and hand woken futures back to the queues.</li>
+      </ul>
+
+      <p>That is the entire cast. The rest of this part is character studies.</p>
+
+      <h2>What the attribute builds</h2>
+
+      <p>You normally meet all of this through one attribute:</p>
+
+      <pre><code class="language-rust">#[tokio::main]
+async fn main() {
+    println!("hello from inside a runtime");
+}</code></pre>
+
+      <p>The attribute is a thin wrapper. It builds a runtime, hands your
+        <code>main</code> future to it, and calls <code>block_on</code>
+        (the trick you wrote by hand in
+        <a href="../03-rust-async/07-mini-executor.html">Part 3</a>) so the
+        program’s original thread sleeps until <code>main</code> finishes.
+        Which thread gets created first, which driver gets armed when, and
+        what exactly happens before the first line of your code runs: that
+        sequence deserves a page of its own, and Part 5
+        <a href="../05-walkthroughs/01-boot-sequence.html">opens with it</a>.
+        Here we care about what exists, not the order it arrives in.</p>
+
+      <h2>The map</h2>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 350" role="img">
+          <title>The Tokio runtime map: three workers with private run queues, a global inject queue, steal arrows, a blocking pool, and two drivers underneath</title>
+
+          <!-- worker rows (lanes) -->
+          <line class="lane" x1="16" y1="92" x2="624" y2="92"/>
+          <line class="lane" x1="16" y1="152" x2="624" y2="152"/>
+          <line class="lane" x1="16" y1="212" x2="624" y2="212"/>
+
+          <!-- worker 0 -->
+          <rect class="box" x="24" y="44" width="104" height="40" rx="8"/>
+          <text class="label" x="76" y="62" text-anchor="middle">worker 0</text>
+          <text class="label muted" x="76" y="77" text-anchor="middle">OS thread</text>
+          <rect class="box" x="150" y="44" width="130" height="40" rx="8"/>
+          <text class="label" x="215" y="62" text-anchor="middle">run queue</text>
+          <text class="label muted" x="215" y="77" text-anchor="middle">capacity 256</text>
+          <line class="arrow" x1="150" y1="64" x2="138" y2="64"/>
+          <polygon class="arrow-head" points="130,64 142,59 142,69"/>
+
+          <!-- worker 1 -->
+          <rect class="box" x="24" y="104" width="104" height="40" rx="8"/>
+          <text class="label" x="76" y="122" text-anchor="middle">worker 1</text>
+          <text class="label muted" x="76" y="137" text-anchor="middle">OS thread</text>
+          <rect class="box" x="150" y="104" width="130" height="40" rx="8"/>
+          <text class="label" x="215" y="122" text-anchor="middle">run queue</text>
+          <text class="label muted" x="215" y="137" text-anchor="middle">capacity 256</text>
+          <line class="arrow" x1="150" y1="124" x2="138" y2="124"/>
+          <polygon class="arrow-head" points="130,124 142,119 142,129"/>
+
+          <!-- worker 2 -->
+          <rect class="box" x="24" y="164" width="104" height="40" rx="8"/>
+          <text class="label" x="76" y="182" text-anchor="middle">worker 2</text>
+          <text class="label muted" x="76" y="197" text-anchor="middle">OS thread</text>
+          <rect class="box" x="150" y="164" width="130" height="40" rx="8"/>
+          <text class="label" x="215" y="182" text-anchor="middle">run queue</text>
+          <text class="label muted" x="215" y="197" text-anchor="middle">capacity 256</text>
+          <line class="arrow" x1="150" y1="184" x2="138" y2="184"/>
+          <polygon class="arrow-head" points="130,184 142,179 142,189"/>
+
+          <!-- steal arrows between rows -->
+          <line class="arrow accent" x1="300" y1="86" x2="300" y2="96"/>
+          <polygon class="arrow-head accent" points="300,104 294,92 306,92"/>
+          <line class="arrow accent" x1="300" y1="146" x2="300" y2="156"/>
+          <polygon class="arrow-head accent" points="300,164 294,152 306,152"/>
+          <text class="label accent" x="310" y="128">steal half</text>
+
+          <!-- global inject queue -->
+          <rect class="box" x="420" y="104" width="190" height="64" rx="8"/>
+          <text class="label" x="515" y="126" text-anchor="middle">global inject queue</text>
+          <text class="label muted" x="515" y="144" text-anchor="middle">entry from any thread</text>
+          <text class="label muted" x="515" y="160" text-anchor="middle">plus overflow</text>
+
+          <!-- overflow path: queue 0 right edge, up and over into inject -->
+          <path class="arrow" d="M 284 56 H 470 V 92" fill="none"/>
+          <polygon class="arrow-head" points="470,104 464,92 476,92"/>
+          <text class="label muted" x="356" y="48" text-anchor="middle">overflow</text>
+
+          <!-- adopt path: inject left edge into queue 1 -->
+          <line class="arrow" x1="420" y1="140" x2="300" y2="140"/>
+          <polygon class="arrow-head" points="290,140 302,135 302,145"/>
+          <text class="label muted" x="352" y="160" text-anchor="middle">adopt</text>
+
+          <!-- drivers -->
+          <rect class="box" x="24" y="252" width="148" height="44" rx="8"/>
+          <text class="label" x="98" y="270" text-anchor="middle">I/O driver</text>
+          <text class="label muted" x="98" y="286" text-anchor="middle">sockets · epoll</text>
+          <rect class="box" x="192" y="252" width="148" height="44" rx="8"/>
+          <text class="label" x="266" y="270" text-anchor="middle">time driver</text>
+          <text class="label muted" x="266" y="286" text-anchor="middle">timers · sleeps</text>
+
+          <!-- park arrow: worker 2 down into the I/O driver -->
+          <line class="arrow" x1="76" y1="204" x2="76" y2="244"/>
+          <polygon class="arrow-head" points="76,252 70,240 82,240"/>
+          <text class="label muted" x="86" y="232">park when idle</text>
+
+          <!-- wake arrows: drivers up into queue 2 -->
+          <line class="arrow accent" x1="160" y1="252" x2="160" y2="212"/>
+          <polygon class="arrow-head accent" points="160,204 154,216 166,216"/>
+          <line class="arrow accent" x1="260" y1="252" x2="260" y2="212"/>
+          <polygon class="arrow-head accent" points="260,204 254,216 266,216"/>
+          <text class="label accent" x="210" y="238" text-anchor="middle">wake</text>
+
+          <!-- blocking pool -->
+          <rect class="box" x="420" y="252" width="190" height="80" rx="8"/>
+          <text class="label" x="515" y="274" text-anchor="middle">blocking pool</text>
+          <text class="label muted" x="515" y="292" text-anchor="middle">plain OS threads</text>
+          <text class="label muted" x="515" y="308" text-anchor="middle">one blocking call each</text>
+          <text class="label muted" x="515" y="324" text-anchor="middle">spawned on demand</text>
+
+          <!-- pool threads submit futures via inject -->
+          <line class="arrow" x1="515" y1="252" x2="515" y2="186"/>
+          <polygon class="arrow-head" points="515,176 509,188 521,188"/>
+          <text class="label muted" x="525" y="206">futures from</text>
+          <text class="label muted" x="525" y="222">any thread</text>
+        </svg>
+        <figcaption>Figure 1. The whole machine: workers with private run
+          queues, a shared inject queue, steal arrows between busy and idle
+          workers, extra threads for blocking work, and two drivers. Every box
+          gets its own page in this part.</figcaption>
+      </figure>
+
+      <h3>The workers</h3>
+
+      <p>A worker is an ordinary OS thread
+        (<a href="../01-foundations/02-processes-threads-context-switches.html">Part 1</a>
+        defined threads) running a very tight loop: take a future off a queue,
+        <a href="../03-rust-async/02-future-trait.html">poll</a> it, repeat.
+        The default runtime creates one worker per CPU core, all of them at
+        startup. <!-- fs: research/tokio-internals.md §1: fixed worker threads, one per CPU core by default, all created at startup (worker.rs module doc) -->
+        Each worker owns exactly one thing of value: its private run queue,
+        the concept <a href="../02-concurrency-models/05-cooperative-scheduling.html">Part 2</a>
+        named when it talked about cooperative scheduling. Everything else a
+        worker touches, it shares politely or steals boldly.</p>
+
+      <p><!-- term-ok: scheduler — named and defined in preview here; full rulebook on p04-03 -->
+        Workers, their queues, and the rules that decide who runs what and
+        when are together called the <strong>scheduler</strong>. Its full
+        rulebook, including the order a worker searches for work and the
+        fairness arithmetic that keeps any single future from hogging a core,
+        is <a href="03-scheduler.html">page three of this part</a>.</p>
+
+      <h3>The queues</h3>
+
+      <p>Futures wait in queues; workers drain them. There are two tiers. Each
+        worker’s local run queue is a fixed ring with room for 256 futures,
+        lock-free for its own worker to push to. <!-- fs: research/tokio-internals.md §1: LOCAL_QUEUE_CAPACITY = 256, queue.rs at HEAD e37e284 -->
+        The single global inject queue accepts submissions from anywhere: the
+        main thread, the extra threads below, anywhere that is not a worker.
+        It also catches the overflow when a local ring fills up. Idle workers
+        check the inject queue on a cadence and steal from busy siblings,
+        taking half a victim’s queue in one heist. None of this is new
+        machinery: <a href="../02-concurrency-models/05-cooperative-scheduling.html">page
+        five of Part 2</a> described run queues and work stealing in general;
+        Tokio’s exact numbers and search order are page three’s job here.</p>
+
+      <h3>The pool for work that must not touch a worker</h3>
+
+      <p>Some work cannot cooperate, ever. A file read that sleeps in the
+        kernel, a DNS lookup, a hashing loop that runs for three seconds: if a
+        worker did any of that, every future in its queue would freeze behind
+        it, and <a href="../01-foundations/04-blocking-io-and-c10k.html">Part 1</a>
+        already showed you what parked threads cost at scale. So the runtime
+        keeps a <strong>blocking pool</strong>: a separate set of plain OS
+        threads, created on demand, for exactly that work. It is deliberately
+        dumb, a <a href="../02-concurrency-models/01-thread-pools.html">thread
+        pool from Part 2</a> wearing a name tag, and that simplicity is the
+        point. <a href="04-blocking-pool.html">Page four</a> covers it, along
+        with the one law it exists to enforce: a worker must never sleep in
+        the kernel.</p>
+
+      <h3>The drivers</h3>
+
+      <p>A <strong>driver</strong> is the runtime’s ambassador to one source
+        of events outside the process. Two ship by default, and both end the
+        same way: something in the kernel says “now,” and the driver turns
+        that into a waker call, putting a waiting future back into a queue.</p>
+
+      <p><!-- term-ok: I/O driver — map-page preview, generic "driver" defined above; full treatment on p04-05 -->
+        The <strong>I/O driver</strong> registers every socket with epoll (or
+        kqueue on macOS), the readiness machinery you wrestled with in
+        <a href="../01-foundations/06-io-multiplexing-readiness.html">Part 1’s
+        multiplexing page</a>. Bytes arrive, epoll reports the socket, the
+        waiting future is woken. It is the reactor pattern from
+        <a href="../02-concurrency-models/02-callbacks-and-event-loops.html">Part 2</a>,
+        minus callbacks, plus wakers. <a href="05-io-driver.html">Page five</a>
+        dissects it; <a href="06-tcpstream-trace.html">page six</a> then
+        traces a single socket read through it, hop by hop, until bytes land
+        in your buffer.</p>
+
+      <p><!-- term-ok: time driver — map-page preview, generic "driver" defined above; full treatment on p04-07 -->
+        The <strong>time driver</strong> does the same job for clocks. Sleeps
+        and deadlines are futures too, and something has to remember when they
+        are due without burning a thread or a sorted-list scan on every check.
+        <a href="07-time-driver.html">Page seven</a> shows the wheel it uses.</p>
+
+      <p>Notice the arrows in the map: idle workers park inside the drivers.
+        A worker with nothing to do does not spin
+        (<a href="../01-foundations/05-nonblocking-io.html">the busy-poll trap</a>)
+        and does not exit; it goes to sleep inside epoll, and the kernel
+        itself wakes it when a socket speaks or a timer comes due. Parked is
+        not parked the way Part 1 meant it: the runtime holds the leash and
+        can shake it awake at any queue push.</p>
+
+      <p>Two more pages finish the part, and both are about what flows
+        through this machine rather than the machine itself.
+        <a href="08-sync-primitives.html">Page eight</a> covers the
+        synchronization primitives that wait by parking the future instead of
+        the thread. <a href="09-cancellation-and-select.html">Page nine</a>
+        covers what happens when a future is simply never polled again.</p>
+
+      <h2>Where Part 3 plugs in</h2>
+
+      <p>Nothing you learned in Part 3 is wasted here; all of it is load
+        bearing. The map above is your Part 3 vocabulary, distributed across
+        threads:</p>
+
+      <ul>
+        <li>Your <code>async fn</code> is still a
+          <a href="../03-rust-async/05-async-await-desugaring.html">state-machine
+          enum</a> the compiler wrote. That enum, and nothing else, is what
+          the runtime stores.</li>
+        <li>Once queued, a future must not move, because it may point into
+          itself: <a href="../03-rust-async/06-pin.html">Pin</a> is why the
+          runtime stores futures as pinned heap allocations. The wrapper
+          that makes that true is the very next page.</li>
+        <li><a href="../03-rust-async/03-waker-and-context.html">Wakers</a>
+          are the doors back into the machine. Every “wake” in the diagram is
+          a waker call whose only job is to get one future back into one
+          queue.</li>
+        <li>The <a href="../03-rust-async/07-mini-executor.html">mini
+          executor’s loop</a> is the worker loop, minus stealing, minus
+          drivers, minus fairness.</li>
+        <li>epoll, which you drove by hand in
+          <a href="../01-foundations/06-io-multiplexing-readiness.html">C</a>,
+          sits under the drivers unchanged. Tokio adds bookkeeping on top,
+          not a new kernel.</li>
+      </ul>
+
+      <h2>Two flavors</h2>
+
+      <p>Everything above describes the multi-thread flavor, the default. The
+        current-thread flavor runs the same queues and drivers on exactly one
+        worker: no siblings to steal from, and the worker-conversion trick
+        from page four is not available there. You opt into either through
+        the builder, which is also where the knobs live:</p>
+
+      <pre><code class="language-rust">use tokio::runtime::Builder;
+
+let rt = Builder::new_multi_thread()
+    .worker_threads(4) // default: one per CPU core
+    .enable_all()      // arm the I/O driver and the time driver
+    .build()?;</code></pre>
+
+      <p>The numbers behind those knobs, and when a smaller runtime is the
+        right call, come up on page three of this part and again during
+        <a href="../05-walkthroughs/01-boot-sequence.html">the boot sequence</a>.
+        What matters on this page is only the shape: a handful of smart
+        threads for millions of tiny futures, a pile of dumb ones for a few
+        long sleeps, and two drivers keeping the kernel’s news flowing. Hold
+        that picture; the next six pages zoom into it.</p>
+
+      <!-- fs: research/tokio-internals.md §1: LOCAL_QUEUE_CAPACITY = 256, queue.rs at HEAD e37e284 -->
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A runtime is workers, queues, extra threads for blocking work,
+            and two drivers; the rules that tie workers and queues together
+            are page three’s subject.</li>
+          <li>Workers are plain OS threads, one per core by default, each
+            draining a private 256-slot run queue; a global inject queue
+            takes work from any other thread.</li>
+          <li>Idle workers steal half a busy sibling’s queue and, when all is
+            quiet, park inside the drivers so the kernel can wake
+            them.</li>
+          <li>Work that cannot cooperate (files, DNS, long CPU loops) is
+            exiled to a separate pool of plain threads; workers never sleep
+            in the kernel.</li>
+          <li>Everything from Part 3 is still here: poll, wakers, Pin, and
+            epoll, just distributed across threads.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

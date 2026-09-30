@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Component Showcase — LLM Internals</title>
+<script>
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="style.css">
+<style>
+  /* QA-harness-only layout helpers; all color through design tokens */
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin: 24px 0; }
+  .sw { border: 1px solid var(--border); border-radius: var(--r3); overflow: hidden; background: var(--surface); }
+  .sw .chip { height: 56px; }
+  .sw .lbl { font-family: var(--font-mono); font-size: 0.72rem; padding: 6px 10px; color: var(--ink-2); }
+  .inkrow { display: flex; align-items: baseline; gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .inkrow .lbl { font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-3); width: 90px; flex: none; }
+  /* replicates the site's active-nav rule so the state is visible here */
+  body[data-page='showcase'] .site-nav a[href='#s-type'] { color: var(--ink); font-weight: 510; border-left-color: var(--accent); }
+</style>
+</head>
+<body data-page="showcase" id="top">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="#top">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Showcase sections">
+  <p class="nav-group">Foundations</p>
+  <a href="#s-type">Typography</a>
+  <a href="#s-color">Color</a>
+  <a href="#s-links">Links and citations</a>
+  <p class="nav-group">Content</p>
+  <a href="#s-code">Code</a>
+  <a href="#s-panels">Panels</a>
+  <a href="#s-figures">Figures</a>
+  <p class="nav-group">Data</p>
+  <a href="#s-math">Math and tables</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">QA harness — not a reading page</p>
+    <h1>Component Showcase</h1>
+    <p class="lede">Every primitive in the design system, rendered in both
+    themes. Use the round button in the top bar to toggle the theme; below a
+    1120-pixel-wide viewport the hamburger opens the drawer.</p>
+
+    <section id="s-type">
+      <h2>Typography</h2>
+      <h3>Heading three in the body face</h3>
+      <p>Body prose at seventeen pixels with a sixty-five percent line height
+      ratio. <strong>Strong text uses weight 590.</strong> <em>Emphasis
+      leans italic.</em> <small>Small print drops to fourteen pixels.</small>
+      Inline code reads like <code>attn(x)</code> and keyboard hints like
+      <kbd>Esc</kbd>. Prose links keep the accent color and an offset
+      underline, as in this link back to <a href="#s-type">Typography</a>.</p>
+      <p class="lede">The lede paragraph sits at 1.15rem in ink-2 and caps
+      its measure narrower than body prose.</p>
+      <p class="caption">Caption — mono, uppercase, tracked</p>
+      <p>Numbers in prose keep spaced units: 128 KiB, 175 billion,
+      3.15 × 10<sup>23</sup>.</p>
+    </section>
+
+    <section id="s-color">
+      <h2>Color</h2>
+      <p>Surface tones and the four semantic washes. Every chip uses a token;
+      flip the theme to check both sets.</p>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background: var(--bg)"></div><div class="lbl">bg</div></div>
+        <div class="sw"><div class="chip" style="background: var(--surface); border-bottom: 1px solid var(--border)"></div><div class="lbl">surface</div></div>
+        <div class="sw"><div class="chip" style="background: var(--surface-2)"></div><div class="lbl">surface-2</div></div>
+        <div class="sw"><div class="chip" style="background: var(--code-bg)"></div><div class="lbl">code-bg</div></div>
+        <div class="sw"><div class="chip" style="background: var(--accent)"></div><div class="lbl">accent</div></div>
+        <div class="sw"><div class="chip" style="background: var(--accent-wash)"></div><div class="lbl">accent-wash</div></div>
+        <div class="sw"><div class="chip" style="background: var(--w-red)"></div><div class="lbl">w-red (warning)</div></div>
+        <div class="sw"><div class="chip" style="background: var(--w-blue)"></div><div class="lbl">w-blue (note)</div></div>
+        <div class="sw"><div class="chip" style="background: var(--w-green)"></div><div class="lbl">w-green (takeaways)</div></div>
+        <div class="sw"><div class="chip" style="background: var(--w-yellow)"></div><div class="lbl">w-yellow (worked)</div></div>
+      </div>
+      <div class="inkrow"><span class="lbl">ink</span><span>The quick brown fox reads inference benchmarks.</span></div>
+      <div class="inkrow"><span class="lbl">ink-2</span><span style="color: var(--ink-2)">The quick brown fox reads inference benchmarks.</span></div>
+      <div class="inkrow"><span class="lbl">ink-3</span><span style="color: var(--ink-3)">The quick brown fox reads inference benchmarks.</span></div>
+      <div class="inkrow"><span class="lbl">accent</span><span style="color: var(--accent)">The quick brown fox reads inference benchmarks.</span></div>
+    </section>
+
+    <section id="s-links">
+      <h2>Links and citations</h2>
+      <p>Prose links carry the accent; a citation mark rides superscript in
+      mono at 0.72 em and names its source on hover<a class="prov" data-src="../research/gpus.md" href="#s-links" title="gpus — research/gpus.md">[gpus]</a>.
+      A defined term gets a dotted underline in accent-strong, like
+      <dfn><a href="#s-links">this one</a></dfn>, and keeps its plain look
+      after first use.</p>
+      <p>Tag pills mark part labels only:
+      <span class="tag">Part Two</span>
+      <span class="tag-green">Reference</span>
+      <span class="tag-accent">Accent</span></p>
+    </section>
+
+    <section id="s-code">
+      <h2>Code</h2>
+      <p>Blocks use the code background, a hairline border, and horizontal
+      scrolling with no wraps.</p>
+<pre><code class="language-python">def step(model, ids):
+    logits = model.forward(ids)
+    return logits[-1]</code></pre>
+      <p>Blocks with a filename get a caption strip:</p>
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — attention row</figcaption>
+<pre><code class="language-text">q · k1 = 0.20    q · k2 = 0.90
+exp:       1.22         2.46
+weights:   0.33         0.67</code></pre>
+      </figure>
+    </section>
+
+    <section id="s-panels">
+      <h2>Panels</h2>
+      <div class="note"><span class="cap">Note</span>
+        <p>Notes hold context that helps but can be skipped. Blue wash, blue
+        caption.</p>
+      </div>
+      <div class="warn"><span class="cap">Watch out</span>
+        <p>Warnings flag the mistake readers actually make. Red wash, red
+        caption.</p>
+      </div>
+      <div class="worked">
+        <p class="worked-head">Worked example — hand-checkable arithmetic</p>
+        <div class="worked-body">
+<pre><code class="language-text">inputs   [ 1.0   0.0 ]
+weights  [ 0.5   0.5 ]
+result   [ 0.5   0.0 ]   one multiply and one add per cell</code></pre>
+          <p>Prose lines inside a worked panel also set in mono at 0.85rem.</p>
+        </div>
+      </div>
+      <aside class="takeaways">
+        <h2>Takeaways</h2>
+        <ul>
+          <li>No horizontal overflow at any viewport down to 320 pixels.</li>
+          <li>Wash inks stay readable in both themes; nothing drops below AA.</li>
+          <li>Square bullets carry the accent, and the panel uses the green wash.</li>
+        </ul>
+      </aside>
+    </section>
+
+    <section id="s-figures">
+      <h2>Figures</h2>
+      <p>Diagrams sit in a hairline frame on the surface tone; strokes take
+      currentColor at 1.5 pixels, fills take wash tokens, labels stay inside
+      the viewBox.</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 220"><title>Three boxes in a row connected by arrows</title>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="24" y="48" width="150" height="64" rx="8"/>
+          <text x="99" y="85" text-anchor="middle" font-size="13">token</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M174 80h120"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M288 74l8 6-8 6"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="296" y="48" width="150" height="64" rx="8"/>
+          <text x="371" y="85" text-anchor="middle" font-size="13">vector</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M371 112v28"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M365 134l6 8 6-8"/>
+          <rect class="f-green s-ink" stroke-width="1.5" x="296" y="146" width="150" height="64" rx="8"/>
+          <text x="371" y="183" text-anchor="middle" font-size="13">logits</text>
+          <text class="t-dim" x="24" y="24" font-size="12">diagram label row</text>
+        </svg>
+        <figcaption>One sentence saying what to notice.</figcaption>
+      </figure>
+      <p>Decorative marks carry <code>aria-hidden</code> and no title:</p>
+      <figure>
+        <svg aria-hidden="true" viewBox="0 0 640 24" style="max-height: 24px">
+          <rect class="f-accent" x="0" y="8" width="8" height="8" rx="2"/>
+          <rect class="f-blue" x="16" y="8" width="8" height="8" rx="2"/>
+          <rect class="f-green" x="32" y="8" width="8" height="8" rx="2"/>
+          <rect class="f-yellow" x="48" y="8" width="8" height="8" rx="2"/>
+        </svg>
+      </figure>
+    </section>
+
+    <section id="s-math">
+      <h2>Math and tables</h2>
+      <p class="math">z = W x + b</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Component</th><th>Share</th><th>Count</th></tr></thead>
+          <tbody>
+            <tr><td>attention</td><td class="num">0.4</td><td class="num">32</td></tr>
+            <tr><td>feed-forward</td><td class="num">0.5</td><td class="num">16</td></tr>
+            <tr><td>everything else</td><td class="num">0.1</td><td class="num">8</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The drawer opens below 1120 pixels, closes on backdrop click and
+        on <kbd>Esc</kbd>, and returns focus to the hamburger.</li>
+        <li>The theme toggle persists through localStorage and honors the OS
+        preference when unset.</li>
+        <li>Focus rings stay visible while tabbing; nothing animates under
+        reduced motion.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="#s-type"><span class="cap">Previous</span><span class="pg-title">Typography</span></a>
+    <a class="pager-card" rel="next" href="#s-math"><span class="cap">Next</span><span class="pg-title">Math and tables</span></a>
+  </footer>
+</main>
+
+<script src="site.js" defer></script>
+</body>
+</html>

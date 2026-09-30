@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scaling Laws and Chinchilla — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="scaling">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Two — Training</p>
+    <h1>Scaling Laws and Chinchilla</h1>
+    <p class="lede">After this page you can price a training run in
+    one multiplication, state the law the loss obeys as budgets grow,
+    and say why the most-served models deliberately train past the
+    point that law calls optimal.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-count">Counting the run</a></li>
+        <li><a href="#sec-law">The law</a></li>
+        <li><a href="#sec-chinchilla">Chinchilla: the even split</a></li>
+        <li><a href="#sec-over">Deliberately past the optimum</a></li>
+        <li><a href="#sec-cost">What the money buys</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-count">
+      <h2>Counting the run</h2>
+      <p>The last page left the machine specified — chips, speeds, a
+      cost a multiplication away. Do the multiplication. A forward
+      pass over n pieces of text costs about <code>2nN</code>
+      operations — roughly nN multiply-adds at two operations apiece,
+      with N the entry count; the lookups and the softmax are rounding
+      errors next to the tables. The backward walk roughly doubles the
+      arithmetic, so one training step on a batch of B pieces costs
+      about <code>6BN</code>, and a whole run that processes D pieces
+      in total costs <code>C = 6ND</code>: entries, text, six
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>The formula is worth having because it checks against
+      published runs
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — pricing three real
+        runs</p>
+        <div class="worked-body">
+<pre><code class="language-text">the arithmetic, three published runs
+(total compute C = 6 x N x D):
+
+  GPT-3:
+    6 x 175B entries x 300B pieces    = 3.15e23 ops
+                                         (paper: 3.14e23)
+
+  Chinchilla:
+    6 x  70B entries x 1.4T pieces    =  5.9e23 ops
+
+  Llama 3 405B:
+    6 x 405B entries x 15.6T pieces   = 3.79e25 ops
+                                         (paper:  3.8e25)</code></pre>
+        </div>
+      </div>
+
+      <p>Three multiplications, checkable with a pocket calculator —
+      that is what it means for training cost to be knowable before a
+      single step runs. The total spend is fixed by two choices made
+      in advance: how many entries, and how much text.</p>
+      <p>One more reading of the formula, because it hides two honest
+      approximations. The six counts arithmetic only — the table
+      multiplies of the forward pass plus the doubled bill of the
+      backward walk — and treats the lookups and the softmax as
+      rounding errors, which at these sizes they are. And it counts
+      arithmetic at the chips' theoretical pace, which no real run
+      sustains: the efficiency shave from scheduling, communication,
+      and the memory bill is a separate factor, and it lands where
+      the last section of this page measures it — well under half of
+      peak in practice.</p>
+    </section>
+
+    <section id="sec-law">
+      <h2>The law</h2>
+      <p>So budget is a dial. What does a dial buy? The field's first
+      empirical answer is a law.
+      <dfn><a href="glossary.html#t-scaling-laws">Scaling laws</a></dfn>:
+      across many orders of magnitude, the loss falls as a power law
+      in entries, in text, and in compute — every equal multiplicative
+      step in budget buys the same fractional drop in loss
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.
+      The original finding, published in 2020 from hundreds of
+      training runs, also carried practical guidance: grow the entry
+      count faster than the text
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>Hold the law's shape in mind — a straight, gently falling
+      line on log-log axes. It says two things at once. The good
+      news: spending works, predictably, far past where intuition
+      would guess saturation; no wall appeared at any scale measured.
+      The sobering news: the line is straight, not plunging. The
+      fractional drop per budget step is constant, so each further
+      halving of loss costs more than the last one did. Improvement is
+      smooth — and it never becomes free.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 250"><title>A log-log plot with training compute on the horizontal axis and loss on the vertical axis: the loss falls along a straight line, and three evenly spaced ticks on the compute axis each mark a tenfold budget increase, with the corresponding points on the line falling by the same fraction each time</title>
+          <line class="s-ink" stroke-width="1.5" x1="90" y1="210" x2="600" y2="210"/>
+          <line class="s-ink" stroke-width="1.5" x1="90" y1="210" x2="90" y2="30"/>
+          <line class="s-accent" stroke-width="3" x1="120" y1="55" x2="580" y2="175"/>
+          <line class="s-ink" stroke-width="1.5" x1="180" y1="205" x2="180" y2="215"/>
+          <line class="s-ink" stroke-width="1.5" x1="330" y1="205" x2="330" y2="215"/>
+          <line class="s-ink" stroke-width="1.5" x1="480" y1="205" x2="480" y2="215"/>
+          <circle class="f-accent s-ink" stroke-width="1" cx="180" cy="71" r="5"/>
+          <circle class="f-accent s-ink" stroke-width="1" cx="330" cy="110" r="5"/>
+          <circle class="f-accent s-ink" stroke-width="1" cx="480" cy="149" r="5"/>
+          <text x="345" y="236" text-anchor="middle" font-size="12">training compute — each tick is ten times more</text>
+          <text x="60" y="40" font-size="12">loss</text>
+          <text x="350" y="45" text-anchor="middle" font-size="12" class="t-dim">a power law: smooth, over many orders of magnitude</text>
+        </svg>
+        <figcaption>The law: loss falls as a power law in the budget.
+        Equal multiplicative steps in compute buy equal fractional
+        drops in loss — predictable, and never free.</figcaption>
+      </figure>
+    </section>
+
+    <section id="sec-chinchilla">
+      <h2>Chinchilla: the even split</h2>
+      <p>The law prices spending, but it did not at first say how to
+      split a fixed budget between entries and text — a bigger model
+      on less text, or a smaller model on more? The 2022 answer that
+      reset the field's economics: for a fixed compute budget, the
+      loss-minimizing split grows entries and text in equal proportion.
+      <dfn><a href="glossary.html#t-chinchilla-optimal">Chinchilla-optimal</a></dfn>
+      is the name for training at that balance, and the working rule
+      of thumb is about twenty pieces of text per entry
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>How was the balance found? Not by theory — by survey. Train
+      many models at many splits of one budget, read each one's loss,
+      and the floor of the family traces the answer. Too few entries
+      and the text is wasted: the model lacks the room to store what
+      it reads. Too little text and the entries are wasted: room with
+      nothing learned to put in it. The balance point, where neither
+      waste dominates, is the equal split the survey found.</p>
+      <p>The demonstration that made the name famous: Chinchilla,
+      seventy billion entries trained on one point four trillion
+      pieces, set against Gopher, four times larger, at the same total
+      budget — and the smaller, better-read model won every benchmark
+      in the report
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one budget, two
+        shapes</p>
+        <div class="worked-body">
+<pre><code class="language-text">same training budget, two shapes:
+
+  Gopher:      280B entries
+  Chinchilla:   70B entries, 1.4T pieces of text
+                (a quarter of the entries,
+                 twenty pieces of text per entry)
+
+  result: the smaller, better-read model wins
+  every benchmark in the report
+  (MMLU: 67.5 vs 60.0)</code></pre>
+        </div>
+      </div>
+
+      <p>By this measure GPT-3 itself had been under-read: roughly
+      three hundred billion pieces against a hundred seventy-five
+      billion entries — under two pieces per entry
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.
+      The era's lesson was that the field had been building oversized
+      models and starving them of text.</p>
+    </section>
+
+    <section id="sec-over">
+      <h2>Deliberately past the optimum</h2>
+      <p>Then practice diverged from the optimum — on purpose. The 8B
+      model followed through Part One read roughly fifteen trillion
+      pieces: about eighteen hundred pieces per entry, nearly a hundred
+      times past the twenty-per-entry rule
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.
+      Not an accident. The Chinchilla balance minimizes the training
+      bill and ignores the running bill. A widely used model is read
+      far more often than it is trained: once trained, thousands of
+      chips run it for years, and the cost of generating text shrinks
+      with the entry count. Overtrain a small model on abundant text,
+      and every later read is cheaper
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>One more idea completes the economics. A model's knowledge is
+      <dfn><a href="glossary.html#t-parametric-knowledge">parametric
+      knowledge</a></dfn> — stored in the entries as compressed
+      statistics of the corpus, retrieved from nowhere at run time.
+      Part Two established this from the objective's side: nothing is
+      looked up; the entries are the memory. From the budget's side,
+      the same fact reads as a compression ratio: how much corpus each
+      entry must carry. Reading an entry-dense model on far more text
+      packs more into every entry — which is why overtraining buys
+      quality per serving dollar even past the training-optimal
+      point.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — text per entry, three
+        eras</p>
+        <div class="worked-body">
+<pre><code class="language-text">pieces of text per entry:
+
+  GPT-3:              300B / 175B  =     1.7
+  the balanced rule:                ~    20
+  the 8B model:       15T  /   8B  =  1,875</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="sec-cost">
+      <h2>What the money buys</h2>
+      <p>What does a modern run cost, concretely? The largest run with
+      published accounting: DeepSeek-V3, at 2.788 million chip-hours
+      on H800s for 14.8 trillion pieces of text
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.
+      The same accounting yields the efficiency figure: the chips ran
+      at roughly thirty-seven percent of their theoretical peak across
+      the whole run — the unavoidable shave that real scheduling,
+      communication between split tables, and the backward walk's
+      memory bill take out
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>And what the money buys is stranger than a smooth return. The
+      loss falls smoothly — that is the law — but capabilities arrive
+      in jumps: behaviors absent at one scale and present at another,
+      with nothing in the smooth loss curve announcing them. The
+      original GPT-3 paper's own example was in-context learning — the
+      ability to follow examples placed in the text itself, with no
+      update to the entries — arriving as a threshold effect of scale
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.
+      Budget on the smooth curve; measure on the jumpy one.</p>
+      <p>That closes Part Two's economics. The machine is built (Part
+      One), charged, moved, and run on silicon at a knowable price
+      (this part). What exists at the end of the run is still a raw
+      text-predictor — brilliant at continuing a page, useless as an
+      assistant. Ask it a question and it may well answer with more
+      questions, because that is what a corpus looks like where
+      questions are usually followed by more questions. Turning the
+      predictor into the assistant is the first page of Part
+      Three.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>One multiplication prices a run: C = 6ND — entries times
+        pieces times six — and it checks against published runs to
+        within rounding (GPT-3, Chinchilla, Llama 3 405B).</li>
+        <li>Scaling laws: the loss falls as a power law in budget —
+        smooth and predictable over orders of magnitude, but each
+        fractional drop costs more than the last.</li>
+        <li>Chinchilla: for a fixed budget, grow entries and text
+        together, about twenty pieces per entry — the quarter-size,
+        better-read model beat Gopher on every benchmark
+        reported.</li>
+        <li>Serving flips the optimum: a widely used model is read more
+        than it is trained, so the 8B model overtrains to ~1,875
+        pieces per entry and wins on total cost.</li>
+        <li>Knowledge is parametric — compressed corpus statistics in
+        the entries, nothing retrieved — and the loss falls smoothly
+        while capabilities arrive in jumps.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="gpus.html"><span class="cap">Previous</span><span class="pg-title">GPUs: Where the Math Lives</span></a>
+    <a class="pager-card" rel="next" href="post-training.html"><span class="cap">Next</span><span class="pg-title">Post-Training: From Autocompleter to Assistant</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

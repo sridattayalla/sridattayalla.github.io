@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<!--
+  ==========================================================================
+  UNDER THE AWAIT — CONTENT PAGE TEMPLATE
+  ==========================================================================
+  WRITER CONTRACT — copy this file into the right part directory and fill in
+  exactly FOUR things:
+
+    1. <title>PLACEHOLDER</title>            → "Page title — Under the Await"
+    2. <meta name="description" ...>         → one-sentence summary
+    3. <body data-page="PLACEHOLDER-ID">     → the page's manifest id
+                                               (e.g. "p01-03" — see assets/main.js)
+    4. Everything between the CONTENT markers in <main id="content">
+
+  Do NOT touch: the <head> links and scripts, the empty
+  <aside id="site-nav">, or the empty <nav id="page-nav">. main.js renders
+  the sidebar, the prev/next footer, code highlighting and the ← / → keys.
+  Paths are already correct for pages one level below the site root
+  (../assets/...). No external URLs, no webfonts, no inline event handlers.
+
+  CONTENT CLASSES (full list + tokens documented at the top of
+  assets/style.css):
+    .note / .warning / .pitfall     callouts (labels auto-generated)
+    aside.takeaways                 end-of-page summary box (supply a heading)
+    figure.diagram + figcaption     inline SVG figures; style shapes with
+                                    svg classes .box .arrow .arrow-head
+                                    .lane .label (+ .accent, .label.muted/mono)
+    table                           book-style, scrolls horizontally if wide
+    pre > code                      code block; add class="language-rust"
+                                    (also c, javascript, python, bash, …)
+    <code> inline · <kbd>           tinted mono · keycap
+  ==========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thread pools — Under the Await</title>
+  <meta name="description" content="How reusing a fixed crew of OS threads amortizes creation cost, where pool sizing comes from, and the blocking ceiling every pool eventually hits.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p02-01">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>Thread pools</h1>
+
+      <p>Part 1 ended with a ledger instead of a verdict. One OS <a href="../01-foundations/02-processes-threads-context-switches.html">thread</a>
+        per wait gives you code that reads top to bottom, but every waiting
+        thread costs you a whole kernel thread with its own stack. Handling
+        waits with readiness events is cheap, but it asks you to restructure
+        your program around them. Part 2 tours the ground between those two
+        poles: five strategies that languages and platforms have built for
+        keeping many things in flight at once.</p>
+
+      <p>The first strategy is the least exotic of the five, and you have
+        almost certainly already used it. It keeps the thread-per-job model
+        and attacks a different cost: creation. Stop building threads when
+        you need them. Reuse the ones you have.</p>
+
+      <h2>The tax you are avoiding</h2>
+
+      <p>Creating a thread is not free. On modern Linux, measuring thread
+        creation lands somewhere between 5 and 20 µs, and each new thread
+        reserves around 8 MB of stack address space by default. The stack
+        reservation is virtual memory, most of it untouched, so it is cheaper
+        than it first sounds. The construction and teardown cost is real
+        though, and a server that builds a fresh thread for every request
+        pays it on every burst of traffic. Kernel work, allocator work,
+        teardown work, all to run a few milliseconds of your code.</p>
+      <!-- fs: os-io-primitives.md §1: thread creation ~5 to 20 µs (Orlov et al.);
+           glibc default stack 8 MiB virtual, committed on touch (Bendersky, pthreads(7)) -->
+
+      <p>There is a second reason to cap the count. The kernel divides each
+        core's time among every runnable thread, and every
+        <a href="../01-foundations/02-processes-threads-context-switches.html">context switch</a>
+        between them costs a microsecond or two of pure overhead
+        before your code does any useful work at all. A handful of threads
+        per core and the kernel barely notices. Thousands of them, and the
+        bookkeeping starts eating the meal.</p>
+      <!-- fs: os-io-primitives.md §1: direct context switch cost ~1.2 to 2.3 µs
+           (Bendersky 2018, Orlov 2023, LPC 2013) -->
+
+      <p>A <strong>thread pool</strong> is the fix, and it is exactly what the
+        name suggests: a fixed crew of OS threads created once, kept alive,
+        and fed from a shared queue of jobs. Code that wants work done puts a
+        job on the queue. Every worker runs the same tiny loop for its entire
+        life, and it never changes:</p>
+
+      <pre><code class="language-plaintext">a shared FIFO queue of jobs
+N worker threads, each running:
+
+    loop forever:
+        job = take the next job from the queue   # sleeps while the queue is empty
+        run job to completion
+        repeat</code></pre>
+
+      <p>When the queue is empty, the workers sleep inside the kernel and
+        cost you nothing but memory. When work arrives, a worker wakes, runs
+        the job, and goes back for more. No thread was created. No thread
+        was destroyed. The expensive part of the pattern happened once, at
+        startup.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 230" role="img" aria-label="Diagram of a thread pool: submitted jobs enter a shared queue, and three worker threads take jobs off the queue and run them.">
+          <title>A thread pool: jobs flow from your code into a shared queue, then out to three reusable worker threads</title>
+          <rect class="box" x="10" y="26" width="110" height="46" rx="8"/>
+          <text class="label" x="65" y="53" text-anchor="middle">your code</text>
+          <line class="arrow" x1="120" y1="49" x2="170" y2="49"/>
+          <polygon class="arrow-head" points="170,44 180,49 170,54"/>
+          <rect class="box accent" x="180" y="26" width="200" height="46" rx="8"/>
+          <text class="label" x="280" y="47" text-anchor="middle">job queue (FIFO)</text>
+          <text class="label muted" x="280" y="64" text-anchor="middle">jobs sleep here, not threads</text>
+          <line class="arrow" x1="280" y1="72" x2="110" y2="130"/>
+          <polygon class="arrow-head" points="112,120 105,133 119,133"/>
+          <line class="arrow" x1="300" y1="72" x2="320" y2="130"/>
+          <polygon class="arrow-head" points="313,128 327,128 320,140"/>
+          <line class="arrow" x1="340" y1="72" x2="520" y2="130"/>
+          <polygon class="arrow-head" points="511,133 525,133 518,120"/>
+          <rect class="box" x="40" y="140" width="140" height="52" rx="8"/>
+          <text class="label" x="110" y="162" text-anchor="middle">worker thread 1</text>
+          <text class="label muted" x="110" y="180" text-anchor="middle">own stack, reused</text>
+          <rect class="box" x="250" y="140" width="140" height="52" rx="8"/>
+          <text class="label" x="320" y="162" text-anchor="middle">worker thread 2</text>
+          <text class="label muted" x="320" y="180" text-anchor="middle">own stack, reused</text>
+          <rect class="box" x="460" y="140" width="140" height="52" rx="8"/>
+          <text class="label" x="530" y="162" text-anchor="middle">worker thread 3</text>
+          <text class="label muted" x="530" y="180" text-anchor="middle">own stack, reused</text>
+        </svg>
+        <figcaption>Figure 1: a pool. Jobs wait in the queue; a fixed crew of
+          workers drains it. The threads live as long as the pool does.</figcaption>
+      </figure>
+
+      <h2>Two pools, two languages</h2>
+
+      <p>You rarely hand-roll this. Every mainstream platform ships a pool,
+        and the APIs all hide the queue and the workers behind one method:
+        "here is a function, run it somewhere that is not me."</p>
+
+      <p>Python's standard library version takes a function and a list,
+        fans the work out, and gathers the results:</p>
+
+      <pre><code class="language-python">from concurrent.futures import ThreadPoolExecutor
+import urllib.request
+
+URLS = [...]  # a few hundred addresses to fetch
+
+def size_of(url):
+    with urllib.request.urlopen(url) as response:
+        return len(response.read())  # blocks this worker, not your program
+
+with ThreadPoolExecutor(max_workers=32) as pool:
+    results = list(pool.map(size_of, URLS))</code></pre>
+
+      <p>Java's is older and more explicit, but the shape is identical.
+        You submit closures to a service, and a fixed crew runs them:</p>
+
+      <pre><code class="language-java">import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class Main {
+    public static void main(String[] args) {
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        for (int i = 0; i &lt; 100; i++) {
+            pool.submit(() -&gt; System.out.println("job on " + Thread.currentThread()));
+        }
+        pool.shutdown();
+    }
+}</code></pre>
+
+      <p>Notice what both APIs refuse to show you. You never see the queue.
+        You never see the workers. You cannot say which thread ran your job,
+        because the whole point is that it does not matter. The pool has
+        bought you parallelism and a little isolation, and it has quietly
+        bought something else: your job must now be self-contained, because
+        it will run on a thread you do not own, on a stack you share with
+        every job that came before you.</p>
+
+      <h2>Sizing the crew</h2>
+
+      <p>How many workers should you hire? The answer depends on what the
+        jobs do, and the two cases pull in opposite directions.</p>
+
+      <table>
+        <thead>
+          <tr><th>Kind of work</th><th>Sensible size</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>CPU-bound (hashing, parsing, image work)</td>
+            <td>about one worker per core</td>
+            <td>extra workers just queue up and add switching overhead</td>
+          </tr>
+          <tr>
+            <td>I/O-bound (HTTP calls, database queries)</td>
+            <td>dozens, sometimes a few hundred</td>
+            <td>workers spend most of their life asleep, so more of them fit</td>
+          </tr>
+          <tr>
+            <td>A mix of both</td>
+            <td>measure, then split the pools</td>
+            <td>the honest answer, always</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>The I/O row is where the temptation lives. If workers sleep through
+        most of their jobs, why not add more? You can, and for a while it
+        works beautifully. But every added worker is still a real OS thread
+        with a real stack, and the arithmetic from
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">the C10K
+        page</a> has not gone anywhere: 10,000 threads at 8 MB of reserved
+        stack each is on the order of 80 GB of virtual address space, plus
+        creation cost, plus switching overhead, plus kernel limits on total
+        thread counts. A pool makes each thread cheap to <em>reuse</em>. It
+        does not make the thread cheap to <em>have</em>.</p>
+      <!-- fs: os-io-primitives.md §6 (C10K, kegel.com): 10,000 threads × 8 MiB stacks
+           ≈ 80 GB virtual; practical ceiling a few thousand to ~30,000 threads -->
+
+      <h2>The ceiling: blocked is blocked</h2>
+
+      <p>Here is the limit that matters most for where this book is going.
+        A pool amortizes thread creation. It changes nothing about what
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">blocking</a>
+        means. When a worker calls <code>read()</code> on an empty socket,
+        that worker enters the kernel and sleeps on a wait queue exactly as
+        it would have without a pool. The pool cannot rescue it. The kernel
+        cannot rescue it. From the outside, the pool just got one worker
+        smaller, and it stays that way until data arrives.</p>
+
+      <p>This failure mode has a name: <strong>head-of-line blocking</strong>.
+        When the item at the front of a line cannot proceed, everything
+        queued behind it waits too, no matter how quick and ready those
+        later items are. In a pool it shows up two ways. Locally: a worker
+        stuck in one slow call is a worker that cannot take the next job.
+        Globally: if every worker is stuck in the same slow call, the queue
+        grows without bound and freshly submitted jobs pile up behind
+        everyone else's bad luck.</p>
+
+      <div class="pitfall">
+        <p>The classic production incident: a downstream service slows down,
+          every worker submits a call to it, every call hangs for TCP's
+          full retry window, and suddenly your "pool" is a waiting room
+          with zero
+          employees. The pool was sized for throughput, not for stuckness.
+          If a job can block for minutes, no pool size saves you; you need a
+          different way to wait.</p>
+      </div>
+
+      <h2>What pools are genuinely great at</h2>
+
+      <p>None of this is an argument against pools. For CPU-bound
+        parallelism they are the correct tool, full stop: one worker per
+        core, no more, and the machine hums. For modest I/O concurrency,
+        dozens to a few hundred simultaneous operations, they are simple,
+        debuggable, and fast enough that nobody complains. The code inside
+        each job stays in the comfortable, blocking style you know. That is
+        a real ergonomic win, and Part 1 already showed you what the
+        alternatives cost in code shape.</p>
+
+      <p>The pool just has a ceiling, and the ceiling is architectural
+        rather than tunable. Past a few hundred concurrent waits you are
+        renting threads to sleep in. To juggle tens of thousands of waits,
+        you need to stop paying one thread per wait, which means the waiting
+        itself has to change shape. The next strategy does exactly that:
+        keep one thread, keep the kernel's readiness events, and register
+        <em>functions</em> to call when things become ready.</p>
+
+      <div class="note">
+        <p>Rust keeps this trick in its back pocket. Part 4 shows a pool of
+          plain OS threads living inside Tokio, reserved for work that
+          insists on blocking. But Rust's main road runs elsewhere, through
+          door number four, and the next two pages walk up to it.</p>
+      </div>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A thread pool is a fixed crew of OS threads created once,
+            draining a shared FIFO queue of jobs; you pay thread creation
+            once instead of per job.</li>
+          <li>Sizing follows the work: about one worker per core for
+            CPU-bound jobs; more only for I/O-bound jobs, where workers
+            sleep through most of their shifts.</li>
+          <li>A pool reuses threads but cannot unblock them: a worker
+            sleeping in the kernel is still gone from the crew, and
+            head-of-line blocking piles jobs up behind it.</li>
+          <li>Past a few hundred concurrent waits, the per-thread cost
+            returns in full: memory, switching, kernel limits. The pool is a
+            floor under Part 1's arithmetic, not an escape from it.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Whole Language in Two Programs — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="capstone">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Seven — Abstraction and Synthesis</p>
+    <h1>The Whole Language in Two Programs</h1>
+    <p class="lede">Fourteen pages of machinery — ownership, borrowing,
+    lifetimes, the heap menu, the thread badges, the escape hatches —
+    and one question left standing: does it all fit together into
+    programs you would actually write? This page answers with two. The
+    first is the shape every shared-state service grows into: a cache
+    written by a few threads and read by many. The second is a small
+    pool of worker threads fed from a queue. Every type in both
+    programs is a decision this book has already justified; the
+    walkthrough names each one, and the last section walks the whole
+    loop a single time.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#program-one">Program one: the shared cache</a></li>
+        <li><a href="#program-two">Program two: the pool</a></li>
+        <li><a href="#the-rule">The rule the whole book teaches</a></li>
+        <li><a href="#the-loop">The loop, walked once</a></li>
+        <li><a href="#the-bill">The bill, and the promise</a></li>
+      </ol>
+    </nav>
+
+    <section id="program-one">
+      <h2>Program one: the shared cache</h2>
+      <p>Start with the cache. Two writer threads insert three entries
+      each; three reader threads take five read locks each; after every
+      thread joins, main takes one last read lock and prints the tally.
+      The final line is deterministic no matter how the threads
+      interleave, because it runs after the joins — everything racy
+      happened before it, under the lock's
+      rules.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <figure class="codeblock accept">
+        <figcaption>cache_capstone.rs — a shared cache: two writers,
+        three readers</figcaption>
+<pre data-verify="run" data-expect="entries: 6, writes: 6"><code class="language-rust">use std::sync::{Arc, RwLock};
+use std::thread;
+struct Cache { entries: Vec&lt;String&gt;, writes: usize }
+fn main() {
+    let cache = Arc::new(RwLock::new(Cache { entries: vec![], writes: 0 }));
+    let mut handles = vec![];
+    for t in 0..2 {
+        let cache = Arc::clone(&amp;cache);
+        handles.push(thread::spawn(move || {
+            for i in 0..3 {
+                let mut guard = cache.write().unwrap();
+                guard.entries.push(format!("w{}e{}", t, i));
+                guard.writes += 1;
+            }
+        }));
+    }
+    for _ in 0..3 {
+        let cache = Arc::clone(&amp;cache);
+        handles.push(thread::spawn(move || {
+            for _ in 0..5 {
+                drop(cache.read().unwrap());
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let guard = cache.read().unwrap();
+    println!("entries: {}, writes: {}", guard.entries.len(), guard.writes);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">entries: 6, writes: 6</code></pre>
+      </figure>
+      <p>Read the type at the center —
+      <code>Arc&lt;RwLock&lt;Cache&gt;&gt;</code> — as three
+      decisions, each one a page of this
+      book.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <ul>
+        <li><strong>The struct stays plain.</strong> No
+        <code>Cell</code>, no <code>RefCell</code> inside
+        <code>Cache</code>, because nothing shares one field of the
+        cache: the whole instance is the unit of sharing. Interior
+        mutability is a point tool, applied exactly where mutation
+        meets sharing — and in this program that point sits outside
+        the struct, so the struct needs none of it.</li>
+        <li><strong><code>Arc</code>, not <code>Rc</code>.</strong> The
+        handles cross thread boundaries, and the refusal you met on
+        the Send and Sync page — the E0277 that names
+        <code>Rc</code> as not <code>Send</code> — is what
+        <code>Rc</code> would say here. <code>Arc</code>, and not a
+        plain reference either: a spawned thread may outlive the scope
+        that built the cache, so spawn demands owned,
+        <code>'static</code> handles — the rule working as designed,
+        not an obstacle to route around.</li>
+        <li><strong><code>RwLock</code>, not
+        <code>Mutex</code>.</strong> Three readers for every two
+        writers, and a read needs only a shared reference — a mutex
+        would charge the writers' exclusivity against the readers too,
+        serializing reads that interfere with nothing. And the nesting
+        order is the lock's whole trick: it guards the data, not the
+        handle. <code>Mutex&lt;Arc&lt;Cache&gt;&gt;</code> would lock
+        the pointer while every holder of a clone kept reading the
+        pointee freely — the sharing must sit outside the
+        lock.</li>
+      </ul>
+      <p>The two remaining marks are smaller. The
+      <code>unwrap</code> on every <code>lock()</code> call is the
+      poisoning decision from the interior-mutability page: if a
+      writer dies holding the write lock, the next unwrap halts
+      instead of reading torn state — failure propagated exactly where
+      it cannot be silent. And the readers drop their guard inside the
+      loop, at a line you can point to: a guard is a value with a
+      scope, and where it releases is written where it is bound — the
+      lifetimes page's refusal, working in your favor
+      now.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+    </section>
+
+    <section id="program-two">
+      <h2>Program two: the pool</h2>
+      <p>The second program needs one more word before it makes sense.
+      A <dfn><a href="glossary.html#t-thread-pool">thread
+      pool</a></dfn> is a fixed set of worker threads created once, up
+      front, and fed work from a queue — instead of one thread spawned
+      per task. The program below builds a minimal one: a channel
+      carries closures from main to three workers; when main drops its
+      sender, the channel closes, and everyone exits in
+      order.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <figure class="codeblock accept">
+        <figcaption>pool_capstone.rs — a minimal pool: one channel,
+        three workers, five jobs</figcaption>
+<pre data-verify="run" data-expect="pool shut down cleanly"><code class="language-rust">use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+type Job = Box&lt;dyn FnOnce() + Send + 'static&gt;;
+
+fn main() {
+    let (tx, rx) = mpsc::channel::&lt;Job&gt;();
+    let rx = Arc::new(Mutex::new(rx));
+    let mut workers = vec![];
+    for id in 0..3 {
+        let rx = Arc::clone(&amp;rx);
+        workers.push(thread::spawn(move || {
+            loop {
+                let message = rx.lock().unwrap().recv();
+                match message {
+                    Ok(job) =&gt; { println!("worker {} picked up a job", id); job(); }
+                    Err(_) =&gt; break,
+                }
+            }
+        }));
+    }
+    for i in 0..5 {
+        tx.send(Box::new(move || println!("job {} done", i))).unwrap();
+    }
+    drop(tx);
+    for w in workers {
+        w.join().unwrap();
+    }
+    println!("pool shut down cleanly");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>one run's interleaving, captured — the shutdown
+        line always prints last</figcaption>
+<pre><code class="language-text">worker 0 picked up a job
+job 0 done
+worker 1 picked up a job
+job 1 done
+worker 2 picked up a job
+job 2 done
+worker 0 picked up a job
+job 3 done
+worker 1 picked up a job
+job 4 done
+pool shut down cleanly</code></pre>
+      </figure>
+      <p>Every type here is a page of the
+      book.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <ul>
+        <li><strong>The job:
+        <code>Box&lt;dyn FnOnce() + Send + 'static&gt;</code>.</strong>
+        Four decisions in one line. <code>Box</code>, because a
+        <code>dyn</code> value is unsized and a channel slot must be a
+        fixed size — the traits page's fat pointer, boxed behind a
+        stable address. <code>dyn</code>, because job closures are
+        heterogeneous: one per call site, an open set, the ladder rule
+        from the last page. <code>Send</code>, because the job crosses
+        to whichever worker runs it. <code>'static</code>, because the
+        pool cannot borrow from main's stack — the same bound the
+        cache program paid, for the same reason.</li>
+        <li><strong>The receiver:
+        <code>Arc&lt;Mutex&lt;Receiver&gt;&gt;</code>.</strong> Both
+        wrappers are forced. The channel has many producers but one
+        receiver consumed by many workers — shared ownership, because
+        the receiver must outlive whichever worker grabs it;
+        exclusivity, because the receiver is single-consumer by
+        design, so the workers take turns through the mutex. The
+        sender side needs no lock: each producer clones its own.</li>
+        <li><strong>The receive: a <code>let</code> of its own.</strong>
+        The <code>recv()</code> call happens in a let statement, and
+        the <code>match</code> runs after it. The mutex guard is a
+        temporary of that statement — it drops at the semicolon, and
+        the lock is released before the job executes. Move the receive
+        into the match's scrutinee, the expression it tests, and the
+        guard lives through the whole arm: the program stays correct,
+        but every job runs serialized through one lock, and the pool
+        quietly stops being a pool. One semicolon is the
+        difference.</li>
+      </ul>
+      <p>And the shutdown: <code>drop(tx)</code> is the entire
+      protocol. Closing the channel makes <code>recv()</code> return
+      an error — not a failure, but the designed message that no more
+      jobs will ever arrive. The workers break out of their loops;
+      main joins each one; the final line prints after the last job
+      completes. Deterministic teardown, RAII applied to concurrency —
+      and the error-handling page's lesson in miniature: this failure
+      mode is control flow, chosen on
+      purpose.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+    </section>
+
+    <section id="the-rule">
+      <h2>The rule the whole book teaches</h2>
+      <p>Why not put <code>Arc</code> on everything, then, if it
+      composes this well? Because the type is the sharing policy, and
+      the widest policy is rarely the honest
+      one.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <p>A unique owner — the value itself, a <code>Box</code>, a
+      plain borrow — tells the next reader who frees and when. An
+      <code>Arc</code> handle says anyone may be the last, and backs
+      the claim with an atomic counter charged on every clone and
+      drop, plus the leak you met on the Rc and Arc page: a reference
+      cycle keeps its members' counts above zero forever, and nothing
+      warns you. Widening sharing is not free; it is a claim about the
+      program's shape.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <p>So the rule, stated once and plainly: prefer the most
+      restrictive type that works — the value itself, then a borrow,
+      then a box, then shared handles — and add interior mutability
+      only at the exact point where mutation meets sharing. The cache
+      program shares because threads genuinely outlive the scope that
+      built the data. The pool boxes because <code>dyn</code> is
+      unsized. Everything else in both programs is borrows and plain
+      values — and a reader can tell which by looking at any
+      signature.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+    </section>
+
+    <section id="the-loop">
+      <h2>The loop, walked once</h2>
+      <p>Here is the whole book as one loop. Walk it clockwise from
+      the top; every arrow is a refusal turned into a
+      type.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <p>Memory must be freed exactly once, and the machine will not
+      do it for you — the constraint. Rust's answer: every value has
+      exactly one owner, and destruction follows ownership. Ownership
+      alone is too poor for real programs, so values move between
+      owners — and copy when they are plain data, and clone when they
+      say so. Most code wants to use a value without taking it, so
+      references: one exclusive or any number of shared, the aliasing
+      rule the borrow checker enforces at compile time. References
+      must not outlive what they point at — lifetimes, written out
+      where inference cannot close the gap. Some values must outlive
+      their scope or grow without moving — the heap:
+      <code>Box</code> for unique ownership at a stable address,
+      <code>Rc</code> and <code>Arc</code> when the handle must
+      multiply. Sharing meets mutation — interior mutability:
+      <code>Cell</code>, <code>RefCell</code>, <code>Mutex</code>,
+      each moving the aliasing check to the place it can actually run.
+      Data crosses threads — <code>Send</code> and <code>Sync</code>,
+      badges derived from fields and composed automatically, refusals
+      aimed at data races. Some correct programs the checker cannot
+      prove — <code>unsafe</code>, the audited hatch, its invariants
+      inherited by hand. One invariant is special — never move — so
+      <code>Pin</code> wraps it in a type and the async machinery
+      stands on it. Programs fail — two tiers: expected failure as
+      values in <code>Result</code>, propagation through the visible
+      <code>?</code>, violated invariants as the halting tier.
+      Behavior must abstract over types — traits: one impl per trait
+      per type, a copy per type or a call through a
+      table.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <p>And the two programs in the center use every piece: an owner
+      per value, borrows checked, guards released on lines you can
+      point to, handles shared only where threads demand it, mutation
+      locked only where sharing demands it, failures carried as
+      values, closures boxed behind stable addresses, shutdown
+      delivered as a designed
+      error.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 640"><title>The book as one loop: fourteen mechanisms in a circle, from the constraint at the top clockwise around to traits, with the two programs at the center</title>
+          <circle class="s-ink3" fill="none" stroke-width="2" cx="320" cy="320" r="235"/>
+          <path class="f-accent s-ink" stroke-width="1" d="M549 314h12l-6 12z"/>
+          <path class="f-accent s-ink" stroke-width="1" d="M79 326h12l-6-12z"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="320" cy="85" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="422" cy="108" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="504" cy="173" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="549" cy="268" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="549" cy="372" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="504" cy="467" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="422" cy="532" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="320" cy="555" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="218" cy="532" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="136" cy="467" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="91" cy="372" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="91" cy="268" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="136" cy="173" r="4"/>
+          <circle class="f-accent s-ink" stroke-width="1.5" cx="218" cy="108" r="4"/>
+          <text x="320" y="139" text-anchor="middle" font-size="11">constraint</text>
+          <text x="400" y="157" text-anchor="middle" font-size="11">ownership</text>
+          <text x="465" y="209" text-anchor="middle" font-size="11">moves</text>
+          <text x="500" y="283" text-anchor="middle" font-size="11">borrowing</text>
+          <text x="500" y="365" text-anchor="middle" font-size="11">lifetimes</text>
+          <text x="465" y="439" text-anchor="middle" font-size="11">stack, heap</text>
+          <text x="422" y="491" text-anchor="middle" font-size="11">box</text>
+          <text x="320" y="509" text-anchor="middle" font-size="11">rc, arc</text>
+          <text x="218" y="491" text-anchor="middle" font-size="11">locks</text>
+          <text x="175" y="439" text-anchor="middle" font-size="11">send, sync</text>
+          <text x="140" y="365" text-anchor="middle" font-size="11">unsafe</text>
+          <text x="140" y="283" text-anchor="middle" font-size="11">pin</text>
+          <text x="175" y="209" text-anchor="middle" font-size="11">failure</text>
+          <text x="240" y="157" text-anchor="middle" font-size="11">traits</text>
+          <text x="320" y="315" text-anchor="middle" font-size="15">the two programs</text>
+          <text class="t-dim" x="320" y="335" text-anchor="middle" font-size="11">every piece, used at once</text>
+        </svg>
+        <figcaption>Walk it clockwise from the top: every station is a
+        page, every gap a refusal. The center is where this page's two
+        programs live.</figcaption>
+      </figure>
+    </section>
+
+    <section id="the-bill">
+      <h2>The bill, and the promise</h2>
+      <p>What does Rust charge for the loop? Ceremony, honestly
+      stated. The annotations: lifetimes written out when inference
+      runs dry, a <code>?</code> on every fallible call, a
+      <code>match</code> arm for the case you would rather ignore. The
+      vocabulary: <code>Send</code>, <code>Sync</code>,
+      <code>Pin</code>, <code>dyn</code> — a name for every guarantee,
+      learned once and then read everywhere. The discipline: the most
+      restrictive type, the smallest hatch, the drop you can point
+      to.<a class="prov" data-src="research/capstone.md" href="links.html#s-capstone" title="capstone — research/capstone.md">[capstone]</a></p>
+      <p>What it buys is the first page's catalog, inverted. In safe
+      code there is no dangling pointer, no double free, no use after
+      free, no data race — not because you are careful, but because
+      the programs that would contain them do not compile. The
+      guarantees are local and mechanical: read a field's type and
+      know who may touch it; read a signature and know what crossing
+      it costs. The escape hatches exist — the audited block, the
+      halting panic, the opt-outs — and each is marked in the source,
+      each findable by the next reader.</p>
+      <p>That is the design. The promise is not that you will not make
+      mistakes; it is that whole classes of mistakes cannot be written
+      down. The two programs above are what the machinery looks like
+      when it is all working: a handful of ordinary types, each one a
+      decision you can now name.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>One constraint drives the whole design: memory must be
+        freed exactly once, and every mechanism in the book is a
+        refusal turned into a type that answers it.</li>
+        <li>The type states the sharing policy: prefer the most
+        restrictive type that works — the value, the borrow, the box,
+        then shared handles — with interior mutability only where
+        mutation meets sharing.</li>
+        <li>Both programs are the ladder in action: the cache pays
+        <code>Arc</code> and <code>RwLock</code> because threads
+        genuinely share mutable state; the pool pays
+        <code>Box</code>, <code>dyn</code>, <code>Send</code>, and
+        <code>'static</code> because jobs cross threads
+        unenumerated.</li>
+        <li>Concurrency safety is composition: badges derived from
+        fields, locks that poison on the way out, channels whose
+        errors are shutdown signals, teardown by dropping a
+        sender.</li>
+        <li>The loop closes: from the constraint through traits and
+        back, each mechanism exists because the previous one refused
+        something — and the refusals, not the features, are why the
+        safe programs compile.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="traits.html"><span class="cap">Previous</span><span class="pg-title">Traits: Dispatch, Coherence, and dyn</span></a>
+    <a class="pager-card" rel="next" href="glossary.html"><span class="cap">Next</span><span class="pg-title">Glossary</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Readiness vs completion — Under the Await</title>
+  <meta name="description" content="Two kernel contracts: epoll-style readiness, where you still do the read, and completion, where the kernel does the work and fills your buffer: IOCP and io_uring.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-07">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Readiness vs completion</h1>
+
+      <p>Chapter 6 gave you the <a href="06-io-multiplexing-readiness.html">readiness model</a> and called it the
+        foundation of everything to come. That is true, but it is not the
+        whole truth: it is one of two contracts the world's kernels
+        offer, and the second one answers a question you may not have
+        thought to ask. Why should the kernel merely tell you that data
+        arrived? Why not have the kernel do the read for you, into a
+        buffer you hand over in advance, and tell you when it is done?
+        That is the completion model, and it powers Windows I/O and a
+        bold, relatively new Linux interface called io_uring. This
+        chapter puts the two contracts side by side, because the choice
+        between them shapes every layer built on top, including the
+        machinery this book is walking toward.</p>
+
+      <h2>The contract you already know</h2>
+
+      <p>Recall the shape of readiness. You register a socket with an
+        epoll instance; the kernel reports it as ready; then, and this is
+        the part to look at closely, <em>you</em> call
+        <code>read</code>, <em>you</em> supply the buffer, and the kernel
+        fills that buffer during your call, on your thread, before
+        returning. The kernel's role is a doorman: it tells you which
+        doors are unlocked. Walking through them is your job, one door at
+        a time, each walk a separate trip through the syscall door from
+        chapter 3.</p>
+
+      <p>That division of labor has a quiet virtue. Between the moment
+        the kernel says "socket B is ready" and the moment you act on it,
+        the buffer does not exist yet as far as the kernel is concerned.
+        You allocate it when you are about to read, the kernel touches it
+        for the duration of one call, and then it is yours again. Nothing
+        of yours is in the kernel's hands while you wait, because waiting
+        already happened before the buffer existed.</p>
+
+      <h2>The other contract: the kernel finishes the job</h2>
+
+      <p>The completion model flips the roles. You describe the entire
+        operation up front, which descriptor, what operation, into which
+        buffer, how many bytes, and hand it to the kernel. The kernel
+        takes the job away, performs it whenever the data actually
+        arrives, writes the result directly into your buffer, and later
+        hands you a small record saying the operation finished: a
+        completion. Your thread never calls <code>read</code> for that
+        data at all. It asked once, walked away, and came back to find
+        the work done.</p>
+
+      <p>Windows has worked this way for a long time. The I/O Completion
+        Ports mechanism lets a program start an overlapped operation,
+        say a network receive, by handing the kernel a buffer and a small
+        bookkeeping structure. The kernel fills the buffer on its own
+        schedule and posts a completion record to a queue; any of your
+        threads can harvest that queue at its convenience. Linux grew its
+        own version much later, and it is interesting enough to deserve
+        its own section.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 200" role="img">
+          <title>Readiness grants permission and you read; completion means the kernel does the whole read into your buffer</title>
+          <text class="label muted" x="24" y="47" text-anchor="start">readiness</text>
+          <rect class="box" x="150" y="22" width="200" height="44" rx="6"/>
+          <text class="label" x="250" y="41" text-anchor="middle">the kernel:</text>
+          <text class="label accent" x="250" y="59" text-anchor="middle">"B is ready, try now"</text>
+          <line class="arrow" x1="350" y1="44" x2="412" y2="44"/>
+          <polygon class="arrow-head" points="412,39 422,44 412,49"/>
+          <rect class="box" x="426" y="22" width="190" height="44" rx="6"/>
+          <text class="label" x="521" y="41" text-anchor="middle">you call read(),</text>
+          <text class="label muted" x="521" y="59" text-anchor="middle">buffer fills in your call</text>
+          <line class="lane" x1="30" y1="92" x2="630" y2="92"/>
+          <text class="label muted" x="24" y="127" text-anchor="start">completion</text>
+          <rect class="box accent" x="150" y="102" width="200" height="44" rx="6"/>
+          <text class="label" x="250" y="121" text-anchor="middle">you submit:</text>
+          <text class="label accent" x="250" y="139" text-anchor="middle">"read B into buf"</text>
+          <line class="arrow accent" x1="350" y1="124" x2="412" y2="124"/>
+          <polygon class="arrow-head accent" points="412,119 422,124 412,129"/>
+          <rect class="box" x="426" y="102" width="190" height="44" rx="6"/>
+          <text class="label" x="521" y="121" text-anchor="middle">kernel reads, later,</text>
+          <text class="label muted" x="521" y="139" text-anchor="middle">buf is full, "done"</text>
+        </svg>
+        <figcaption>Figure 1: who performs the read. Above the line, the
+          kernel grants permission and you act. Below it, the kernel does
+          the whole job into a buffer you surrendered up front.</figcaption>
+      </figure>
+
+      <h2>The buffer question</h2>
+
+      <p>Look at what completion demands of you. The buffer you hand over
+        must stay valid, and stay untouched by you, for as long as the
+        operation is in flight, because the kernel is writing into it
+        while you do other things. Lend out the buffer, forget, and use
+        it for something else, and you have two writers and one victim.
+        io_uring's documentation states the rule plainly: buffer pointers
+        used for reads and writes must remain valid until the operation
+        finishes.</p>
+
+      <p>This is the deepest structural difference between the models,
+        deeper than any performance claim. Readiness lets your buffers be
+        short-lived locals, born and dying inside one call on your own
+        thread. Completion forces buffers to be long-lived resources with
+        rules about who holds them and when they come home. Every
+        programming model built on completion ends up with an answer to
+        "who owns the buffer while the kernel works", sometimes an
+        elaborate one, and we will see the echoes of that question much
+        later in this book. For now, hold the asymmetry: under readiness,
+        waiting is over before the buffer exists; under completion, the
+        buffer exists precisely because waiting has been delegated.</p>
+
+      <h2>io_uring: Linux grows a completion interface</h2>
+
+      <p>io_uring, introduced around 2019 and matured since, is Linux's
+        completion interface, and its design has one trick that makes it
+        unlike anything before it. The name is literal: there are two
+        rings, a submission queue and a completion queue, and both are
+        regions of memory shared between your program and the kernel.
+        To start an operation you write a submission entry into the
+        shared ring, describing the operation with a small structure:
+        operation code, descriptor, buffer pointer, length, offset. No
+        trip through the syscall door is required to submit, and none to
+        check for completions either, because both queues are plain
+        memory you can read. The kernel consumes submissions, does the
+        work asynchronously, and pushes completion entries onto the other
+        ring for you to harvest.</p>
+
+      <p>Why go to this trouble? Syscalls themselves were the cost left
+        on the table. The maintainers of a heavily tuned TCP proxy built
+        on the readiness model measured it spending 70% to 80% of its CPU
+        cycles inside the kernel, mostly on the very door-knocking that
+        readiness still requires, and io_uring was motivated largely by
+        eliminating those trips. It also fixes a blind spot epoll never
+        covered: regular files. Disk reads do not become "ready" in a way
+        epoll can report, so the readiness model has never applied to
+        them; a completion interface simply performs the read whenever
+        the disk delivers it. That is why, when you meet the machinery of
+        Part 4, its experimental io_uring support covers file operations
+        first.</p>
+      <!-- fs: fact sheet §5 — tokio-uring DESIGN.md / tokio.rs blog 2021: tuned epoll TCP proxy spends 70–80% of CPU cycles outside userspace; io_uring motivated by syscall elimination -->
+      <!-- fs: fact sheet §5 — tokio-uring docs: io_uring requires kernel 5.10 or newer; buffer pointers must remain valid until completion -->
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 210" role="img">
+          <title>io_uring: you push submissions into the SQ ring, the kernel works them and pushes completions into the CQ ring</title>
+          <rect class="box" x="40" y="30" width="140" height="44" rx="6"/>
+          <text class="label" x="110" y="57" text-anchor="middle">your code</text>
+          <line class="arrow" x1="180" y1="52" x2="392" y2="52"/>
+          <polygon class="arrow-head" points="392,47 402,52 392,57"/>
+          <text class="label muted" x="286" y="40" text-anchor="middle">submit a read request</text>
+          <rect class="box accent" x="404" y="30" width="180" height="44" rx="6"/>
+          <text class="label mono" x="494" y="48" text-anchor="middle">SQ ring</text>
+          <text class="label muted" x="494" y="66" text-anchor="middle">you fill it</text>
+          <line class="arrow" x1="494" y1="74" x2="494" y2="112"/>
+          <polygon class="arrow-head" points="488,110 500,110 494,120"/>
+          <text class="label muted" x="482" y="98" text-anchor="end">kernel consumes, works</text>
+          <rect class="box accent" x="404" y="124" width="180" height="44" rx="6"/>
+          <text class="label mono" x="494" y="142" text-anchor="middle">CQ ring</text>
+          <text class="label muted" x="494" y="160" text-anchor="middle">kernel fills it</text>
+          <line class="arrow" x1="404" y1="146" x2="188" y2="146"/>
+          <polygon class="arrow-head" points="200,141 200,151 188,146"/>
+          <text class="label muted" x="296" y="170" text-anchor="middle">harvest the results</text>
+          <rect class="box" x="40" y="124" width="140" height="44" rx="6"/>
+          <text class="label" x="110" y="151" text-anchor="middle">your code</text>
+          <text class="label muted" x="320" y="198" text-anchor="middle">both rings sit in memory shared between your program and the kernel</text>
+        </svg>
+        <figcaption>Figure 2: the ring pair. Because both rings are
+          shared memory, submitting work and harvesting results need no
+          syscall at all.</figcaption>
+      </figure>
+
+      <h2>Which contract does the winner use?</h2>
+
+      <p>Given all that, you might expect every modern system to have
+        moved to completion. The reality is more conservative, and the
+        machinery this book dissects in Part 4 is a good example of why.
+        On Linux it answers "readiness": its central I/O layer is a thin
+        portability wrapper that picks epoll on Linux, kqueue on the BSDs
+        and macOS, and the completion-based Windows mechanism, and
+        presents one interface to everything above. Its io_uring support
+        is real but switched off by default, marked experimental, and
+        mostly covers file operations, where readiness cannot help; the
+        networking path still rides epoll.</p>
+
+      <p>The reasons are the reasons that usually win in systems
+        software. Maturity: epoll has two decades of hardening, bug
+        fixes, and operational scar tissue, and io_uring's API churned
+        through several redesigns while growing up. Portability: the
+        readiness model maps onto every mainstream kernel with one
+        wrapper, while a completion-first design has to fake completion
+        where the kernel offers none. And fit: the ecosystem of
+        higher-level code, including everything you will meet in Parts 2
+        and 3, grew up assuming readiness semantics. A completion model
+        is not an upgrade you can bolt on; it is a different
+        architecture, most
+        visibly in that buffer question. So readiness remains the
+        default, io_uring is the frontier, and you now hold the concepts
+        to understand both, plus the tradeoff that separates them.</p>
+
+      <p>That closes the inventory of the machine. You have threads and
+        their price, the kernel door and its integer handles, blocking
+        and its wait queues, non-blocking sockets and readiness, one
+        sleeping question for thousands of descriptors, and now the two
+        contracts a kernel can offer about I/O. What remains is to weigh
+        the two great strategies, many threads or few threads plus many
+        small waiters, against each other honestly. That weighing is the
+        last chapter of Part 1.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Under readiness (epoll, kqueue), the kernel grants
+            permission and you perform the read yourself, on your thread,
+            with your buffer.</li>
+          <li>Under completion (Windows I/O completion ports, Linux
+            io_uring), you describe the operation up front and the kernel
+            performs it, writing results into a buffer you
+            surrendered.</li>
+          <li>The buffer rule is the structural difference: completion
+            requires buffers that stay valid and untouched until the
+            operation finishes, which reshapes every layer above.</li>
+          <li>io_uring's two shared-memory rings, submission and
+            completion, remove even the syscall from the common path,
+            motivated by measurements showing 70% to 80% of cycles spent
+            in the kernel under the readiness model.</li>
+          <li>The machinery of Part 4 uses readiness on Linux today,
+            epoll under a portability wrapper, with io_uring support
+            experimental and file-focused: maturity and portability beat
+            raw syscall counts.</li>
+        </ul>
+      </aside>
+      <!-- fs: fact sheet §5 — tokio-uring DESIGN.md: tuned TCP proxy spends 70–80% of CPU cycles outside userspace under epoll -->
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

@@ -1,0 +1,104 @@
+{
+  "_comment": "Term ledger. Canonical term (lowercase in prose; Send/Sync/Unpin/Copy/Clone are matched case-insensitively) -> page that defines it. A term may be USED (not defined) on pages AFTER its defining page in manifest order, and on glossary.html. Earlier pages need a <!-- term-ok: reason --> escape comment. Plurals (+s/+es of the final word) are matched automatically; irregular forms (moved, borrowed, panicked, aliased, atomically, outlive) do NOT match. Code, svg text, nav, pager, and prov marks are exempt. The full banned-before table lives in architecture/boundaries.md.",
+  "terms": {
+    "memory safety": "index.html",
+    "garbage collector": "index.html",
+    "runtime": "index.html",
+    "ownership": "index.html",
+    "owner": "index.html",
+    "borrow checker": "index.html",
+    "escape hatch": "index.html",
+
+    "stack": "founding-constraint.html",
+    "heap": "founding-constraint.html",
+    "dangling pointer": "founding-constraint.html",
+    "use-after-free": "founding-constraint.html",
+    "double free": "founding-constraint.html",
+    "iterator invalidation": "founding-constraint.html",
+    "data race": "founding-constraint.html",
+    "undefined behavior": "founding-constraint.html",
+    "sanitizer": "founding-constraint.html",
+    "destructor": "founding-constraint.html",
+    "deterministic destruction": "founding-constraint.html",
+
+    "move": "ownership.html",
+    "drop": "ownership.html",
+    "scope": "ownership.html",
+    "raii": "ownership.html",
+    "drop order": "ownership.html",
+
+    "trait": "move-copy-clone.html",
+    "copy trait": "move-copy-clone.html",
+    "clone": "move-copy-clone.html",
+    "shallow copy": "move-copy-clone.html",
+    "deep copy": "move-copy-clone.html",
+
+    "reference": "borrowing.html",
+    "shared reference": "borrowing.html",
+    "mutable reference": "borrowing.html",
+    "aliasing": "borrowing.html",
+    "aliasing xor mutability": "borrowing.html",
+    "borrowing": "borrowing.html",
+    "lifetime": "borrowing.html",
+    "non-lexical lifetimes": "borrowing.html",
+    "nll": "borrowing.html",
+
+    "lifetime elision": "lifetimes.html",
+    "region": "lifetimes.html",
+    "outlives": "lifetimes.html",
+    "static lifetime": "lifetimes.html",
+
+    "heap allocation": "stack-and-heap.html",
+    "slice": "stack-and-heap.html",
+    "fat pointer": "stack-and-heap.html",
+
+    "indirection": "box.html",
+    "recursive type": "box.html",
+
+    "reference counting": "rc-arc.html",
+    "shared ownership": "rc-arc.html",
+    "reference cycle": "rc-arc.html",
+    "weak reference": "rc-arc.html",
+    "atomic": "rc-arc.html",
+    "memory leak": "rc-arc.html",
+
+    "interior mutability": "interior-mutability.html",
+    "guard": "interior-mutability.html",
+    "poisoning": "interior-mutability.html",
+
+    "send": "send-sync.html",
+    "sync": "send-sync.html",
+    "marker trait": "send-sync.html",
+    "auto trait": "send-sync.html",
+    "fearless concurrency": "send-sync.html",
+
+    "unsafe block": "unsafe.html",
+    "raw pointer": "unsafe.html",
+    "soundness": "unsafe.html",
+    "safe abstraction": "unsafe.html",
+
+    "pin": "pin.html",
+    "pinning": "pin.html",
+    "self-referential": "pin.html",
+    "unpin": "pin.html",
+    "future": "pin.html",
+    "async": "pin.html",
+
+    "panic": "error-handling.html",
+    "unwinding": "error-handling.html",
+    "propagation": "error-handling.html",
+    "recoverable error": "error-handling.html",
+
+    "coherence": "traits.html",
+    "orphan rule": "traits.html",
+    "monomorphization": "traits.html",
+    "vtable": "traits.html",
+    "trait object": "traits.html",
+    "static dispatch": "traits.html",
+    "dynamic dispatch": "traits.html",
+    "newtype": "traits.html",
+    "object safety": "traits.html",
+
+    "thread pool": "capstone.html"
+  }
+}

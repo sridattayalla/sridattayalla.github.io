@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stack and Heap: Owners and Views — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="stack-and-heap">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Four — The Heap Menu</p>
+    <h1>Stack and Heap: Owners and Views</h1>
+    <p class="lede">The last part of this book constrained time. This
+    one constrains space: where a value lives, who points at it, and
+    what that costs. Rust puts the whole decision in the type, in plain
+    sight — and the payoff is a signature that reads like a memory
+    contract: what is borrowed, what is owned, what will be freed.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#two-places">Two places, one visible decision</a></li>
+        <li><a href="#the-canonical-pair">The canonical pair</a></li>
+        <li><a href="#sized-in-words">Sized in words</a></li>
+        <li><a href="#the-same-shape">The same shape everywhere</a></li>
+        <li><a href="#the-signature-contract">The signature is a memory contract</a></li>
+      </ol>
+    </nav>
+
+    <section id="two-places">
+      <h2>Two places, one visible decision</h2>
+      <p>Values in a running Rust program live in one of two places.
+      Inline: inside the current stack frame, or inside the value that
+      contains them — a struct's fields, an array's elements, a local's
+      bytes. Or on the heap: a long-lived pool that outlives frames,
+      grows and shrinks while the program runs, and must be managed by
+      someone. The founding constraint said Rust would manage it without
+      a collector and without hidden machinery deciding placement for
+      you.</p>
+      <p>The design choice that follows is that the decision is
+      visible. <dfn><a href="glossary.html#t-heap-allocation">Heap
+      allocation</a></dfn> — placing a value in that long-lived pool —
+      never happens ambiently in Rust. It happens only when a type says
+      so: <code>String</code>, <code>Vec</code>, <code>Box</code>, and
+      their kin are library types built over the same primitive — a
+      pointer plus an ownership policy — and because the type names
+      them, a reader of a signature can count the allocations a function
+      makes.</p>
+      <p>The comparison makes the choice sharp. In Java and Python,
+      nearly every object is heap-allocated implicitly: allocating is
+      what object creation does, the collector cleans up, and the
+      programmer never sees a pointer. In Rust, values live inline by
+      default and heap placement is a typed, countable decision. The
+      book motivates the whole subject in one line — <em>"whether a
+      value is on the stack or the heap affects how the language
+      behaves"</em> — and the language's home page states the payoff:
+      <em>"with no runtime or garbage collector, it can power
+      performance-critical
+      services."</em><a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a>
+      Three reasons, each already met in this book: the cost is visible
+      in the type; the deallocation is deterministic, at the owner's
+      death; and no hidden runtime decides placement for
+      you.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+    </section>
+
+    <section id="the-canonical-pair">
+      <h2>The canonical pair</h2>
+      <p>Every placement story in Rust is a variation on one pair, so
+      learn it once. <code>String</code> is the owning handle: three
+      words in the owner's frame — a pointer to the bytes, the length
+      in use, the capacity bought — with the bytes themselves on the
+      heap. It grows by reallocation, it has exactly one owner, and it
+      frees its bytes at that owner's death.</p>
+      <p><code>&amp;str</code> is the borrowed view: two words — a
+      pointer and a length — aimed at bytes owned by someone else.
+      Those bytes might be a String's buffer; they might be a literal
+      baked into the program binary, which is why text literals are
+      readable for the whole run. The view allocates nothing and frees
+      nothing. It only reads.</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 170"><title>A String owner is three stack words — pointer, length, capacity — aimed at heap bytes; a str view is two words — pointer and length — reaching the same bytes</title>
+          <text class="t-dim" x="40" y="44" font-size="12">String — the owner (three words)</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="40" y="52" width="56" height="28" rx="4"/>
+          <text x="68" y="70" text-anchor="middle" font-size="12">ptr</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="100" y="52" width="56" height="28" rx="4"/>
+          <text x="128" y="70" text-anchor="middle" font-size="12">len</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="160" y="52" width="56" height="28" rx="4"/>
+          <text x="188" y="70" text-anchor="middle" font-size="12">cap</text>
+          <text class="t-dim" x="40" y="112" font-size="12">&amp;str — a view (two words)</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="40" y="120" width="56" height="28" rx="4"/>
+          <text x="68" y="138" text-anchor="middle" font-size="12">ptr</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="100" y="120" width="56" height="28" rx="4"/>
+          <text x="128" y="138" text-anchor="middle" font-size="12">len</text>
+          <text class="t-dim" x="420" y="44" font-size="12">heap</text>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="420" y="52" width="180" height="96" rx="4"/>
+          <text x="510" y="104" text-anchor="middle" font-size="13">h e l l o</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M216 66H408"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M402 60l8 6-8 6"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M156 134H408"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M402 128l8 6-8 6"/>
+        </svg>
+        <figcaption>The owner holds three words and frees the buffer at
+        its death; the view holds two words and only reads.</figcaption>
+      </figure>
+      <p>The division of labor is the point. The owner pays for the
+      buffer and eventually frees it; any number of views read it while
+      it lives. Nothing in the heap bytes records who points at them —
+      the words live in the owner's frame and in the views, and the
+      rules from Part Three are what keep the two sides
+      consistent.</p>
+    </section>
+
+    <section id="sized-in-words">
+      <h2>Sized in words</h2>
+      <p>The sizes are not folklore; the compiler prints them when
+      asked directly:</p>
+      <figure class="codeblock accept">
+        <figcaption>layout_sizes.rs — owners and views, sized in bytes</figcaption>
+<pre data-verify="run" data-expect="16 bytes"><code class="language-rust">use std::mem::size_of;
+
+fn main() {
+    println!("&amp;str       {} bytes", size_of::&lt;&amp;str&gt;());
+    println!("String     {} bytes", size_of::&lt;String&gt;());
+    println!("&amp;[u32]     {} bytes", size_of::&lt;&amp;[u32]&gt;());
+    println!("Vec&lt;u32&gt;   {} bytes", size_of::&lt;Vec&lt;u32&gt;&gt;());
+    println!("Box&lt;u32&gt;   {} bytes", size_of::&lt;Box&lt;u32&gt;&gt;());
+    println!("&amp;u32       {} bytes", size_of::&lt;&amp;u32&gt;());
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">&amp;str       16 bytes
+String     24 bytes
+&amp;[u32]     16 bytes
+Vec&lt;u32&gt;   24 bytes
+Box&lt;u32&gt;   8 bytes
+&amp;u32       8 bytes</code></pre>
+      </figure>
+      <p>Read the pattern, not the individual rows. Every reference to
+      data whose length is not part of its type — text, runs of
+      elements — is two words. Every owning handle of growable heap
+      data is three. A reference to a single fixed-size value is one
+      word, and next page's subject, <code>Box</code>, is also one word
+      — the smallest owner there
+      is.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+      <p>The middle rows of that output name the two concepts this page
+      owns. A <dfn><a href="glossary.html#t-slice">slice</a></dfn> is a
+      borrowed view of a run of elements — the type <code>[T]</code>,
+      which never stands alone: it is always reached through a
+      reference, <code>&amp;[T]</code>. A <dfn><a href="glossary.html#t-fat-pointer">fat
+      pointer</a></dfn> is the two-word reference that reaches such
+      data: the address, plus the length of what it reaches.
+      <code>&amp;str</code> and <code>&amp;[T]</code> are both fat
+      pointers.</p>
+      <p>A third kind of fat pointer exists — a reference to a value
+      reached through a trait — carrying an address plus a pointer to
+      that value's trait implementations. Its story belongs to the
+      traits part of this book; the size fact is all this page needs:
+      two words, same as the
+      others.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+    </section>
+
+    <section id="the-same-shape">
+      <h2>The same shape everywhere</h2>
+      <p>The canonical pair is not about text specifically. The same
+      shape repeats across the library: <code>Vec&lt;T&gt;</code> owns a
+      run of elements — three words — and <code>&amp;[T]</code> views
+      that run — two words. <code>Box&lt;T&gt;</code>, next page's
+      subject, owns one value behind a pointer — one word — and
+      <code>&amp;T</code> views it — one word. Owner and view, at every
+      size.</p>
+      <p>One program exercises the whole shape — a view of an owner, a
+      coercion at a call, and a view into a Vec:</p>
+      <figure class="codeblock accept">
+        <figcaption>owner_view.rs — a view, a coercion, and a slice of a Vec</figcaption>
+<pre data-verify="run" data-expect="middle [20, 30]"><code class="language-rust">fn takes_view(s: &amp;str) -&gt; usize {
+    s.len()
+}
+
+fn main() {
+    let owned = String::from("hello");
+    let view: &amp;str = &amp;owned;
+    println!("view len {}", takes_view(view));
+    println!("coerced len {}", takes_view(&amp;owned));
+
+    let v = vec![10, 20, 30];
+    let middle: &amp;[i32] = &amp;v[1..3];
+    println!("middle {:?} len {}", middle, middle.len());
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">view len 5
+coerced len 5
+middle [20, 30] len 2</code></pre>
+      </figure>
+      <p>Three facts sit in that run. The binding <code>let view:
+      &amp;str = &amp;owned;</code> is two words aimed at owned's
+      buffer. The call <code>takes_view(&amp;owned)</code> hands a
+      <code>&amp;String</code> to a function that asked for
+      <code>&amp;str</code>, and the compiler inserts the step itself:
+      <code>String</code> promises to act as <code>str</code> when
+      viewed, so <code>&amp;String</code> flows into <code>&amp;str</code>
+      parameters. That step is called deref coercion, and it is why one
+      borrowed signature accepts both owners and literals — the parser
+      program on the lifetimes page used it silently when
+      <code>&amp;other</code> met a <code>&amp;str</code>
+      parameter.<a class="prov" data-src="research/memory-layout.md" href="links.html#s-memory-layout" title="memory-layout — research/memory-layout.md">[memory-layout]</a></p>
+      <p>The last two lines are the borrowing page again, one level up.
+      <code>middle</code> is two words into <code>v</code>'s buffer; a
+      push that grew the Vec while <code>middle</code> was still live
+      would relocate the buffer under it — and the checker refuses
+      exactly that program, for exactly the reason Part Three gave. The
+      rules are not per-type: any owner, any view, the same
+      constraint.</p>
+    </section>
+
+    <section id="the-signature-contract">
+      <h2>The signature is a memory contract</h2>
+      <p>Put the pair into a signature and it becomes a contract a
+      reader can check without reading the body. <code>fn f(s:
+      &amp;str)</code> says: borrows, reads, allocates nothing, frees
+      nothing. <code>fn f(s: String)</code> says: takes ownership, and
+      will free the bytes at the value's death. <code>fn f(v: &amp;mut
+      Vec&lt;u32&gt;)</code> says: may grow the run — reallocation and
+      all — while holding it exclusively.</p>
+      <p>The contract is enforced, not advisory — hand a view where an
+      owner was demanded and the refusal names the clause:</p>
+      <figure class="codeblock reject">
+        <figcaption>e0308_string_view.rs — a view handed where an owner was demanded</figcaption>
+<pre data-verify="fail" data-error="E0308"><code class="language-rust">fn takes_owned(s: String) {
+    println!("{s}");
+}
+
+fn main() {
+    let view: &amp;str = "hello";
+    takes_owned(view);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>rustc's refusal, captured</figcaption>
+<pre><code class="language-text">error[E0308]: mismatched types
+ --&gt; e0308_string_view.rs:7:17
+  |
+7 |     takes_owned(view);
+  |     ----------- ^^^^ expected `String`, found `&amp;str`
+  |     |
+  |     arguments to this function are incorrect
+  |
+note: function defined here
+ --&gt; e0308_string_view.rs:1:4
+  |
+1 | fn takes_owned(s: String) {
+  |    ^^^^^^^^^^^ ---------
+help: try using a conversion method
+  |
+7 |     takes_owned(view.to_string());
+  |                     ++++++++++++
+...</code></pre>
+      </figure>
+      <p>The error's help line is a design sentence in miniature:
+      <em>try using a conversion method</em> —
+      <code>view.to_string()</code>. Turning a view into an owner is a
+      real allocation, priced and typed, and the compiler will not
+      insert it for you: no silent copying, no hidden cost. The borrow
+      was free; the conversion is not; the type says which is
+      happening.</p>
+      <p>Views are borrowed and temporary; the simplest way to put a
+      value itself on the heap is one word — the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Values live inline by default; heap placement in Rust is
+        explicit and typed — it happens only through a type that says
+        so.</li>
+        <li>String is three words — pointer, length, capacity — owning
+        heap bytes and freeing them at its death; &amp;str is two words
+        — pointer, length — reading those bytes.</li>
+        <li>References to data whose length is not in its type are fat
+        pointers — address plus length — and the run they reach is a
+        slice.</li>
+        <li>Deref coercion lets &amp;String flow into &amp;str
+        parameters, so one borrowed signature accepts owners and
+        literals alike.</li>
+        <li>A signature is a memory contract: &amp;str borrows and
+        frees nothing; String takes ownership and frees; the compiler
+        enforces every clause.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="lifetimes.html"><span class="cap">Previous</span><span class="pg-title">Lifetimes: Constraints, Not Timers</span></a>
+    <a class="pager-card" rel="next" href="box.html"><span class="cap">Next</span><span class="pg-title">Box: The One-Word Heap Pointer</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

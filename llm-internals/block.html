@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Transformer Block — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="block">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Machine</p>
+    <h1>The Transformer Block</h1>
+    <p class="lede">After this page you can say how the two halves wire
+    into one floor, why the wiring lets floors stack thirty-two deep,
+    and what the whole model totals when they do.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-wire">Why add instead of replace</a></li>
+        <li><a href="#sec-stream">A running vector</a></li>
+        <li><a href="#sec-scale">Keeping the entries in range</a></li>
+        <li><a href="#sec-floor">The assembled floor</a></li>
+        <li><a href="#sec-stack">The tower, counted</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-wire">
+      <h2>Why add instead of replace</h2>
+      <p>Two pages of machinery, one missing piece. The gathering half
+      moves information between positions; the per-position half
+      transforms each position alone. Both were shown with two details
+      deliberately unexplained — a scaling step before, an add-back
+      after. This page is those details, and the floor they make.</p>
+      <p>Start with the add-back, because it is the one that makes depth
+      possible. Consider the alternative: a floor whose output is
+      simply its halves' output. Each floor replaces its input with a
+      fresh transformation of it. Stack thirty-two such floors and the
+      top of the tower sees only the last transformation's version of
+      the text — every floor must re-encode everything the floors below
+      established, and any floor that mangles its input passes the
+      damage up intact.</p>
+      <p>The shipped design refuses to replace. A
+      <dfn><a href="glossary.html#t-residual-connection">residual
+      connection</a></dfn> adds a sublayer's output back onto its input
+      — the pattern <code>y = x + Sublayer(x)</code> — so the input
+      survives every floor and each half only contributes an edit
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>Read the formula mechanically: whatever the half computes gets
+      added to the stream, not substituted for it. The floor's job
+      description changes from "transform the text" to "propose
+      amendments to the text" — and amendments can be small, partial,
+      even zero. A half with nothing useful to contribute can output
+      zeros and do no harm.</p>
+    </section>
+
+    <section id="sec-stream">
+      <h2>A running vector</h2>
+      <p>The add-backs give the whole tower a second reading, and the
+      reading has a name. The
+      <dfn><a href="glossary.html#t-residual-stream">residual
+      stream</a></dfn> is the running vector: one vector per position,
+      starting as the embedding row, flowing up through every floor;
+      each half of each floor reads it, computes an edit, and adds the
+      edit in; nothing ever replaces it
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>Three consequences worth holding. Information added at floor
+      one is still present at the top — every later floor can read what
+      every earlier floor wrote. Each half only ever needs to learn an
+      edit, not a full transformation. And when Part Two runs the
+      learning signal backward through the tower, the skip lines are
+      the road it takes — the identity path carries it through
+      unchanged
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>The bookends: the stream starts as the embedding lookup's
+      rows, and ends at the output projection — the table that turns
+      its final content into next-piece
+      scores.</p>
+      <p>The stream has one more property worth naming: its width
+      never changes. It enters the first floor at the embedding width
+      and leaves the last floor at the same width, and every half of
+      every floor reads that width and writes that width back. The
+      per-position half's wide middle from the previous page is
+      internal machinery — its last table shrinks the edit back to the
+      stream's width before the add-back. That fixed width is what
+      makes floors interchangeable: any floor can sit anywhere in the
+      stack, because every floor speaks the same shape.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 240"><title>One position's vector flows left to right through a scaling step and one half of the floor; a separate line skips over both and joins at a circle-plus symbol, where the skip's value is added to the half's output</title>
+          <rect class="f-accent s-ink" stroke-width="1" x="40" y="130" width="60" height="40"/>
+          <text x="70" y="155" text-anchor="middle" font-size="13">x0</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="150" y="130" width="80" height="40"/>
+          <text x="190" y="155" text-anchor="middle" font-size="13">scale</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="280" y="130" width="110" height="40"/>
+          <text x="335" y="155" text-anchor="middle" font-size="13">one half</text>
+          <circle fill="none" class="s-ink" stroke-width="2" cx="450" cy="150" r="16"/>
+          <line class="s-ink" stroke-width="2" x1="442" y1="150" x2="458" y2="150"/>
+          <line class="s-ink" stroke-width="2" x1="450" y1="142" x2="450" y2="158"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="510" y="130" width="60" height="40"/>
+          <text x="540" y="155" text-anchor="middle" font-size="13">x1</text>
+          <line class="s-ink" stroke-width="1.5" x1="100" y1="150" x2="150" y2="150"/>
+          <line class="s-ink" stroke-width="1.5" x1="230" y1="150" x2="280" y2="150"/>
+          <line class="s-ink" stroke-width="1.5" x1="390" y1="150" x2="434" y2="150"/>
+          <line class="s-ink" stroke-width="1.5" x1="466" y1="150" x2="510" y2="150"/>
+          <path fill="none" class="s-accent" stroke-width="2" d="M 100 150 L 100 70 L 450 70 L 450 134"/>
+          <text x="275" y="58" text-anchor="middle" font-size="12">the skip: x0 adds back unchanged</text>
+          <text class="t-dim" x="320" y="210" text-anchor="middle" font-size="12">one position's vector, moving left to right</text>
+        </svg>
+        <figcaption>The wiring of one half: scale, transform, add the
+        result back onto what came in. The skip line is the residual
+        connection — the original vector survives every floor, and each
+        half of every floor only adds an edit to it.</figcaption>
+      </figure>
+    </section>
+
+    <section id="sec-scale">
+      <h2>Keeping the entries in range</h2>
+      <p>The scaling steps solve an arithmetic problem. The stream's
+      entries get multiplied by learned tables and added to by edits,
+      floor after floor, and nothing in that arithmetic holds their
+      size steady: run enough floors and the entries drift — large
+      here, tiny there. The machine's nonlinear steps are
+      scale-sensitive — the softmax over scores goes flat when scores
+      grow, and the bend reacts to entry size — so a drifting stream
+      eventually deafens the floors above.</p>
+      <p>The original design's answer:
+      <dfn><a href="glossary.html#t-layernorm">LayerNorm</a></dfn> —
+      for each position separately, subtract the vector's entry
+      average, divide by its spread, then re-scale and re-shift each
+      entry with learned numbers
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>The modern answer does half the work:
+      <dfn><a href="glossary.html#t-rmsnorm">RMSNorm</a></dfn> — skip
+      the mean-subtraction; divide each vector by its own
+      root-mean-square entry size and re-scale each entry with learned
+      numbers. Cheaper to compute, and used across the Llama family
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the scaling step, exactly as shipped
+        (the learned per-entry numbers live in g)</figcaption>
+<pre><code class="language-python">def rmsnorm(x, g, eps=1e-6):
+    s = np.mean(x * x, axis=-1, keepdims=True) + eps
+    return x / np.sqrt(s) * g</code></pre>
+      </figure>
+
+      <p>Placement has an answer too:
+      <dfn><a href="glossary.html#t-pre-norm">pre-norm</a></dfn> scales
+      before the half reads the stream — <code>x + Sublayer(Norm(x))</code>
+      — rather than normalizing the half's output after it. The
+      original paper scaled after; everything from GPT-2 onward,
+      including Llama, scales before, because the before-arrangement is
+      what stays stable during training at depth
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+    </section>
+
+    <section id="sec-floor">
+      <h2>The assembled floor</h2>
+      <p>Everything is now on the table. A
+      <dfn><a href="glossary.html#t-transformer-block">transformer
+      block</a></dfn> is one floor of the tower: scale, gather (all
+      heads at once), add back; scale, transform per position, add
+      back. Each floor owns its own tables; the stream is the only
+      thing that passes between floors
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>The companion script's forward pass, wiring and all — the same
+      lines the last two pages excerpted in halves, now whole:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — one floor, wiring and all: two
+        pre-scaled halves, two add-backs, one final scaling before the
+        output table</figcaption>
+<pre><code class="language-python">ctx = np.einsum('hqk,khd->qhd', A, v).reshape(n, d_model)
+x1 = x0 + ctx @ params['Wo']
+
+h2 = rmsnorm(x1, params['ln2'])
+pre = h2 @ params['W1'] + params['b1']
+act = gelu(pre)
+x2 = x1 + act @ params['W2'] + params['b2']
+
+hf = rmsnorm(x2, params['lnf'])
+logits = hf @ params['unemb']</code></pre>
+      </figure>
+
+      <p>Read it as the diagram: two pre-scaled halves, two add-backs,
+      one final scaling before the output table. The toy runs one floor
+      with two heads and a two-table per-position half; the 8B model
+      runs the same wiring with thirty-two floors, grouped heads, and
+      the three-table recipe.</p>
+      <p>Run the removal test on the assembled floor. Remove the
+      gathering half and every position's fate is fixed from the start
+      — the per-position half applies the same bend to each vector in
+      isolation, and no position can ever learn which earlier piece a
+      later "it" points back to. Remove the per-position half and the
+      positions talk but nobody acts — the gathered mix arrives at each
+      position, but no learned table decides what a position does with
+      what it heard. The tower needs both, in alternation: communicate,
+      then think, floor after floor.</p>
+    </section>
+
+    <section id="sec-stack">
+      <h2>The tower, counted</h2>
+      <p>Stack the floors. The 8B model stacks thirty-two of them
+      <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>;
+      the largest GPT-3, ninety-six
+      <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>.
+      Each floor receives the stream as the floors below left it, and
+      each owns its tables — which is why the count scales with the
+      floor count. The full arithmetic, at last
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the whole model,
+        counted</p>
+        <div class="worked-body">
+<pre><code class="language-text">the 8B model, counted floor by floor:
+
+  per floor:
+    gathering half     ~42M
+    per-position half  ~176M
+                       --------
+    floor total        ~218M
+  32 floors                         = ~6.98B
+  embedding (128,256 x 4096)       = ~525M
+  output table (separate head)     = ~525M
+                                    --------
+  total                             = ~8.03B
+
+  (the number on the box is an entry count, rounded)</code></pre>
+        </div>
+      </div>
+
+      <p>Just over eight billion entries: the floors at roughly 218
+      million each
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>,
+      the embedding and the separate output table at roughly half a
+      billion each. The number on the box is an entry count, rounded.</p>
+      <p>One sentence of scale before Part Two: at every position of
+      every sequence, the whole tower is this page's wiring repeated —
+      nothing more exotic appears anywhere in the machine. What is
+      still missing is the point. The tower computes, but nothing yet
+      tells it when it is wrong. The number that does — and the rule
+      that moves every one of those eight billion entries to push it
+      down — is where Part Two begins.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The residual connection adds each half's output back onto
+        its input (y = x + Sublayer(x)): floors edit a stream instead
+        of replacing it, so depth accumulates instead of
+        discarding.</li>
+        <li>The residual stream: one vector per position from embedding
+        row to output table; every half of every floor reads it, scales
+        it, and adds an edit.</li>
+        <li>The scaling steps keep entries in range: LayerNorm
+        (subtract mean, divide by spread), RMSNorm (divide by
+        root-mean-square — cheaper, used by Llama), placed before each
+        half (pre-norm).</li>
+        <li>The transformer block is the assembled floor: scale,
+        gather, add back; scale, transform, add back — with its own
+        tables, stacked thirty-two times in the 8B model.</li>
+        <li>The full count: ~218M per floor, 32 floors, plus embedding
+        and output tables — just over eight billion entries. Next: the
+        number that says the machine is wrong.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="ffn.html"><span class="cap">Previous</span><span class="pg-title">The Feed-Forward Network</span></a>
+    <a class="pager-card" rel="next" href="training-objective.html"><span class="cap">Next</span><span class="pg-title">What Training Actually Optimizes</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

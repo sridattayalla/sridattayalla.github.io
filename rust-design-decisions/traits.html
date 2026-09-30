@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traits: Dispatch, Coherence, and dyn — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="traits">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Seven — Abstraction and Synthesis</p>
+    <h1>Traits: Dispatch, Coherence, and dyn</h1>
+    <p class="lede">Every page so far leaned on traits without asking
+    two questions. Why can you not implement a standard trait for a
+    standard type — the one impl you keep reaching for? And what did
+    that boxed error on the last page actually cost? Both answers
+    live in the same machinery: how Rust turns a trait's method
+    call into running code. This page opens the machinery.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#the-question">The question the last page left</a></li>
+        <li><a href="#coherence">One impl, or the link fails</a></li>
+        <li><a href="#static-dispatch">Static dispatch: a copy per type</a></li>
+        <li><a href="#dynamic-dispatch">Dynamic dispatch: one call site, many types</a></li>
+        <li><a href="#the-ladder">The ladder, and the bill</a></li>
+      </ol>
+    </nav>
+
+    <section id="the-question">
+      <h2>The question the last page left</h2>
+      <p>You have been writing traits since the ownership page —
+      <code>Drop</code> on your guards, <code>Display</code> on your
+      types, <code>Error</code> on your failures — and calling other
+      people's since the first line of Rust you ever read. A trait
+      is a contract: a list of method names a type promises to
+      provide. What the contract never said is how a call to one of
+      those methods becomes machine code. That omission hides this
+      page's two questions.</p>
+      <p>The last page ended on a cost we never counted:
+      <code>read_config</code> returned its failures as one type
+      standing for every error the function could produce — a value
+      typed only by what it can do. That is one of the two ways
+      Rust turns a trait contract into code. The other is generics.
+      They differ in who picks the concrete type — the compiler,
+      one copy per type, or the run time, one call site for all of
+      them — and the difference shows up in the binary, in the
+      call itself, and in one rule about which impls you are
+      allowed to write at all. Start with the rule, because it is
+      the one you have already met without knowing its name.</p>
+    </section>
+
+    <section id="coherence">
+      <h2>One impl, or the link fails</h2>
+      <p>Rust resolves every method call at compile time: the exact
+      function behind a call is fixed before the program runs. That
+      has a consequence — for any trait and any type, there must be
+      exactly one implementation. If two crates each shipped an
+      impl of <code>Display</code> for <code>Vec&lt;u8&gt;</code>,
+      one call would have two candidates and no way to choose
+      between them. The guarantee that this can never happen is
+      <dfn><a href="glossary.html#t-coherence">coherence</a></dfn>:
+      at most one impl of a given trait for a given type,
+      program-wide.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <p>Coherence is enforced by the
+      <dfn><a href="glossary.html#t-orphan-rule">orphan
+      rule</a></dfn>: an impl is legal only if the trait, or at
+      least one of the types it mentions, is defined in your crate.
+      The Reference states it plainly:</p>
+      <blockquote>
+        <p>"A trait implementation is only allowed if either the
+        trait or at least one of the types in the implementation is
+        defined in the current crate. It prevents conflicting trait
+        implementations across different crates and is key to
+        ensuring
+        coherence."<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      </blockquote>
+      <p>The refusal, when you reach for the impl that owns
+      nothing:</p>
+      <figure class="codeblock reject">
+        <figcaption>orphan_rule.rs — the impl you are not allowed
+        to write</figcaption>
+<pre data-verify="fail" data-error="E0117" data-expect="only traits defined in the current crate"><code class="language-rust">use std::fmt;
+
+impl fmt::Display for Vec&lt;u8&gt; {
+    fn fmt(&amp;self, f: &amp;mut fmt::Formatter) -&gt; fmt::Result {
+        write!(f, "Vec&lt;u8&gt; of {} bytes", self.len())
+    }
+}
+
+fn main() {
+    let v = vec![1, 2, 3];
+    println!("{}", v);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the refusal, captured</figcaption>
+<pre><code class="language-text">error[E0117]: only traits defined in the current crate can be implemented for types defined outside of the crate
+ --&gt; orphan_rule.rs:3:1
+  |
+3 | impl fmt::Display for Vec&lt;u8&gt; {
+  | ^^^^^^^^^^^^^^^^^^^^^^-------
+  |                       |
+  |                       `Vec` is not defined in the current crate
+  |
+  = note: impl doesn't have any local type before any uncovered type parameters
+  = note: for more information see https://doc.rust-lang.org/reference/items/implementations.html#orphan-rules
+  = note: define and implement a trait or new type instead</code></pre>
+      </figure>
+      <p>Read the error's last note first: define and implement a
+      trait or new type instead — rustc itself prescribing the
+      escape. The
+      <dfn><a href="glossary.html#t-newtype">newtype</a></dfn>
+      is that escape: a wrapper struct with exactly one field. Wrap
+      the <code>Vec</code> in a local struct, implement
+      <code>Display</code> for the wrapper, and the rule is
+      satisfied — the local type is yours. The wrapper is a
+      compile-time fiction: no allocation, no extra step at run
+      time, the same bytes in the same order. You pay in a layer of
+      conversion at the boundary, not in the
+      loop.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <p>RFC 1023 and RFC 2451 later adjusted the rule's details —
+      which types count as local enough, and when generic
+      parameters cover — but the shape never moved: your trait or
+      your type, or no
+      impl.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+    </section>
+
+    <section id="static-dispatch">
+      <h2>Static dispatch: a copy per type</h2>
+      <p>Generics are the first way to turn a contract into code,
+      and they get the fast lane.
+      <dfn><a href="glossary.html#t-static-dispatch">Static
+      dispatch</a></dfn>
+      means the compiler resolves the call: by the time the program
+      runs, the exact function is baked into the instruction
+      stream. Generics achieve it through
+      <dfn><a href="glossary.html#t-monomorphization">monomorphization</a></dfn>
+      — for every concrete type a generic function is used with,
+      the compiler stamps out a specialized copy. The Book's
+      phrase: "the compiler turns generic code into specific code
+      by filling in the concrete
+      types."<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <figure class="codeblock accept">
+        <figcaption>monomorph.rs — one generic function, two
+        concrete types</figcaption>
+<pre data-verify="run" data-expect="max s: pear"><code class="language-rust">fn largest&lt;T: PartialOrd&gt;(list: &amp;[T]) -&gt; &amp;T {
+    let mut max = &amp;list[0];
+    for item in list {
+        if item &gt; max {
+            max = item;
+        }
+    }
+    max
+}
+
+fn main() {
+    let numbers = vec![3, 9, 2, 7];
+    let words = vec!["apple", "banana", "pear", "fig"];
+    println!("max n: {}", largest(&amp;numbers));
+    println!("max s: {}", largest(&amp;words));
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">max n: 9
+max s: pear</code></pre>
+      </figure>
+      <p>Two call sites in the source, two functions in the
+      binary: <code>largest</code> for the number list and
+      <code>largest</code> for the word list exist as separate
+      machine code, each with its comparison inlined down to a
+      couple of instructions — no boxing, no table lookup, nothing
+      between the call and the work. The bill is paid elsewhere:
+      compile time and binary size grow with every distinct
+      instantiation — the C++ templates experience, inherited
+      honestly. The benefit is the zero-cost abstraction claim in
+      its concrete form: the generic call runs at hand-written
+      speed, because by run time it <em>is</em> hand-written code
+      for your exact
+      types.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+    </section>
+
+    <section id="dynamic-dispatch">
+      <h2>Dynamic dispatch: one call site, many types</h2>
+      <p>Sometimes the set of types is not known when the program
+      is compiled. A plugin loaded at start-up, an error raised by
+      any library in the program, a shape read from a data file:
+      the caller cannot enumerate them, so a copy per type is
+      impossible.
+      <dfn><a href="glossary.html#t-dynamic-dispatch">Dynamic
+      dispatch</a></dfn>
+      resolves the call at run time instead — and its currency is
+      the
+      <dfn><a href="glossary.html#t-trait-object">trait
+      object</a></dfn>: a value whose concrete type is unknown,
+      typed only by what it promises to do —
+      <code>dyn Shape</code>. The mechanism is the
+      <dfn><a href="glossary.html#t-vtable">vtable</a></dfn>: for
+      each concrete type, the compiler builds one table of function
+      pointers, one slot per trait method; a call through the trait
+      object reads the method's address from the table and
+      jumps.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <p>Because any concrete type may sit behind a
+      <code>dyn Shape</code>, the value has no fixed size — so
+      every reference to one is a fat pointer: two words, the
+      data's address and the table's. The sizes prove the
+      shape:</p>
+      <figure class="codeblock accept">
+        <figcaption>fat_pointers.rs — one trait, two shapes, three
+        pointer sizes</figcaption>
+<pre data-verify="run" data-expect="&amp;dyn Shape size: 16"><code class="language-rust">trait Shape {
+    fn area(&amp;self) -&gt; f64;
+}
+
+struct Square(f64);
+struct Circle(f64);
+
+impl Shape for Square {
+    fn area(&amp;self) -&gt; f64 {
+        self.0 * self.0
+    }
+}
+
+impl Shape for Circle {
+    fn area(&amp;self) -&gt; f64 {
+        3.141592653589793 * self.0 * self.0
+    }
+}
+
+fn main() {
+    let shapes: Vec&lt;Box&lt;dyn Shape&gt;&gt; = vec![Box::new(Square(2.0)), Box::new(Circle(1.0))];
+    for shape in &amp;shapes {
+        println!("{:.2}", shape.area());
+    }
+    println!("&amp;dyn Shape size: {}", std::mem::size_of::&lt;&amp;dyn Shape&gt;());
+    println!("&amp;[u32] size: {}", std::mem::size_of::&lt;&amp;[u32]&gt;());
+    println!("&amp;Square size: {}", std::mem::size_of::&lt;&amp;Square&gt;());
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">4.00
+3.14
+&amp;dyn Shape size: 16
+&amp;[u32] size: 16
+&amp;Square size: 8</code></pre>
+      </figure>
+      <figure>
+        <svg role="img" viewBox="0 0 640 230"><title>A thin reference is one pointer; a reference to a trait value is two — the data address and the method table</title>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="40" y="24" width="110" height="32"/>
+          <text x="95" y="44" text-anchor="middle" font-size="12">&amp;Square</text>
+          <text class="t-dim" x="95" y="72" text-anchor="middle" font-size="12">8 bytes</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M150 40 H188"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M188 36l7 4-7 4"/>
+          <rect class="f-green s-ink" stroke-width="1.5" x="195" y="24" width="150" height="32"/>
+          <text x="270" y="44" text-anchor="middle" font-size="12">the Square value</text>
+          <text class="t-dim" x="95" y="96" text-anchor="middle" font-size="12">&amp;dyn Shape</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="40" y="104" width="110" height="32"/>
+          <text x="95" y="124" text-anchor="middle" font-size="12">data ptr</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="40" y="140" width="110" height="32"/>
+          <text x="95" y="160" text-anchor="middle" font-size="12">vtable ptr</text>
+          <text class="t-dim" x="95" y="192" text-anchor="middle" font-size="12">16 bytes</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M150 120 H188"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M188 116l7 4-7 4"/>
+          <rect class="f-green s-ink" stroke-width="1.5" x="195" y="104" width="150" height="32"/>
+          <text x="270" y="124" text-anchor="middle" font-size="12">the Circle value</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M95 172 V202 H188"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M188 198l7 4-7 4"/>
+          <rect class="s-accent" fill="none" stroke-width="1.5" x="195" y="185" width="180" height="34"/>
+          <text x="285" y="206" text-anchor="middle" font-size="12">the vtable: area()</text>
+        </svg>
+        <figcaption>The second word is the price of not knowing the
+        concrete type: it points at the table the call will
+        read.</figcaption>
+      </figure>
+      <p>Sixteen bytes for a reference to the trait value, twice
+      the eight of a plain reference — and note the middle line of
+      the output: a slice reference is also sixteen, because slices
+      were the first fat pointer you met, on the borrowing page —
+      data pointer plus length, where the trait flavor carries data
+      pointer plus table. The loop is the payoff: one call site,
+      <code>shape.area()</code>, ran the Square's code and then the
+      Circle's, each address read from its own value's
+      table.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <p>RFC 2113 made the syntax carry the cost:</p>
+      <blockquote>
+        <p>"Introduce a new dyn Trait syntax for trait objects
+        using a contextual dyn keyword, and deprecate 'bare trait'
+        syntax for trait
+        objects."<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      </blockquote>
+      <p>Before the keyword, <code>Shape</code> alone could mean
+      the trait or the value shaped by the trait, and the compiler
+      guessed which; now the line says what it buys and what it
+      charges. What it charges, precisely, is a constraint on the
+      trait itself: used as a trait object, it exposes only its
+      <dfn><a href="glossary.html#t-object-safety">object
+      safety</a></dfn>
+      subset — no generic methods, no methods returning the
+      implementing type itself. The table needs one signature per
+      slot; a generic method would need one slot per instantiation,
+      and instantiations have no
+      bound.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <p>And so the last page's question has its answer. The boxed
+      error of any type is a trait object: one compiled call site
+      accepting every failure in the program, bought with one
+      indirection per call, no inlining across it, and the
+      object-safe subset of the error trait's methods. That is what
+      <code>Box&lt;dyn Error&gt;</code> costs — and what it bought
+      was the open set: any error, from anywhere, through one
+      type.</p>
+    </section>
+
+    <section id="the-ladder">
+      <h2>The ladder, and the bill</h2>
+      <p>Put the rungs in order. Generics: the fastest code — a
+      specialized copy per type, comparisons inlined — paid in
+      compile time and binary size; the caller picks the type at
+      compile time. <code>impl Trait</code> in a return position:
+      the same machinery wearing a mask — the concrete type hidden
+      from the signature, still monomorphized, still one copy per
+      actual type. <code>dyn Trait</code>: one compiled call site,
+      an indirect jump, and the open set — any type, including
+      types that did not exist when the caller was
+      compiled.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <p>The choice reduces to one question: is the set of types
+      closed at compile time? If the callers can enumerate them,
+      let generics stamp out the copies and run at hand-written
+      speed. If the set is open — plugins, foreign errors, anything
+      that arrives after compilation — the trait object is the only
+      rung that
+      holds.<a class="prov" data-src="research/traits.md" href="links.html#s-traits" title="traits — research/traits.md">[traits]</a></p>
+      <p>The bill, per rung: coherence occasionally forces a
+      newtype around a type you do not own; monomorphization
+      charges compile time and binary size; the trait object
+      charges an indirection per call and confines its traits to
+      the object-safe subset. Three prices, one currency: you
+      always know which one you are paying, because the syntax says
+      so — the generic brackets, the hidden type, the dyn keyword.
+      You now own every piece; the last page assembles them into
+      two programs and walks the whole loop one time.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Coherence — at most one impl of a trait for a type,
+        program-wide — is what makes compile-time call resolution
+        possible; the orphan rule enforces it: your trait or your
+        type, or no impl.</li>
+        <li>The newtype is the sanctioned escape: a one-field
+        wrapper is a local type and a compile-time fiction — no
+        run-time cost, one conversion at the boundary.</li>
+        <li>Static dispatch monomorphizes: one specialized, inlined
+        copy per concrete type; the bill is compile time and binary
+        size, never run-time speed.</li>
+        <li>Dynamic dispatch trades a fat pointer — data address
+        plus vtable — and an indirect call for the open set: any
+        type at run time, one compiled call site, object-safe
+        methods only.</li>
+        <li>The ladder rule: closed set at compile time, choose
+        generics; open set at run time, choose the trait
+        object.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="error-handling.html"><span class="cap">Previous</span><span class="pg-title">Errors and Panics: Two Tiers of Failure</span></a>
+    <a class="pager-card" rel="next" href="capstone.html"><span class="cap">Next</span><span class="pg-title">The Whole Language in Two Programs</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

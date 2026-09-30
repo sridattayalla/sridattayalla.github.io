@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<!--
+  ==========================================================================
+  UNDER THE AWAIT — CONTENT PAGE TEMPLATE
+  ==========================================================================
+  WRITER CONTRACT — copy this file into the right part directory and fill in
+  exactly FOUR things:
+
+    1. <title>PLACEHOLDER</title>            → "Page title — Under the Await"
+    2. <meta name="description" ...>         → one-sentence summary
+    3. <body data-page="PLACEHOLDER-ID">     → the page's manifest id
+                                               (e.g. "p01-03" — see assets/main.js)
+    4. Everything between the CONTENT markers in <main id="content">
+
+  Do NOT touch: the <head> links and scripts, the empty
+  <aside id="site-nav">, or the empty <nav id="page-nav">. main.js renders
+  the sidebar, the prev/next footer, code highlighting and the ← / → keys.
+  Paths are already correct for pages one level below the site root
+  (../assets/...). No external URLs, no webfonts, no inline event handlers.
+
+  CONTENT CLASSES (full list + tokens documented at the top of
+  assets/style.css):
+    .note / .warning / .pitfall     callouts (labels auto-generated)
+    aside.takeaways                 end-of-page summary box (supply a heading)
+    figure.diagram + figcaption     inline SVG figures; style shapes with
+                                    svg classes .box .arrow .arrow-head
+                                    .lane .label (+ .accent, .label.muted/mono)
+    table                           book-style, scrolls horizontally if wide
+    pre > code                      code block; add class="language-rust"
+                                    (also c, javascript, python, bash, …)
+    <code> inline · <kbd>           tinted mono · keycap
+  ==========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cooperative scheduling — Under the Await</title>
+  <meta name="description" content="When suspended things are cheap, sharing the workers is the whole game: yield points, run queues, work stealing, and the fairness contract that Tokio will later enforce.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p02-05">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>Cooperative scheduling</h1>
+
+      <p>The fifth entry in this tour is not another way to wait. It is
+        the rulebook that the last two strategies cannot live without.
+        Once suspended <a href="04-stackless-coroutines.html">coroutines</a>
+        (or <a href="03-green-threads.html">goroutines</a>) are cheap
+        enough to number in the hundreds of thousands, a new question
+        dominates everything: who runs, on which worker, and for how
+        long? Answer it badly and your million cheap things queue up
+        behind one greedy function. Answer it well and a handful of OS
+        threads serve all of them with barely a complaint.</p>
+
+      <h2>No alarm clock saves you</h2>
+
+      <p>Recall how the kernel handles contention: it is
+        <a href="../01-foundations/02-processes-threads-context-switches.html">preemptive</a>.
+        A timer interrupt fires, the kernel takes the CPU away from
+        whoever is on it, and it hands the CPU to someone else, whether
+        the running code consents or not. No thread can hog a core past
+        its slice. Fairness is enforced by hardware.</p>
+
+      <p>Inside a language's own machinery, that safety net is gone. The
+        deciding code, whatever dispatcher or loop your platform runs,
+        only gets a say <em>between</em> pieces of your code. It cannot
+        interrupt a running function mid-arithmetic. It runs when a
+        function pauses or returns, and at no other time. You met this
+        deal on the <a href="02-callbacks-and-event-loops.html">event
+        loop</a> page as the <strong>cooperative</strong> contract; now
+        it is the entire subject. Cooperation is not a style choice here.
+        It is a structural fact about anything that schedules inside one
+        thread.</p>
+
+      <h2>Yield points</h2>
+
+      <p>A <strong>yield point</strong> is a place where a running job
+        hands control back to the machinery: an <code>await</code> that
+        is not finished, a sleep, a receive on an empty pipe, an explicit
+        "someone else's turn" call. Between yield points, you own the
+        worker, completely, and nothing can take it from you. The whole
+        fairness question collapses into one sentence: how far apart are
+        your yield points?</p>
+
+      <p>Python makes this visible in the smallest possible program.
+        <code>asyncio.sleep(0)</code> does not sleep at all; it is the
+        canonical explicit yield, a pause of zero duration whose only
+        effect is giving the loop a chance to run someone else:</p>
+
+      <pre><code class="language-python">import asyncio
+
+async def ping(name):
+    for i in range(3):
+        print(name, i)
+        await asyncio.sleep(0)   # yield point: "someone else's turn"
+
+async def main():
+    await asyncio.gather(ping("A"), ping("B"))
+
+asyncio.run(main())</code></pre>
+
+      <pre><code class="language-plaintext">A 0
+B 0
+A 1
+B 1
+A 2
+B 2</code></pre>
+
+      <p>Two coroutines, one thread, perfectly interleaved, because each
+        one reaches a yield point after every single line. Now the
+        counterexample. Delete the <code>await</code> from a busy loop
+        and the interleaving does not degrade, it ends:</p>
+
+      <pre><code class="language-python">async def rude():
+    x = 0
+    while True:        # no yield point anywhere inside
+        x += 1         # this coroutine now owns the thread, forever</code></pre>
+
+      <p>Run <code>rude()</code> alongside anything else and nothing else
+        ever runs again. This is
+        <a href="02-callbacks-and-event-loops.html">starvation</a> in its
+        purest laboratory form: no lock contention, no slow disk, just one
+        function that never came up for air. The kernel would have evicted
+        it after a few milliseconds. The cooperative dispatcher cannot
+        evict it at all.</p>
+
+      <h2>Run queues and work stealing</h2>
+
+      <p>Yield points solve "when does the machinery get control." The
+        next question is "what does it run next." The answer, in every
+        serious implementation, starts with a deceptively boring
+        structure: a per-worker to-do list. A <strong>run queue</strong>
+        is exactly that, one worker's private queue of runnable jobs,
+        sitting right next to the code that drains it.</p>
+
+      <p>Why per-worker, rather than one big shared list? Because the
+        shared list is a hotspot. Every push, every pop, from every
+        worker, through one lock, on every scheduling decision, and the
+        line at that lock grows exactly as fast as your core count.
+        Private queues make the common case lock-free and local: a worker
+        finishing a job grabs the next one from its own list, in cache,
+        with nobody else involved.</p>
+
+      <p>Private queues create their own problem: work arrives
+        unevenly, and soon one worker has a backlog while its neighbors
+        idle. The fix is <strong>work stealing</strong>. When a worker's
+        own queue is empty, it does not go to sleep; it looks at the
+        other workers' queues and takes a portion of the busiest one for
+        itself. In Go, the thief takes half the victim's queue in a
+        single heist, which keeps the whole system balanced with a
+        minimum of thieving traffic:</p>
+      <!-- fs: os-io-primitives.md §7 (golang.design 9.2, Vyukov's go11sched
+           design doc): an idle P steals half of another P's run queue -->
+
+      <pre><code class="language-plaintext">each worker owns a run queue of runnable jobs
+
+when my queue is empty:
+    check the global queue          # shared fallback
+    try to steal half of a busy worker's queue
+    otherwise sleep in the netpoller</code></pre>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 210" role="img" aria-label="Diagram of work stealing between two workers: worker one has a queue with four jobs, worker two's queue is empty, and an arrow shows worker two stealing half of worker one's queue.">
+          <title>Work stealing: an idle worker takes half of a busy worker's run queue</title>
+          <rect class="box" x="30" y="30" width="150" height="46" rx="8"/>
+          <text class="label" x="105" y="58" text-anchor="middle">worker 1 (busy)</text>
+          <rect class="box accent" x="220" y="30" width="56" height="46" rx="6"/>
+          <text class="label mono" x="248" y="58" text-anchor="middle">j5</text>
+          <rect class="box accent" x="282" y="30" width="56" height="46" rx="6"/>
+          <text class="label mono" x="310" y="58" text-anchor="middle">j6</text>
+          <rect class="box" x="344" y="30" width="56" height="46" rx="6"/>
+          <text class="label mono" x="372" y="58" text-anchor="middle">j7</text>
+          <rect class="box" x="406" y="30" width="56" height="46" rx="6"/>
+          <text class="label mono" x="434" y="58" text-anchor="middle">j8</text>
+          <text class="label muted" x="470" y="58">run queue</text>
+          <rect class="box" x="30" y="130" width="150" height="46" rx="8"/>
+          <text class="label" x="105" y="158" text-anchor="middle">worker 2 (idle)</text>
+          <rect class="box" x="282" y="130" width="56" height="46" rx="6" stroke-dasharray="4 4"/>
+          <text class="label muted mono" x="310" y="158" text-anchor="middle">j7</text>
+          <rect class="box" x="344" y="130" width="56" height="46" rx="6" stroke-dasharray="4 4"/>
+          <text class="label muted mono" x="372" y="158" text-anchor="middle">j8</text>
+          <text class="label muted" x="430" y="158">(now hers)</text>
+          <path class="arrow accent" d="M 372 76 C 372 110 372 110 372 124"/>
+          <polygon class="arrow-head accent" points="367,124 377,124 372,134"/>
+          <text class="label accent" x="470" y="108">steal half</text>
+        </svg>
+        <figcaption>Figure 1: work stealing. Worker 2 finds her queue
+          empty, so she takes half of worker 1's backlog. Nobody asked
+          worker 1, and nobody needed to.</figcaption>
+      </figure>
+
+      <h2>What real systems do</h2>
+
+      <p>Go's policy you can now read fluently from the
+        <a href="03-green-threads.html">GMP</a> page: each P drains its
+        own run queue, steals half a neighbor's when empty, and leans on
+        yield points inside its pipes and locks, plus explicit politeness.
+        Go also arms a backstop for the rude loop: since Go 1.14, a
+        watchdog in the machinery can force a hogging goroutine off the
+        CPU with a signal, roughly once every 10 ms, because a decade of
+        production taught them that somebody always writes
+        <code>while true</code> without a pause in it. The polite call
+        still exists for when you know better:</p>
+      <!-- fs: os-io-primitives.md §7 (golang.design 9.4): Go 1.14 introduced
+           signal-based asynchronous preemption, sysmon-driven about every 10 ms -->
+
+      <pre><code class="language-go">package main
+
+import (
+	"fmt"
+	"runtime"
+)
+
+func main() {
+	go func() {
+		fmt.Println("hello from a goroutine")
+	}()
+	runtime.Gosched() // explicit yield point: "my turn is done"
+	fmt.Println("hello from main")
+}</code></pre>
+
+      <p>Java's virtual thread machinery takes the same default from a
+        different angle: its dispatcher is a work-stealing
+        <code>ForkJoinPool</code> running in first-in-first-out mode,
+        sized by default to the number of available processors, and
+        because suspension there is invisible, the yield points are the
+        blocking calls themselves. You do not mark them. You do not see
+        them. The machinery finds them at the moment a carrier is about
+        to stall.</p>
+      <!-- fs: os-io-primitives.md §7 (JEP 444): the JDK's virtual thread
+           dispatcher is a work-stealing ForkJoinPool in FIFO mode, parallelism
+           defaulting to the available processors -->
+
+      <p>Python's asyncio is the minimal end of the spectrum: one
+        <a href="02-callbacks-and-event-loops.html">event loop</a>, one
+        run queue of ready coroutines, no stealing because there is
+        nothing to steal from, and fairness that is exactly as good as
+        your yield discipline. The differences among these systems are
+        real, but note how small they are next to what they share. Run
+        queues, stealing, and the dependence on yield points: the shape
+        is universal.</p>
+
+      <h2>The rule</h2>
+
+      <p>Everything on this page compresses into one habit: keep the
+        stretch between your yield points short. Short is not a fixed
+        number, and pretending otherwise would be dishonest. It is a
+        tradeoff between your throughput (yielding has a small cost) and
+        everyone else's latency (never yielding has an unbounded one).
+        The damage you can do is proportional to the longest stretch of
+        unyielding work you ship.</p>
+
+      <div class="warning">
+        <p>The rule has a thousand disguises. Sorting a big array inside
+          one coroutine. Parsing a large document. Holding a tight loop
+          that "will only take a moment." On a cooperative system, every
+          one of those is a decision made on behalf of every other job
+          on the same worker, and none of them consults those jobs
+          first.</p>
+      </div>
+
+      <p>Rust's position on this rule is stricter than any system on
+        this page, and it arrives in two steps. Part 3 builds the
+        machinery that makes suspension a value you control, and
+        <a href="../04-tokio-internals/03-scheduler.html">Part 4</a>
+        shows the engine room where this page's ideas, run queues,
+        stealing, and yield points, are enforced with real numbers:
+        workers get queues, thieves get rules, and every job gets an
+        allowance of steps per turn, after which it is pulled over and
+        made to yield whether it wanted to or not.</p>
+
+      <h2>Five doors, one choice</h2>
+
+      <p>Here is the whole of Part 2 in one table. Every strategy
+        answered the same question, "what does it cost to have many
+        things in flight?", and every answer set up the next:</p>
+
+      <table>
+        <thead>
+          <tr><th>Strategy</th><th>Memory per thing in flight</th><th>Who decides when to switch</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="01-thread-pools.html">Thread pool</a></td>
+            <td>a whole OS thread, megabytes</td>
+            <td>the kernel, preemptively</td>
+          </tr>
+          <tr>
+            <td><a href="02-callbacks-and-event-loops.html">Callbacks and event loop</a></td>
+            <td>bytes of bookkeeping</td>
+            <td>your handler, by returning</td>
+          </tr>
+          <tr>
+            <td><a href="03-green-threads.html">Green threads</a></td>
+            <td>kilobytes, a stack each</td>
+            <td>the language machinery, invisibly</td>
+          </tr>
+          <tr>
+            <td><a href="04-stackless-coroutines.html">Stackless coroutines</a></td>
+            <td>a small struct, the live locals</td>
+            <td>your code, at marked pauses</td>
+          </tr>
+          <tr>
+            <td>Cooperative scheduling</td>
+            <td>the rulebook, not a thing</td>
+            <td>everyone, politely, between yield points</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Rust looked at this menu and ordered door number four:
+        stackless coroutines, with the cooperative rulebook enforced
+        rather than suggested. <a href="../03-rust-async/08-why-stackless.html">Part
+        3</a> explains that choice by building the machinery from raw
+        parts: what a paused function is as a type, how it is asked to
+        continue, and what the compiler generates from your
+        <code>async</code> and <code>.await</code>. Then
+        <a href="../04-tokio-internals/01-runtime-overview.html">Part
+        4</a> opens the engine room and shows the workers, the queues,
+        and the thieves, running it all at scale.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Inside one thread there is no preemption: the machinery
+            runs only between your yield points, so fairness is a
+            contract every job must keep, not a right the kernel
+            enforces.</li>
+          <li>A yield point is any place a running job hands control
+            back: an unfinished await, a sleep, a receive, or an explicit
+            polite call; the distance between them decides everyone
+            else's latency.</li>
+          <li>A run queue is one worker's private to-do list of runnable
+            jobs; private queues avoid a shared hotspot, and work
+            stealing rebalances them when an idle worker takes half a
+            busy neighbor's backlog.</li>
+          <li>Real policies vary: Go steals halves and arms a preemption
+            backstop, Java's dispatcher steals in FIFO
+            order at invisible yield points, asyncio runs one loop and
+            trusts your discipline.</li>
+          <li>The rule underneath all of them: keep the stretch between
+            yield points short. Part 4 shows Tokio enforcing it with a
+            fixed step allowance per job.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

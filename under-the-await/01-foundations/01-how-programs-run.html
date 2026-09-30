@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How a program runs — Under the Await</title>
+  <meta name="description" content="What running really means: instructions, registers, the call stack, the heap, and the hard boundary between user space and kernel space.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-01">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>How a program runs</h1>
+
+      <p>You have launched programs thousands of times without once
+        wondering what "running" means. This chapter makes you wonder, then
+        answers. The machine underneath every language is the same: a CPU
+        executing tiny steps one at a time, a handful of registers acting as
+        its scratch paper, a call stack tracking where it is, and a hard
+        border between your code and the operating system's core. C, Python,
+        and JavaScript all compile or interpret down onto this machine, and
+        so, many chapters from now, does the machinery this book is named
+        after. If you want to understand how a server can hold ten thousand
+        connections open at once, you start here.</p>
+
+      <h2>The CPU: fast, literal, forgetful</h2>
+
+      <p>Strip a computer to its engine and you find a chip doing one thing,
+        over and over. It fetches an instruction from memory, decodes it,
+        executes it, and starts again. An instruction is a single tiny step,
+        a few bytes of machine code: add these numbers, copy this value
+        there, jump to that address. That is the entire vocabulary. Your
+        source code never reaches the chip as text; a compiler or an
+        interpreter grinds it down to these steps first.</p>
+
+      <p>The chip keeps its working state in registers, a small set of named
+        slots inside the CPU itself, each holding one number. Most are
+        general scratch space. One is special: the instruction pointer
+        always holds the address of the next instruction to fetch, and
+        "running" is nothing more than the loop below, repeated billions of
+        times per second.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 170" role="img">
+          <title>The CPU loop: fetch, decode, execute, repeat</title>
+          <text class="label muted" x="320" y="28" text-anchor="middle">the instruction pointer names the next step</text>
+          <rect class="box" x="40" y="50" width="130" height="46" rx="8"/>
+          <text class="label" x="105" y="78" text-anchor="middle">fetch</text>
+          <line class="arrow" x1="170" y1="73" x2="215" y2="73"/>
+          <polygon class="arrow-head" points="215,68 227,73 215,78"/>
+          <rect class="box" x="229" y="50" width="130" height="46" rx="8"/>
+          <text class="label" x="294" y="78" text-anchor="middle">decode</text>
+          <line class="arrow" x1="359" y1="73" x2="404" y2="73"/>
+          <polygon class="arrow-head" points="404,68 416,73 404,78"/>
+          <rect class="box" x="418" y="50" width="130" height="46" rx="8"/>
+          <text class="label" x="483" y="78" text-anchor="middle">execute</text>
+          <polyline class="lane" points="483,96 483,140 105,140 105,102"/>
+          <polygon class="arrow-head" points="99,105 111,105 105,95"/>
+          <text class="label muted" x="320" y="162" text-anchor="middle">repeat, billions of times per second</text>
+        </svg>
+        <figcaption>Figure 1: the whole engine. One step at a time,
+          forever.</figcaption>
+      </figure>
+
+      <p>Here is a two-line C function, and next to it roughly what a
+        compiler emits for x86-64. Read the comments on the right; they
+        carry the point.</p>
+
+      <pre><code class="language-c">int add(int a, int b) {
+    int sum = a + b;
+    return sum;
+}
+
+int main(void) {
+    int total = add(40, 2);
+    return total;
+}</code></pre>
+
+      <pre><code class="language-plaintext">add:
+    push   rbp           ; save the caller's frame pointer
+    mov    rbp, rsp      ; start a new frame
+    mov    eax, edi      ; eax = a     (first argument arrives in edi)
+    add    eax, esi      ; eax += b    (second argument arrives in esi)
+    pop    rbp           ; restore the caller's frame pointer
+    ret                  ; jump to the saved return address</code></pre>
+
+      <p>Notice what the chip never sees: variable names, types, the word
+        <code>sum</code>. It sees values landing in registers, one
+        instruction mutating them, and the return hop. Every language you
+        have ever used ends up in this shape; the differences are buried in
+        the translation.</p>
+
+      <h2>The call stack: how calls remember where to go</h2>
+
+      <p>Jumping into a function is easy. Coming back is the interesting
+        part. When <code>main</code> calls <code>add</code>, the CPU jumps
+        to <code>add</code>'s code, and when <code>add</code> finishes,
+        execution must resume inside <code>main</code> exactly where it left
+        off, with <code>main</code>'s locals intact. The machine's answer is
+        one of the oldest structures in computing: the call stack.</p>
+
+      <p>Every live call owns a stack frame, a chunk of the stack holding
+        that call's local variables, a few saved register values, and the
+        return address, meaning the spot to resume when the call finishes.
+        Calling pushes a new frame on top; returning pops it. The stack
+        grows and shrinks all day as your program calls and returns, and a
+        dedicated register, the stack pointer, always marks the current
+        top.</p>
+
+      <pre><code class="language-plaintext">high addresses
+  +------------------------------+
+  | argv, environment            |
+  +------------------------------+
+  | frame for main()             |
+  |   locals: total              |
+  |   return address: into the   |
+  |     code that called main    |
+  +------------------------------+
+  | frame for add()              |
+  |   locals: a, b, sum          |
+  |   return address: into main  |
+  +------------------------------+   &lt;- stack pointer (rsp)
+  |        (free space)          |
+  +------------------------------+
+low addresses</code></pre>
+
+      <p>When <code>add</code> returns, its frame is not cleaned up so much
+        as abandoned: the stack pointer slides back down, and the next call
+        writes over the same bytes. Nothing needs tidying, because a
+        frame's lifetime is exactly the lifetime of its call. That
+        discipline, lifetimes bounded by calls, is why stack space is
+        nearly free.</p>
+
+      <div class="note"><p>Linux gives each running program a stack of
+        8 MiB by default. That figure is virtual: the system reserves the
+        address range but only converts pages to real RAM as the stack
+        actually touches them. Deep recursion turns reservation into
+        commitment very quickly.</p></div>
+      <!-- fs: fact sheet §1 — Linux default stack 8 MiB virtual (glibc/pthreads; ulimit -s shows 8192 KiB); pages commit on first touch -->
+
+      <p>Recursion makes the pile visible. Each recursive call pushes
+        another frame, so a missing base case grows the stack until it
+        slams into a guard page and the program dies with a stack overflow.
+        Python raises <code>RecursionError</code> instead, stopping you at a
+        fixed frame count, but the underlying geometry is the same one you
+        can feel in C.</p>
+
+      <h2>The heap: memory that outlives the call</h2>
+
+      <p>The stack's rule, "die with your call", is exactly wrong for data
+        that must survive it. Return a string the caller will keep for an
+        hour, and that string cannot live in a frame that vanishes the
+        instant you return. So practical languages offer a second region,
+        the heap: a pool of memory where values live for as long as someone
+        can reach them, independent of any call.</p>
+
+      <p>In C you work it by hand. <code>malloc</code> claims a region,
+        <code>free</code> gives it back, and you chase the bugs when you get
+        the bookkeeping wrong. Python and JavaScript hide the same region
+        behind a garbage collector, which reclaims values once nothing can
+        reach them. Either way, the division of labor is the same:</p>
+
+      <table>
+        <thead>
+          <tr><th></th><th>Call stack</th><th>Heap</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>lifetime</th><td>exactly as long as the call</td>
+            <td>until freed, or until nothing can reach it</td></tr>
+          <tr><th>who manages it</th><td>the call itself: push and pop</td>
+            <td>you, or a garbage collector</td></tr>
+          <tr><th>cost</th><td>near zero: move one pointer</td>
+            <td>real work, sometimes a kernel request</td></tr>
+        </tbody>
+      </table>
+
+      <p>One subtlety worth a sentence: each program sees its own private
+        memory map. The addresses in your pointers are not physical
+        locations; they are positions in a per-program virtual map that the
+        kernel and the hardware translate behind your back. That is how two
+        programs can both use address 0x400000 without colliding, and it is
+        also part of the wall between programs, which brings us to the last
+        piece of the machine.</p>
+
+      <h2>Two worlds: user space and kernel space</h2>
+
+      <p>CPUs can run at more than one privilege level. x86 hardware calls
+        these levels rings, and operating systems use two of them: ring 0,
+        fully privileged, and ring 3, restricted. The hardware itself
+        enforces the rules. Code running in ring 3 cannot execute certain
+        instructions, cannot touch the machine's control registers, and
+        cannot read memory belonging to ring 0.</p>
+
+      <p>Your program runs in ring 3, a world called user space. It is a
+        comfortably furnished cage. Your code can compute anything it likes
+        with its registers, its stack, and its heap, but it cannot touch the
+        disk, the network card, the screen, or another program's memory.
+        All of that belongs to kernel space, the ring 0 world where the
+        kernel, the operating system's core, lives and works on everyone's
+        behalf. Without that wall, any buggy program could read another
+        program's secrets, or hang the whole machine.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 200" role="img">
+          <title>User space above, kernel space below, requests crossing a controlled boundary</title>
+          <rect class="box" x="40" y="18" width="560" height="56" rx="8"/>
+          <text class="label" x="320" y="41" text-anchor="middle">user space (ring 3)</text>
+          <text class="label muted" x="320" y="61" text-anchor="middle">your programs: code, call stacks, heaps</text>
+          <line class="lane" x1="40" y1="106" x2="600" y2="106"/>
+          <line class="arrow" x1="280" y1="82" x2="280" y2="130"/>
+          <polygon class="arrow-head" points="274,128 286,128 280,138"/>
+          <text class="label muted" x="245" y="118" text-anchor="end">requests</text>
+          <line class="arrow" x1="360" y1="132" x2="360" y2="84"/>
+          <polygon class="arrow-head" points="354,86 366,86 360,76"/>
+          <text class="label muted" x="395" y="98" text-anchor="start">results</text>
+          <rect class="box accent" x="40" y="138" width="560" height="56" rx="8"/>
+          <text class="label" x="320" y="161" text-anchor="middle">kernel space (ring 0)</text>
+          <text class="label muted" x="320" y="181" text-anchor="middle">the kernel: hardware, disks, network, memory</text>
+        </svg>
+        <figcaption>Figure 2: two worlds. Every real resource lives below
+          the line; every request for one crosses it.</figcaption>
+      </figure>
+
+      <p>The kernel is not magic. It is a program, merely the most
+        privileged one on the machine. Your program talks to it through one
+        strictly controlled interface, and every request for a real resource
+        crosses that line: every byte read from a socket, every file opened,
+        every fresh chunk of memory the system hands out. Think of it as a
+        bank teller's window. You cannot walk into the vault; you make a
+        request, and the teller does the vault work on your behalf.
+        Chapter 3 shows you the door itself. For now you only need the
+        geography: there are two worlds, and the boundary between them is
+        the most important line on the machine.</p>
+
+      <p>One last observation, and it is the one to keep. Everything a
+        running computation needs is registers plus a call stack. Freeze a
+        program mid-call, save those two things somewhere, restore them
+        later, and it continues as if nothing had happened. That is not a
+        fantasy. It is how the operating system keeps many programs alive on
+        a few cores, which is the next chapter, and it is how, far ahead in
+        Part 3, a suspended piece of work survives without a machine of its
+        own. Hold the image: a frozen stack, waiting to resume.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A CPU runs a fetch-decode-execute loop over instructions;
+            registers are its scratch slots, and the instruction pointer
+            says what runs next.</li>
+          <li>Every live call owns a stack frame with locals and a return
+            address; the call stack grows and shrinks as calls begin and
+            end, which is why stack space is nearly free.</li>
+          <li>The heap holds data that outlives a call; it costs real work,
+            unlike the stack's push and pop.</li>
+          <li>Your code runs in user space, unprivileged; the kernel in
+            kernel space owns all real resources, and every request for one
+            crosses the boundary between them.</li>
+          <li>A computation is just registers plus a stack. Freeze both and
+            it can resume later, an image this book returns to.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

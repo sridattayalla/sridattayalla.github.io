@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="glossary">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Reference</p>
+    <h1>Glossary</h1>
+    <p class="lede">Every term this book defined, gathered in one
+    place and grouped by the part that introduced it. Each entry links
+    back to the page that argues for it — this page restates, the
+    pages explain. If a definition raises a question, the answer is
+    one click away.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#start">Start</a></li>
+        <li><a href="#part-one">Part One — The Constraint</a></li>
+        <li><a href="#part-two">Part Two — Ownership</a></li>
+        <li><a href="#part-three">Part Three — Borrowing</a></li>
+        <li><a href="#part-four">Part Four — The Heap Menu</a></li>
+        <li><a href="#part-five">Part Five — Mutation and Threads</a></li>
+        <li><a href="#part-six">Part Six — The Escape Hatches</a></li>
+        <li><a href="#part-seven">Part Seven — Abstraction and Synthesis</a></li>
+      </ol>
+    </nav>
+
+    <section id="start">
+      <h2>Start</h2>
+      <p>The words the opening page needed before any mechanism
+      existed.</p>
+      <dl class="gloss">
+        <dt id="t-memory-safety">memory safety</dt>
+        <dd>The guarantee that a program cannot read freed memory,
+        write past an allocation, or race two threads on the same
+        bytes — built into the language, not left to programmer care.
+        Defined on <a href="index.html">the opening page</a>.</dd>
+        <dt id="t-garbage-collector">garbage collector</dt>
+        <dd>A run-time component that periodically finds unreachable
+        values and frees them; safe, but it charges pauses, bookkeeping
+        overhead, and a permanent run-time presence. Defined on
+        <a href="index.html">the opening page</a>.</dd>
+        <dt id="t-runtime">runtime</dt>
+        <dd>The machinery a language needs present while a program
+        runs. Rust needs none for memory: freeing follows ownership,
+        compiled into the program itself. Defined on
+        <a href="index.html">the opening page</a>.</dd>
+        <dt id="t-ownership">ownership</dt>
+        <dd>Rust's answer to memory: every value has exactly one
+        owner, and the value is destroyed when its owner is. Defined
+        on <a href="index.html">the opening page</a>.</dd>
+        <dt id="t-owner">owner</dt>
+        <dd>The variable or structure a value belongs to; the value's
+        destruction follows the owner's. Defined on
+        <a href="index.html">the opening page</a>.</dd>
+        <dt id="t-borrow-checker">borrow checker</dt>
+        <dd>The compiler pass that enforces the rules of references —
+        which may alias, which may mutate, and for how long — before
+        the program ever runs. Defined on
+        <a href="index.html">the opening page</a>.</dd>
+        <dt id="t-escape-hatch">escape hatch</dt>
+        <dd>A marked, typed way out of a safety rule for programs the
+        rule cannot express; honest when visible in the source.
+        Defined on <a href="index.html">the opening page</a>.</dd>
+      </dl>
+    </section>
+
+    <section id="part-one">
+      <h2>Part One — The Constraint</h2>
+      <p>The cost list the constraint answers, and the two regions
+      every value lives in.</p>
+      <dl class="gloss">
+        <dt id="t-stack">stack</dt>
+        <dd>The region of memory holding call frames; local values
+        live and die with the function call, at a speed the hardware
+        makes free. Defined on <a href="founding-constraint.html">The
+        Constraint</a>.</dd>
+        <dt id="t-heap">heap</dt>
+        <dd>The region for values that must outlive the scope that
+        created them, change size, or be reached from more than one
+        place. Defined on <a href="founding-constraint.html">The
+        Constraint</a>.</dd>
+        <dt id="t-dangling-pointer">dangling pointer</dt>
+        <dd>A pointer to memory that has already been freed; following
+        it is a bug in most languages and a compile error in Rust.
+        Defined on <a href="founding-constraint.html">The
+        Constraint</a>.</dd>
+        <dt id="t-use-after-free">use-after-free</dt>
+        <dd>Reading or writing memory after it was freed. Defined on
+        <a href="founding-constraint.html">The Constraint</a>.</dd>
+        <dt id="t-double-free">double free</dt>
+        <dd>Freeing the same allocation twice; the second free can
+        corrupt the allocator's own bookkeeping. Defined on
+        <a href="founding-constraint.html">The Constraint</a>.</dd>
+        <dt id="t-iterator-invalidation">iterator invalidation</dt>
+        <dd>Mutating a collection while holding a reference into it,
+        leaving the reference aimed at moved or freed memory. Defined
+        on <a href="founding-constraint.html">The Constraint</a>.</dd>
+        <dt id="t-data-race">data race</dt>
+        <dd>Two threads touching the same memory at once with at
+        least one writing; the outcome depends on timing. Defined on
+        <a href="founding-constraint.html">The Constraint</a>.</dd>
+        <dt id="t-undefined-behavior">undefined behavior</dt>
+        <dd>Behavior the language leaves unspecified; compilers may
+        assume it never happens, which is what makes it dangerous.
+        Defined on <a href="founding-constraint.html">The
+        Constraint</a>.</dd>
+        <dt id="t-sanitizer">sanitizer</dt>
+        <dd>A tool that instruments a compiled program to catch
+        memory and threading errors at run time — the C world's
+        partial answer to this book's cost list. Defined on
+        <a href="founding-constraint.html">The Constraint</a>.</dd>
+        <dt id="t-destructor">destructor</dt>
+        <dd>The code that runs when a value dies; in Rust, the drop
+        routine. Defined on <a href="founding-constraint.html">The
+        Constraint</a>.</dd>
+        <dt id="t-deterministic-destruction">deterministic
+        destruction</dt>
+        <dd>Freeing at a known, compile-visible point — when the owner
+        leaves scope — rather than whenever a collector gets around to
+        it. Defined on <a href="founding-constraint.html">The
+        Constraint</a>.</dd>
+      </dl>
+    </section>
+
+    <section id="part-two">
+      <h2>Part Two — Ownership</h2>
+      <p>What it means to own a value, to hand it over, and to
+      duplicate it.</p>
+      <dl class="gloss">
+        <dt id="t-move">move</dt>
+        <dd>Transferring ownership of a value to a new owner; the old
+        binding cannot be used afterward. Defined on
+        <a href="ownership.html">Ownership</a>.</dd>
+        <dt id="t-drop">drop</dt>
+        <dd>Rust's destructor protocol: the routine a type defines for
+        its own death, run automatically at scope end. Defined on
+        <a href="ownership.html">Ownership</a>.</dd>
+        <dt id="t-scope">scope</dt>
+        <dd>The region of a program in which a binding exists; scopes
+        nest, and values die at the end of their owner's scope.
+        Defined on <a href="ownership.html">Ownership</a>.</dd>
+        <dt id="t-raii">RAII</dt>
+        <dd>Resource acquisition is initialization: tie a resource's
+        lifetime to a value's, so cleanup runs by ownership rather
+        than by hand. Defined on
+        <a href="ownership.html">Ownership</a>.</dd>
+        <dt id="t-drop-order">drop order</dt>
+        <dd>The fixed order values die at scope end: locals in reverse
+        declaration order, fields in declaration order. Defined on
+        <a href="ownership.html">Ownership</a>.</dd>
+        <dt id="t-trait">trait</dt>
+        <dd>A contract: a named list of methods a type can promise to
+        provide. Defined on <a href="move-copy-clone.html">Move, Copy,
+        Clone</a>.</dd>
+        <dt id="t-copy-trait">copy trait</dt>
+        <dd>The opt-in marker for plain-data types that may be
+        duplicated bit for bit instead of moved. Defined on
+        <a href="move-copy-clone.html">Move, Copy, Clone</a>.</dd>
+        <dt id="t-clone">clone</dt>
+        <dd>The trait for explicit, possibly deep duplication — what a
+        call to <code>.clone()</code> runs. Defined on
+        <a href="move-copy-clone.html">Move, Copy, Clone</a>.</dd>
+        <dt id="t-shallow-copy">shallow copy</dt>
+        <dd>Duplicating a value's immediate bytes while sharing
+        whatever they point to. Defined on
+        <a href="move-copy-clone.html">Move, Copy, Clone</a>.</dd>
+        <dt id="t-deep-copy">deep copy</dt>
+        <dd>Duplicating a value and everything it reaches, so the copy
+        shares nothing with the original. Defined on
+        <a href="move-copy-clone.html">Move, Copy, Clone</a>.</dd>
+      </dl>
+    </section>
+
+    <section id="part-three">
+      <h2>Part Three — Borrowing</h2>
+      <p>Using a value without taking it — and proving the borrow
+      ends in time.</p>
+      <dl class="gloss">
+        <dt id="t-reference">reference</dt>
+        <dd>A borrowed pointer to a value the borrower does not own.
+        Defined on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-shared-reference">shared reference</dt>
+        <dd>An immutable borrow; any number may exist at once, and
+        none may write. Defined on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-mutable-reference">mutable reference</dt>
+        <dd>An exclusive borrow; exactly one may exist, and it may
+        write. Defined on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-aliasing">aliasing</dt>
+        <dd>More than one name reaching the same value at the same
+        time. Defined on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-aliasing-xor-mutability">aliasing xor mutability</dt>
+        <dd>The rule the borrow checker enforces: any number of shared
+        references, or one mutable reference — never both at once.
+        Defined on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-borrowing">borrowing</dt>
+        <dd>Taking a reference to a value without taking ownership;
+        the borrower may not outlive what it borrowed. Defined on
+        <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-lifetime">lifetime</dt>
+        <dd>The span of a program in which a reference could be used;
+        the compiler's proof that a borrow cannot outlive its value.
+        Defined on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-non-lexical-lifetimes">non-lexical lifetimes</dt>
+        <dd>The refinement that scopes borrows by actual use rather
+        than by braces — a reference's lifetime ends at its last use.
+        Defined on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-nll">NLL</dt>
+        <dd>Short for non-lexical lifetimes, the borrow analysis in
+        use since it replaced the region-of-a-block reading. Defined
+        on <a href="borrowing.html">Borrowing</a>.</dd>
+        <dt id="t-lifetime-elision">lifetime elision</dt>
+        <dd>The default rules that let most functions omit lifetime
+        annotations, filling in the common patterns automatically.
+        Defined on <a href="lifetimes.html">Lifetimes</a>.</dd>
+        <dt id="t-region">region</dt>
+        <dd>The compiler's internal name for a lifetime: a set of
+        program points, not a duration on a clock. Defined on
+        <a href="lifetimes.html">Lifetimes</a>.</dd>
+        <dt id="t-outlives">outlives</dt>
+        <dd>Contains the entire lifetime of; the relation a borrow
+        must satisfy with the value it points to. Defined on
+        <a href="lifetimes.html">Lifetimes</a>.</dd>
+        <dt id="t-static-lifetime">static lifetime</dt>
+        <dd>The region of the whole program; the bound that owned,
+        borrowed-in data must satisfy to cross into a spawned thread.
+        Defined on <a href="lifetimes.html">Lifetimes</a>.</dd>
+      </dl>
+    </section>
+
+    <section id="part-four">
+      <h2>Part Four — The Heap Menu</h2>
+      <p>The options once a value must leave the stack.</p>
+      <dl class="gloss">
+        <dt id="t-heap-allocation">heap allocation</dt>
+        <dd>Requesting memory from the allocator at run time; the
+        point where indirection and its costs enter the program.
+        Defined on <a href="stack-and-heap.html">Stack and Heap</a>.</dd>
+        <dt id="t-slice">slice</dt>
+        <dd>A borrowed view of a run of elements: pointer plus
+        length, not an owner. Defined on
+        <a href="stack-and-heap.html">Stack and Heap</a>.</dd>
+        <dt id="t-fat-pointer">fat pointer</dt>
+        <dd>A pointer that carries its referent's missing information
+        — a length for slices, a method table for trait values.
+        Defined on <a href="stack-and-heap.html">Stack and Heap</a>.</dd>
+        <dt id="t-indirection">indirection</dt>
+        <dd>Reaching a value through its address instead of its name;
+        the cost every heap handle pays. Defined on
+        <a href="box.html">Box</a>.</dd>
+        <dt id="t-recursive-type">recursive type</dt>
+        <dd>A type that contains itself, such as a list node; it can
+        exist only behind indirection, so the compiler can know its
+        size. Defined on <a href="box.html">Box</a>.</dd>
+        <dt id="t-reference-counting">reference counting</dt>
+        <dd>Shared ownership via a count of live handles; the last
+        handle to drop frees the value. Defined on
+        <a href="rc-arc.html">Rc and Arc</a>.</dd>
+        <dt id="t-shared-ownership">shared ownership</dt>
+        <dd>A value with many owners, none privileged; opted into
+        explicitly, never the default. Defined on
+        <a href="rc-arc.html">Rc and Arc</a>.</dd>
+        <dt id="t-reference-cycle">reference cycle</dt>
+        <dd>Handles keeping each other's counts above zero forever;
+        the leak reference counting cannot see. Defined on
+        <a href="rc-arc.html">Rc and Arc</a>.</dd>
+        <dt id="t-weak-reference">weak reference</dt>
+        <dd>A handle that points without counting; it breaks cycles
+        by not keeping the value alive. Defined on
+        <a href="rc-arc.html">Rc and Arc</a>.</dd>
+        <dt id="t-atomic">atomic</dt>
+        <dd>An operation the hardware guarantees indivisible across
+        threads; what a thread-safe count pays on every clone and
+        drop. Defined on <a href="rc-arc.html">Rc and Arc</a>.</dd>
+        <dt id="t-memory-leak">memory leak</dt>
+        <dd>Memory never freed while the program runs; safe in Rust —
+        no corruption — and reachable through cycles or deliberate
+        leaks. Defined on <a href="rc-arc.html">Rc and Arc</a>.</dd>
+      </dl>
+    </section>
+
+    <section id="part-five">
+      <h2>Part Five — Mutation and Threads</h2>
+      <p>Changing and sharing at once, across threads.</p>
+      <dl class="gloss">
+        <dt id="t-interior-mutability">interior mutability</dt>
+        <dd>Moving a mutation check from compile time to run time so
+        a value can change behind a shared handle:
+        <code>Cell</code>, <code>RefCell</code>,
+        <code>Mutex</code>. Defined on
+        <a href="interior-mutability.html">Interior Mutability</a>.</dd>
+        <dt id="t-guard">guard</dt>
+        <dd>The value a lock or run-time borrow returns; it holds the
+        access and releases it by being dropped. Defined on
+        <a href="interior-mutability.html">Interior Mutability</a>.</dd>
+        <dt id="t-poisoning">poisoning</dt>
+        <dd>A lock's decision to refuse further access after a holder
+        died holding it — failure propagated instead of torn state.
+        Defined on <a href="interior-mutability.html">Interior
+        Mutability</a>.</dd>
+        <dt id="t-send">Send</dt>
+        <dd>The marker trait saying a value is safe to move to another
+        thread. Defined on <a href="send-sync.html">Send and Sync</a>.</dd>
+        <dt id="t-sync">Sync</dt>
+        <dd>The marker trait saying references to a value are safe to
+        share across threads. Defined on
+        <a href="send-sync.html">Send and Sync</a>.</dd>
+        <dt id="t-marker-trait">marker trait</dt>
+        <dd>A trait with no methods, carrying only a compile-time
+        fact. Defined on <a href="send-sync.html">Send and Sync</a>.</dd>
+        <dt id="t-auto-trait">auto trait</dt>
+        <dd>A marker the compiler derives automatically from a type's
+        fields. Defined on <a href="send-sync.html">Send and Sync</a>.</dd>
+        <dt id="t-fearless-concurrency">fearless concurrency</dt>
+        <dd>The promise that data races are compile errors, so
+        concurrent code can be refactored without fear. Defined on
+        <a href="send-sync.html">Send and Sync</a>.</dd>
+      </dl>
+    </section>
+
+    <section id="part-six">
+      <h2>Part Six — The Escape Hatches</h2>
+      <p>The marked ways out — and the two tiers of failure they sit
+      beside.</p>
+      <dl class="gloss">
+        <dt id="t-unsafe-block">unsafe block</dt>
+        <dd>The marked region where a subset of checks is lifted and
+        the programmer inherits their invariants by hand. Defined on
+        <a href="unsafe.html">Unsafe</a>.</dd>
+        <dt id="t-raw-pointer">raw pointer</dt>
+        <dd>An untracked address — nullable, bound by no aliasing
+        rules; following one is audited by the programmer. Defined on
+        <a href="unsafe.html">Unsafe</a>.</dd>
+        <dt id="t-soundness">soundness</dt>
+        <dd>The property that safe code cannot cause undefined
+        behavior, no matter what the unsafe code inside it does.
+        Defined on <a href="unsafe.html">Unsafe</a>.</dd>
+        <dt id="t-safe-abstraction">safe abstraction</dt>
+        <dd>An unsafe implementation wrapped so its invariants cannot
+        be broken from the outside. Defined on
+        <a href="unsafe.html">Unsafe</a>.</dd>
+        <dt id="t-pin">pin</dt>
+        <dd>The wrapper that forbids moving a value after its address
+        has been handed out. Defined on <a href="pin.html">Pin</a>.</dd>
+        <dt id="t-pinning">pinning</dt>
+        <dd>The act of keeping a value at one address so its
+        self-references stay valid. Defined on <a href="pin.html">Pin</a>.</dd>
+        <dt id="t-self-referential">self-referential</dt>
+        <dd>Containing pointers into itself; moving such a value would
+        aim those pointers at stale addresses. Defined on
+        <a href="pin.html">Pin</a>.</dd>
+        <dt id="t-unpin">Unpin</dt>
+        <dd>The marker trait for types that are safe to move even when
+        pinned — which is nearly every type. Defined on
+        <a href="pin.html">Pin</a>.</dd>
+        <dt id="t-future">future</dt>
+        <dd>A value representing a computation that may not have
+        finished; it is polled forward until it completes. Defined on
+        <a href="pin.html">Pin</a>.</dd>
+        <dt id="t-async">async</dt>
+        <dd>The syntax for writing futures as if they were
+        straight-line code; the machinery that needed pinning.
+        Defined on <a href="pin.html">Pin</a>.</dd>
+        <dt id="t-panic">panic</dt>
+        <dd>The halting tier of failure: a broken invariant,
+        unrecoverable by design. Defined on
+        <a href="error-handling.html">Errors and Panics</a>.</dd>
+        <dt id="t-unwinding">unwinding</dt>
+        <dd>The panic-time walk up the stack that runs destructors on
+        the way out. Defined on
+        <a href="error-handling.html">Errors and Panics</a>.</dd>
+        <dt id="t-propagation">propagation</dt>
+        <dd>Handing a failure upward to a caller who can decide; what
+        the <code>?</code> operator makes visible. Defined on
+        <a href="error-handling.html">Errors and Panics</a>.</dd>
+        <dt id="t-recoverable-error">recoverable error</dt>
+        <dd>An expected failure carried as a value in a
+        <code>Result</code>, handled by normal code. Defined on
+        <a href="error-handling.html">Errors and Panics</a>.</dd>
+      </dl>
+    </section>
+
+    <section id="part-seven">
+      <h2>Part Seven — Abstraction and Synthesis</h2>
+      <p>Abstracting over types — and the whole language assembled
+      into two programs.</p>
+      <dl class="gloss">
+        <dt id="t-coherence">coherence</dt>
+        <dd>The program-wide guarantee that any trait has at most one
+        implementation for any type. Defined on
+        <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-orphan-rule">orphan rule</dt>
+        <dd>The rule that enforces coherence: an impl must own its
+        trait or its type, or it cannot be written. Defined on
+        <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-monomorphization">monomorphization</dt>
+        <dd>The compiler stamping out a specialized copy of generic
+        code for every concrete type it is used with. Defined on
+        <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-vtable">vtable</dt>
+        <dd>The per-type table of method addresses that a dynamic
+        call reads. Defined on <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-trait-object">trait object</dt>
+        <dd>A value typed only by what it can do —
+        <code>dyn Trait</code> — reached through a fat pointer.
+        Defined on <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-static-dispatch">static dispatch</dt>
+        <dd>Call resolution at compile time: the exact function is
+        baked into the call site. Defined on
+        <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-dynamic-dispatch">dynamic dispatch</dt>
+        <dd>Call resolution at run time, through the method table of
+        whatever value actually arrived. Defined on
+        <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-newtype">newtype</dt>
+        <dd>A one-field wrapper that makes a foreign type local,
+        satisfying the orphan rule at no run-time cost. Defined on
+        <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-object-safety">object safety</dt>
+        <dd>The set of trait shapes a trait object can actually serve
+        — methods that need no hidden concrete type. Defined on
+        <a href="traits.html">Traits</a>.</dd>
+        <dt id="t-thread-pool">thread pool</dt>
+        <dd>A fixed set of worker threads created once, up front, and
+        fed work from a queue — instead of one thread per task.
+        Defined on <a href="capstone.html">the capstone</a>.</dd>
+      </dl>
+    </section>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="capstone.html"><span class="cap">Previous</span><span class="pg-title">The Whole Language in Two Programs</span></a>
+    <a class="pager-card" rel="next" href="links.html"><span class="cap">Next</span><span class="pg-title">Sources and Further Reading</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

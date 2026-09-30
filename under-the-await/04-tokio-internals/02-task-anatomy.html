@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task anatomy — Under the Await</title>
+  <meta name="description" content="What tokio::spawn actually allocates: a header full of state bits, a reference count, a schedule function, and your future stored inline in the same allocation.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p04-02">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Task anatomy</h1>
+
+      <p>The <a href="01-runtime-overview.html">map page</a> showed futures
+        flowing through queues, but it cheated a little: what flows through
+        Tokio’s queues is not a bare future. The moment you hand a future to
+        the runtime, Tokio wraps it in bookkeeping: state bits, a reference
+        count, a function pointer, a home address. The wrapped unit is a
+        <strong>task</strong>, and this page takes one apart on the bench.</p>
+
+      <p>The act of handing a future over is
+        <strong><code>tokio::spawn</code></strong>. In code it is one line:</p>
+
+      <pre><code class="language-rust">#[tokio::main]
+async fn main() {
+    let handle = tokio::spawn(async {
+        let mut total = 0u64;
+        for i in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            total += i;
+        }
+        total
+    });
+
+    // the spawned future runs on a worker while we are free to do other things
+    let total = handle.await.expect("the task panicked");
+    println!("total: {total}");
+}</code></pre>
+
+      <p>Two things just happened, and both are load bearing. First,
+        <em>ownership moved</em>: the future left your hands entirely. That is
+        why <code>spawn</code> demands a future that is <code>Send</code> and
+        <code>'static</code> (<a href="../03-rust-async/01-rust-recap.html">Part
+        3’s Rust recap</a> covered both): a task can sit in a queue for an
+        arbitrary lifetime and then be polled by <em>any</em> worker, on any
+        thread. A borrowed local would dangle; a non-sendable type would be a
+        data race waiting to happen. Second, you got a
+        <strong>JoinHandle</strong> back, a receipt you can await later. We
+        will open that receipt near the end of the page.</p>
+
+      <h2>One allocation, three parts</h2>
+
+      <p>What does <code>spawn</code> cost? One heap allocation, sized to
+        exactly three things laid out end to end:</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 200" role="img">
+          <title>A task in memory: a Header, a schedule function pointer, and the future stored inline, all in one heap allocation</title>
+          <rect class="box" x="30" y="40" width="160" height="90" rx="8"/>
+          <text class="label" x="110" y="62" text-anchor="middle">Header</text>
+          <text class="label muted" x="110" y="82" text-anchor="middle">state bits</text>
+          <text class="label muted" x="110" y="99" text-anchor="middle">ref count</text>
+          <text class="label muted" x="110" y="116" text-anchor="middle">owner ptr · waker</text>
+          <rect class="box" x="200" y="40" width="120" height="90" rx="8"/>
+          <text class="label" x="260" y="72" text-anchor="middle">schedule fn</text>
+          <text class="label muted" x="260" y="90" text-anchor="middle">raw pointer</text>
+          <rect class="box accent" x="330" y="40" width="280" height="90" rx="8"/>
+          <text class="label" x="470" y="68" text-anchor="middle">your future</text>
+          <text class="label muted" x="470" y="90" text-anchor="middle">the state-machine enum,</text>
+          <text class="label muted" x="470" y="108" text-anchor="middle">stored inline</text>
+          <line class="lane" x1="30" y1="155" x2="610" y2="155"/>
+          <text class="label muted" x="320" y="178" text-anchor="middle">one heap allocation, sized exactly</text>
+        </svg>
+        <figcaption>Figure 1. A task in memory. The header is the runtime’s
+          filing system; your future rides behind it, inline, with no extra
+          box of its own.</figcaption>
+      </figure>
+
+      <p>Start from the right, because it is the part you already know. Your
+        <code>async</code> block is a compiler-written
+        <a href="../03-rust-async/05-async-await-desugaring.html">state-machine
+        enum</a>: one variant per suspension point, locals as fields. Tokio
+        stores that enum inline in the allocation, sized to the byte. There is
+        no <code>Box&lt;dyn Future&gt;</code> inside the task; the future is
+        the tail of the allocation. This is why <code>spawn</code> is generic
+        over the future type: each future shape gets its own task layout,
+        monomorphized at compile time.</p>
+
+      <p>But queues hold futures of many different shapes, so they cannot hold
+        tasks by value. They hold pointers to the <em>header</em>, which is
+        always first, always the same shape. The per-shape knowledge (how big
+        this task is, how to poll and drop it) hides behind the
+        <strong>schedule function</strong>, a raw function pointer in the
+        middle. If you recognize the
+        <a href="../03-rust-async/01-rust-recap.html">vtable trick</a>, yes:
+        this is that trick, used once more, so that one queue can carry every
+        task in the process.</p>
+
+      <h2>The header, field by field</h2>
+
+      <p>The header is a handful of machine words doing the work of an entire
+        operating-system process table:</p>
+
+      <pre><code class="language-rust">// simplified from tokio/src/runtime/task/ (fields trimmed)
+struct Header {
+    state: AtomicUsize,               // lifecycle bits + reference count
+    scheduler: UnsafeCell&lt;*const ()&gt;,  // back-pointer: which queue machinery
+    waker: UnsafeCell&lt;Option&lt;Waker&gt;&gt;, // the waker this task polls with
+}</code></pre>
+
+      <p>The <code>state</code> word is the interesting one. It packs
+        lifecycle bits in the low digits and a reference count in the high
+        ones. The bits, straight from the source:</p>
+
+      <pre><code class="language-rust">// task state bits, simplified from runtime/task/state.rs
+const RUNNING:       usize = 0b0001;   // being polled right now
+const COMPLETE:      usize = 0b0010;   // future returned Ready, was dropped
+const NOTIFIED:      usize = 0b0100;   // sits in a run queue right now
+const JOIN_INTEREST: usize = 0b1000;   // somebody holds a JoinHandle
+const JOIN_WAKER:    usize = 0b10000;  // join slot holds a waker
+const CANCELLED:     usize = 0b100000; // runtime wants this task dropped</code></pre>
+
+      <p>Every rule the runtime follows about a task is a compare-and-swap on
+        these bits. A task may be in exactly one run queue at a time
+        (<code>NOTIFIED</code> guards that). A task is polled by exactly one
+        worker at a time (<code>RUNNING</code> guards that). A wake that
+        arrives <em>while</em> the task is being polled does not get lost: it
+        sets <code>NOTIFIED</code> again, so the worker re-queues the task the
+        moment the current poll returns. Lossless waking is not a protocol on
+        top of the header; it is the header.</p>
+
+      <p>Above the bits lives the reference count, and a fresh task starts at
+        <em>three</em>: one reference for the queue entry, one for the
+        JoinHandle, one for the task’s own waker slot.
+        <!-- fs: research/tokio-internals.md §4: INITIAL_STATE = (REF_ONE*3) | JOIN_INTEREST | NOTIFIED, runtime/task/state.rs -->
+        Every cloned waker adds one; every drop of a handle or waker subtracts
+        one; when the count reaches zero the task frees its single
+        allocation. It is the <code>Arc</code> idea from
+        <a href="../03-rust-async/01-rust-recap.html">Part 3</a>, done by hand
+        in one atomic word, because a task must be simultaneously queued,
+        awaited, and referenced by wakers without any of those freeing it
+        early.</p>
+
+      <p>The remaining header fields are a back-pointer to the queue machinery
+        that owns the task (so a waker knows where to file the wake) and the
+        cached waker the task’s future will be polled with. Between the
+        back-pointer and the schedule function, a task always knows how to get
+        itself back onto <em>some</em> run queue from anywhere in the
+        process.</p>
+
+      <h2>The JoinHandle</h2>
+
+      <p><code>spawn</code> returns a <code>JoinHandle&lt;T&gt;</code>, where
+        <code>T</code> is your future’s output. It is a future itself, and
+        awaiting it works the way every await works: if the task is not done
+        yet, the awaiting code registers a waker in the task’s join slot
+        (that is what <code>JOIN_WAKER</code> marks) and goes idle. When the
+        task finishes, that waker fires, the awaiting code resumes, and the
+        output moves out through the handle.</p>
+
+      <p>Panics do not kill workers. A panic inside a task unwinds only as far
+        as the task boundary, where the runtime catches it, records it, and
+        delivers it as an error value to whoever awaits the handle. That is
+        the <code>expect</code> in the example above: a task that panicked
+        resolves to an error rather than a value, and the worker that was
+        polling it moves on to the next task, unharmed.</p>
+
+      <p>Now the part that surprises everyone: <strong>dropping the handle
+        does not stop the task</strong>. There is no stop signal, no kill
+        switch, nothing to press. The handle is a receipt, not a leash. Drop
+        it, and the task simply keeps running; it has shed one reference
+        (and cleared <code>JOIN_INTEREST</code>), nothing more. This is
+        called <em>detaching</em>, and it is occasionally exactly what you
+        want:</p>
+
+      <pre><code class="language-rust">#[tokio::main]
+async fn main() {
+    // no handle is kept: nobody will ever await this task
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            export_metrics().await;
+        }
+    });
+
+    serve_requests().await;
+}</code></pre>
+
+      <p>What actually happens to a future that stops being polled, on
+        purpose or by accident, is a whole topic of its own;
+        <a href="09-cancellation-and-select.html">page nine</a> is devoted to
+        it. The one-line version: in this runtime, stopping means dropping,
+        and dropping runs destructors.</p>
+
+      <h2>The lifecycle</h2>
+
+      <p>Put the bits together and a task’s life is a small state
+        machine:</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 250" role="img">
+          <title>Task lifecycle: idle, scheduled, running, done, with wake, poll, Pending, Ready, and yield transitions</title>
+          <rect class="box" x="40" y="90" width="110" height="44" rx="8"/>
+          <text class="label" x="95" y="108" text-anchor="middle">idle</text>
+          <text class="label muted" x="95" y="124" text-anchor="middle" style="font-size:11px">waiting for a wake</text>
+          <rect class="box" x="230" y="90" width="140" height="44" rx="8"/>
+          <text class="label" x="300" y="108" text-anchor="middle">scheduled</text>
+          <text class="label muted" x="300" y="124" text-anchor="middle">sitting in a queue</text>
+          <rect class="box" x="460" y="90" width="120" height="44" rx="8"/>
+          <text class="label" x="520" y="108" text-anchor="middle">running</text>
+          <text class="label muted" x="520" y="124" text-anchor="middle">being polled</text>
+
+          <line class="arrow" x1="150" y1="112" x2="222" y2="112"/>
+          <polygon class="arrow-head" points="230,112 218,107 218,117"/>
+          <text class="label" x="186" y="102" text-anchor="middle">wake</text>
+
+          <line class="arrow" x1="370" y1="112" x2="452" y2="112"/>
+          <polygon class="arrow-head" points="460,112 448,107 448,117"/>
+          <text class="label" x="415" y="100" text-anchor="middle">worker polls</text>
+
+          <path class="arrow" d="M 500 134 V 174 H 95 V 148" fill="none"/>
+          <polygon class="arrow-head" points="95,138 89,150 101,150"/>
+          <text class="label" x="300" y="166" text-anchor="middle">Pending</text>
+
+          <path class="arrow" d="M 520 90 V 46 H 300 V 80" fill="none"/>
+          <polygon class="arrow-head" points="300,90 294,78 306,78"/>
+          <text class="label" x="410" y="38" text-anchor="middle">voluntary yield</text>
+
+          <line class="arrow" x1="545" y1="134" x2="545" y2="180"/>
+          <polygon class="arrow-head" points="545,188 539,176 551,176"/>
+          <text class="label" x="557" y="162">Ready</text>
+
+          <rect class="box accent" x="450" y="192" width="150" height="50" rx="8"/>
+          <text class="label" x="525" y="210" text-anchor="middle">done</text>
+          <text class="label muted" x="525" y="228" text-anchor="middle" style="font-size:11px">future dropped, join fires</text>
+        </svg>
+        <figcaption>Figure 2. A task’s life. Every arrow is one or two
+          compare-and-swap operations on the state word from the listing
+          above.</figcaption>
+      </figure>
+
+      <p>A freshly spawned future enters as <em>scheduled</em>: bits set,
+        reference count three, pointer filed into a queue. A worker claims it,
+        which means winning the race to flip <code>RUNNING</code>. The poll
+        happens. If it returns <code>Pending</code>, the task goes
+        <em>idle</em>, and its own future is responsible for having parked a
+        waker somewhere (a socket, a timer, a lock) before that poll
+        returned; that is the
+        <a href="../03-rust-async/02-future-trait.html">future’s contract</a>
+        from Part 3. When the waker fires, the task is
+        <em>re-scheduled</em> and the cycle continues. If the poll returns
+        <code>Ready</code>, the future is dropped, the output is set aside,
+        <code>COMPLETE</code> goes up, and the join waker, if any, fires.</p>
+
+      <p>There is one more arrow: a running task can go back to
+        <em>scheduled</em> without being idle first, voluntarily, by yielding.
+        Why a well-behaved task would do that, and what the runtime does to
+        the ones that refuse, is the very first subject of
+        <a href="03-scheduler.html">the next page</a>.</p>
+
+      <h2>Task is not thread</h2>
+
+      <p>The comparison you should keep in your body:</p>
+
+      <table>
+        <thead>
+          <tr><th></th><th>thread</th><th>task</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>stack</th>
+            <td>megabytes reserved, kernel-managed</td>
+            <td>none: a state machine on the heap</td></tr>
+          <tr><th>switching</th>
+            <td>a kernel context switch
+              (<a href="../01-foundations/02-processes-threads-context-switches.html">Part
+              1 measured those</a>)</td>
+            <td>a function returning, plus a queue hop</td></tr>
+          <tr><th>creation</th>
+            <td>a syscall and a stack allocation</td>
+            <td>one heap allocation and a queue push</td></tr>
+          <tr><th>who decides when it runs</th>
+            <td>the kernel, preemptively</td>
+            <td>the runtime, at suspension points</td></tr>
+          <tr><th>sleeping mid-work</th>
+            <td>allowed; that is what threads are for</td>
+            <td>forbidden; such work is exiled to the pool
+              (<a href="04-blocking-pool.html">page four</a>)</td></tr>
+        </tbody>
+      </table>
+
+      <p>A thread costs megabytes of reserved stack plus a kernel object,
+        which is why <a href="../01-foundations/04-blocking-io-and-c10k.html">ten
+        thousand of them</a> hurt. A task costs one allocation: a header
+        measured in machine words plus your future. For a typical future the
+        whole package lands in the low hundreds of bytes.
+        <!-- fs: order of magnitude per the content plan; allocation = Header + inline future in one box (research/tokio-internals.md §4); exact size depends on the future -->
+        A busy service holds hundreds of thousands of them without noticing,
+        because nothing about a task touches the kernel until it actually
+        needs the kernel. Spawn is not “make a thread.” Spawn is “make one
+        allocation and push a pointer onto a queue,” and the next page is
+        about that queue.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li><code>tokio::spawn</code> wraps your future in a task: one heap
+            allocation holding a header, a schedule function pointer, and the
+            future inline behind them.</li>
+          <li>The header’s state word packs lifecycle bits plus a reference
+            count; a new task starts at count three, and lossless waking is
+            enforced by <code>NOTIFIED</code> itself.</li>
+          <li>A JoinHandle is a receipt, not a leash: awaiting it collects the
+            output (or the panic), and dropping it merely detaches the
+            task.</li>
+          <li>The lifecycle is idle → scheduled → running → idle or done, with
+            every arrow an atomic bit operation.</li>
+          <li>A task is one allocation of a few hundred bytes, not a thread
+            with megabytes of stack; that gap is the entire economics of async
+            Rust.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

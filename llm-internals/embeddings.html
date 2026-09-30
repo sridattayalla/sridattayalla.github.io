@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Embeddings: Tokens Become Vectors — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="embeddings">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Machine</p>
+    <h1>Embeddings: Tokens Become Vectors</h1>
+    <p class="lede">After this page you can trace exactly how a piece's row
+    number becomes a list of numbers the model can multiply — and why
+    "looking something up" is a multiply in disguise.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-symbols">A row number is not a meaning</a></li>
+        <li><a href="#sec-vector">Lists of numbers</a></li>
+        <li><a href="#sec-table">The lookup table</a></li>
+        <li><a href="#sec-width">The width is a design choice</a></li>
+        <li><a href="#sec-running">What runs through the floors</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-symbols">
+      <h2>A row number is not a meaning</h2>
+      <p>The last page ended on a warning, so start there. Row 15 and row 16
+      sit next to each other in the vocabulary — in the toy list, the pieces
+      for "the" and "at" — and that adjacency means
+      nothing <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>.
+      Ids are symbols, like jersey numbers: the arithmetic inside
+      the model can multiply and add quantities, and a jersey number is not a
+      quantity. If the model is to do anything with "the" beyond recognizing
+      it, "the" has to arrive as numbers worth computing with — not one
+      number, but a whole list of them, learned during training.</p>
+      <p>That is the entire trick of this page: replace each row number with
+      its own personal list of numbers, and let the lists' patterns carry the
+      meaning.</p>
+    </section>
+
+    <section id="sec-vector">
+      <h2>Lists of numbers</h2>
+      <p>A <dfn><a href="glossary.html#t-vector">vector</a></dfn> is an
+      ordered list of numbers — the model's unit of currency from here to the
+      end of this manual. The
+      <dfn><a href="glossary.html#t-dimension">dimension</a></dfn> of a
+      vector is how many entries it has (engineers also call the model's
+      width <code>d_model</code>; both words mean the same thing here). Two
+      entries give a point on a page; three, a point in a room; thousands,
+      habits no picture can capture — but the algebra never changes.</p>
+      <p>What makes lists of numbers useful as meaning is that they can be
+      compared numerically, and the workhorse comparison is the
+      <dfn><a href="glossary.html#t-dot-product">dot product</a></dfn>:
+      multiply the matching entries pairwise, then sum. It is the cheapest
+      possible question you can ask about two vectors — "do your entries
+      agree?" — and almost every mechanism in the rest of this manual is
+      built out of it.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — dot products by hand</p>
+        <div class="worked-body">
+<pre><code class="language-text">a = [ 1  2 ]
+b = [ 3  4 ]
+a . b = (1 x 3) + (2 x 4) = 11      (entries agree in sign and size)
+
+c = [ -2  1 ]
+a . c = -2 + 2 = 0                  (no net agreement — unrelated)</code></pre>
+        </div>
+      </div>
+
+      <p>The reading: a large positive dot product means strong agreement, a
+      dot product near zero means no relationship, and a negative one means
+      opposition. During training, pieces that appear in similar contexts
+      drift toward vectors with large mutual dot products — "similar meaning"
+      in this manual always reduces to some version of that statement.</p>
+      <p>A dot product measures agreement along one direction at a time, and
+      a wide vector holds many directions at once. Two pieces can agree
+      along one stretch of their entries and disagree along another —
+      near-twins by one measure, strangers by the next, with no conflict
+      between those two verdicts. That is what width buys: each additional
+      stretch of entries is another axis along which two pieces can be alike
+      or unalike, independently of all the others. Whenever a later page
+      says a mechanism compares two pieces, the comparison will be a
+      dressed-up version of this multiply-and-sum.</p>
+    </section>
+
+    <section id="sec-table">
+      <h2>The lookup table</h2>
+      <p>Where do the pieces' vectors come from? One big learned table. The
+      <dfn><a href="glossary.html#t-embedding-matrix">embedding
+      matrix</a></dfn> has one row per vocabulary entry, each row a vector of
+      the model's width. The
+      <dfn><a href="glossary.html#t-embedding">embedding</a></dfn> of a piece
+      is its row — and looking a piece up means copying that row out. Id 15
+      in, row 15 out: in the toy list, that is the piece for "the", copying
+      out whatever numbers training has written
+      there <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>.
+      Every parameter in this table is learned; before
+      training, all rows are effectively random noise.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 230"><title>An embedding matrix: one row per vocabulary entry, one column per width entry; looking up a piece copies its row out as a vector</title>
+          <text class="t-dim" x="140" y="22" text-anchor="middle" font-size="12">eight of the width entries</text>
+          <rect class="f-blue s-ink" stroke-width="1" x="140" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="170" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="200" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="230" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="260" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="290" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="320" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="350" y="30" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="140" y="60" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="170" y="60" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="200" y="60" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="230" y="60" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="260" y="60" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="290" y="60" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="320" y="60" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="350" y="60" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="140" y="90" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="170" y="90" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="200" y="90" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="230" y="90" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="260" y="90" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="290" y="90" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="320" y="90" width="30" height="30"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="350" y="90" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="140" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="170" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="200" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="230" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="260" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="290" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="320" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="350" y="120" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="140" y="150" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="170" y="150" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="200" y="150" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="230" y="150" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="260" y="150" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="290" y="150" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="320" y="150" width="30" height="30"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="350" y="150" width="30" height="30"/>
+          <text class="t-dim" x="130" y="50" text-anchor="end" font-size="12">0 the</text>
+          <text class="t-dim" x="130" y="80" text-anchor="end" font-size="12">1 cat</text>
+          <text x="130" y="110" text-anchor="end" font-size="12">2 ate</text>
+          <text class="t-dim" x="130" y="140" text-anchor="end" font-size="12">3 it</text>
+          <text class="t-dim" x="130" y="170" text-anchor="end" font-size="12">4 r</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M385 105h40"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M417 99l8 6-8 6"/>
+          <rect class="f-green s-ink" stroke-width="1.5" x="425" y="82" width="180" height="46" rx="8"/>
+          <text x="515" y="110" text-anchor="middle" font-size="13">row 2, as a vector</text>
+        </svg>
+        <figcaption>The table: one row per vocabulary entry. Looking up a
+        piece copies its row out — nothing more.</figcaption>
+      </figure>
+
+      <p>Now the disguise. A
+      <dfn><a href="glossary.html#t-one-hot">one-hot</a></dfn> is a vector of
+      zeros with a single one — a pointer with a one in the position of the
+      thing pointed at. Multiply a one-hot by the table and you get exactly
+      the pointed row back:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — lookup as a multiply</p>
+        <div class="worked-body">
+<pre><code class="language-text">one-hot for id 2:      [ 0  0  1  0 ]
+
+          [ 1  2  0 ]
+table E = [ 3  1  1 ]
+          [ 5  0  2 ]      &lt;- row 2
+          [ 0  4  3 ]
+
+[ 0  0  1  0 ] @ E  =  [ 5  0  2 ]      (the row copy, done by multiply)</code></pre>
+        </div>
+      </div>
+
+      <p>Why bother? Because it makes "select a row" and "multiply by a
+      table" the same operation. A
+      <dfn><a href="glossary.html#t-matrix-multiply">matrix
+      multiply</a></dfn> is just organized dot products: entry (i, j) of the
+      result is the dot product of row i from the left matrix with column j
+      from the right. The one-hot's zeros annihilate every row but one, and
+      its single one copies that row through. To the hardware, the model's
+      entire front door is one multiply — no special lookup circuitry
+      anywhere.</p>
+
+      <div class="note"><span class="cap">Note</span>
+        <p>Scale check: GPT-3's table is 50,257 rows by 12,288 entries —
+        about 617 million learned numbers in this one
+        table <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>,
+        roughly a third of one percent of the whole model. The floors are
+        where the rest lives.</p>
+      </div>
+    </section>
+
+    <section id="sec-width">
+      <h2>The width is a design choice</h2>
+      <p>How many entries should each row have? Wider vectors can hold more
+      distinctions — more ways for two pieces to be similar along different
+      aspects — but every multiply in the model costs proportionally more.
+      Widths range from the low thousands to five digits: GPT-3 uses 12,288
+      entries per
+      piece <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>;
+      Llama 3's eight-billion model uses
+      4,096 <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>
+      and spends the savings on more floors instead.</p>
+      <p>One rule is absolute: every table in a given model shares the same
+      width. That is what lets one floor's output feed the next floor's input
+      without any adapters — the whole model is a chain of operations on
+      lists of the same length.</p>
+      <p>Width is also paid for out of the same budget of learned numbers as
+      everything else. Make each row wider and the table's cost grows as
+      vocabulary size times width; the same budget could instead buy more
+      floors of processing. Designers therefore choose width, floor count,
+      and vocabulary size together, as one joint trade — which is why
+      finished models publish their full configuration alongside their
+      weights: the configuration is the list of choices that rebuilds the
+      machine exactly.</p>
+    </section>
+
+    <section id="sec-running">
+      <h2>What runs through the floors</h2>
+      <p>With lookup defined, the running picture: each piece becomes its
+      row, and that row is then revised, floor by floor, all the way to the
+      final score list. The
+      <dfn><a href="glossary.html#t-hidden-state">hidden state</a></dfn> is
+      the working vector for one position — it starts as the piece's
+      embedding and accumulates edits as it climbs. When you read "the model
+      processes the text," picture a column of such vectors, one per piece,
+      each being refined in parallel.</p>
+      <p>And when engineers need to talk about many of these at once, they
+      reach for the general word: a
+      <dfn><a href="glossary.html#t-tensor">tensor</a></dfn> is a box of
+      numbers with any number of axes — a vector is a one-axis tensor, a
+      table a two-axis tensor, and one text's worth of hidden states is a
+      grid of pieces by width. Stack several texts and a third axis appears.
+      The word adds no machinery; it just lets "multiply these boxes of
+      numbers" be said in one breath.</p>
+      <p>One habit will pay off for the rest of this manual: whenever a
+      mechanism is described as doing something to one piece, read it as
+      doing that thing to every piece's hidden state at once — the states
+      stack into a grid, and the operation becomes one big multiply over the
+      whole grid. The prose stays sequential because English is; the
+      arithmetic is parallel because the hardware is. Every floor ahead is
+      built in that style.</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the forward pass begins with the lookup</figcaption>
+<pre><code class="language-python">def forward(params, ids, cfg, kv=None):
+    H, d_model = cfg['n_heads'], cfg['d_model']
+    dh = d_model // H
+    x0 = params['emb'][np.asarray(ids)]   # row copy: id -> vector
+    n = x0.shape[0]</code></pre>
+      </figure>
+
+      <p>One property of everything built so far deserves a last look,
+      because it is about to become a problem. Swap two pieces in the input
+      and every lookup still returns the same rows — the front door is
+      order-blind. "Dog bites man" and "man bites dog" enter as the same bag
+      of vectors. The next page marks order onto them.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A vector is an ordered list of numbers — the model's unit of
+        currency, compared by dot products.</li>
+        <li>Looking a piece up copies its row from the embedding matrix; a
+        one-hot makes row-copying a matrix multiply, so the front door needs
+        no special circuitry.</li>
+        <li>The width is a design trade: more entries per piece, more
+        distinctions, proportionally more cost — and one shared width per
+        model.</li>
+        <li>The hidden state is the per-position working vector, revised
+        floor by floor from its embedding onward.</li>
+        <li>Everything so far is order-blind — swap two pieces and nothing
+        notices. Next page: marking order.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="tokens.html"><span class="cap">Previous</span><span class="pg-title">Tokens: The Model's Alphabet</span></a>
+    <a class="pager-card" rel="next" href="position.html"><span class="cap">Next</span><span class="pg-title">Position: Order Without Coordinates</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

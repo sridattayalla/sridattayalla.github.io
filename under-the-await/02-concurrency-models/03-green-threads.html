@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<!--
+  ==========================================================================
+  UNDER THE AWAIT — CONTENT PAGE TEMPLATE
+  ==========================================================================
+  WRITER CONTRACT — copy this file into the right part directory and fill in
+  exactly FOUR things:
+
+    1. <title>PLACEHOLDER</title>            → "Page title — Under the Await"
+    2. <meta name="description" ...>         → one-sentence summary
+    3. <body data-page="PLACEHOLDER-ID">     → the page's manifest id
+                                               (e.g. "p01-03" — see assets/main.js)
+    4. Everything between the CONTENT markers in <main id="content">
+
+  Do NOT touch: the <head> links and scripts, the empty
+  <aside id="site-nav">, or the empty <nav id="page-nav">. main.js renders
+  the sidebar, the prev/next footer, code highlighting and the ← / → keys.
+  Paths are already correct for pages one level below the site root
+  (../assets/...). No external URLs, no webfonts, no inline event handlers.
+
+  CONTENT CLASSES (full list + tokens documented at the top of
+  assets/style.css):
+    .note / .warning / .pitfall     callouts (labels auto-generated)
+    aside.takeaways                 end-of-page summary box (supply a heading)
+    figure.diagram + figcaption     inline SVG figures; style shapes with
+                                    svg classes .box .arrow .arrow-head
+                                    .lane .label (+ .accent, .label.muted/mono)
+    table                           book-style, scrolls horizontally if wide
+    pre > code                      code block; add class="language-rust"
+                                    (also c, javascript, python, bash, …)
+    <code> inline · <kbd>           tinted mono · keycap
+  ==========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Green threads — Under the Await</title>
+  <meta name="description" content="How Go goroutines and Java virtual threads make threads cheap by building them in user space: the M:N idea, GMP, stacks that grow, and what stackful suspension costs.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p02-03">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>Green threads</h1>
+
+      <p>The <a href="02-callbacks-and-event-loops.html">event loop</a>
+        made waiting nearly free and made your code pay for it in shape.
+        Strategy three refuses that trade. It asks: what if a thread were
+        cheap? Not the kernel's threads, which come with megabyte stacks
+        and microsecond price tags, but threads you build yourself, in
+        <a href="../01-foundations/01-how-programs-run.html">user space</a>,
+        where you decide what a thread is made of.</p>
+
+      <p>A <strong>green thread</strong> is exactly that: a thread
+        implemented by your language's own machinery rather than by the
+        kernel. The kernel still owns the real threads, and there are only
+        a handful of those. Your language's dispatcher maps the many cheap
+        threads onto the few expensive ones. The shorthand is M:N
+        scheduling: M green threads ride on N OS threads. Every green
+        thread behaves like a thread. It can block. It can be blocked on.
+        It just does not cost a kernel thread while it waits.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 270" role="img" aria-label="Diagram of M:N scheduling: many small goroutine boxes map onto two processor boxes, which each sit on one OS thread box.">
+          <title>M:N scheduling: many green threads ride on a few OS threads</title>
+          <text class="label" x="12" y="46">green threads</text>
+          <rect class="box" x="160" y="24" width="62" height="36" rx="6"/>
+          <text class="label mono" x="191" y="47" text-anchor="middle">g1</text>
+          <rect class="box" x="232" y="24" width="62" height="36" rx="6"/>
+          <text class="label mono" x="263" y="47" text-anchor="middle">g2</text>
+          <rect class="box" x="304" y="24" width="62" height="36" rx="6"/>
+          <text class="label mono" x="335" y="47" text-anchor="middle">g3</text>
+          <rect class="box" x="376" y="24" width="62" height="36" rx="6"/>
+          <text class="label mono" x="407" y="47" text-anchor="middle">g4</text>
+          <rect class="box" x="448" y="24" width="62" height="36" rx="6"/>
+          <text class="label mono" x="479" y="47" text-anchor="middle">g5</text>
+          <rect class="box" x="520" y="24" width="62" height="36" rx="6"/>
+          <text class="label mono" x="551" y="47" text-anchor="middle">g6</text>
+          <line class="arrow" x1="220" y1="60" x2="290" y2="112"/>
+          <polygon class="arrow-head" points="282,104 296,116 297,101"/>
+          <line class="arrow" x1="335" y1="60" x2="320" y2="112"/>
+          <polygon class="arrow-head" points="313,102 327,102 320,114"/>
+          <line class="arrow" x1="410" y1="60" x2="440" y2="112"/>
+          <polygon class="arrow-head" points="433,103 447,116 448,101"/>
+          <line class="arrow" x1="500" y1="60" x2="480" y2="112"/>
+          <polygon class="arrow-head" points="473,102 487,102 480,114"/>
+          <rect class="box accent" x="200" y="118" width="200" height="46" rx="8"/>
+          <text class="label" x="300" y="137" text-anchor="middle">processor context A</text>
+          <text class="label muted" x="300" y="155" text-anchor="middle">ready list + run rights</text>
+          <rect class="box accent" x="420" y="118" width="200" height="46" rx="8"/>
+          <text class="label" x="520" y="137" text-anchor="middle">processor context B</text>
+          <text class="label muted" x="520" y="155" text-anchor="middle">ready list + run rights</text>
+          <line class="arrow" x1="300" y1="164" x2="300" y2="206"/>
+          <polygon class="arrow-head" points="295,206 305,206 300,216"/>
+          <line class="arrow" x1="520" y1="164" x2="520" y2="206"/>
+          <polygon class="arrow-head" points="515,206 525,206 520,216"/>
+          <rect class="box" x="200" y="218" width="200" height="40" rx="8"/>
+          <text class="label" x="300" y="243" text-anchor="middle">OS thread (kernel-owned)</text>
+          <rect class="box" x="420" y="218" width="200" height="40" rx="8"/>
+          <text class="label" x="520" y="243" text-anchor="middle">OS thread (kernel-owned)</text>
+        </svg>
+        <figcaption>Figure 1: M:N scheduling. Six green threads, two
+          processors, two real threads. The kernel sees only the
+          bottom row.</figcaption>
+      </figure>
+
+      <h2>Go: goroutines and GMP</h2>
+
+      <p>Go is the flagship of this strategy. Its green threads are called
+        goroutines, and starting one is a single keyword:</p>
+
+      <pre><code class="language-go">package main
+
+import "fmt"
+
+func greet(name string) {
+	fmt.Println("hello,", name)
+}
+
+func main() {
+	go greet("ada")   // a new goroutine, launched and forgotten
+	go greet("grace")
+	fmt.Scanln()      // keep the program alive while they run
+}</code></pre>
+
+      <p>That <code>go</code> keyword is the entire user-facing API, and
+        its cheapness is the point: a goroutine starts with a few
+        kilobytes of stack, so a program can hold millions of them without
+        anyone budgeting for it. When a goroutine's stack outgrows its
+        start, Go's machinery allocates a bigger one and copies the old
+        contents over, so deep recursion still works.</p>
+      <!-- fs: os-io-primitives.md §7 (golang.design 9.1): goroutine stacks are
+           small and growable, starting at a few KB; runtime grows them by copying -->
+
+      <p>Compare that to the kernel's bill from
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">Part 1</a>:
+        a real thread reserves about 8 MB of stack address space by default
+        and measures in megabytes, not kilobytes, per waiter. A hundred
+        thousand goroutines at a few kilobytes each is a manageable amount
+        of memory. A hundred thousand OS threads is not a server, it is an
+        incident.</p>
+      <!-- fs: os-io-primitives.md §1: Linux/glibc default thread stack 8 MiB virtual
+           (Bendersky, pthreads(7)); §6: practical thread ceiling a few thousand to ~30,000 -->
+
+      <p>How do the pieces fit? Go's answer is usually summarized as GMP,
+        and you will want the three letters later:</p>
+
+      <ul>
+        <li><strong>G</strong> is a goroutine: your function, its small
+          growable stack, and a note of where its execution stands.</li>
+        <li><strong>M</strong> is a machine: a real OS thread, the only
+          thing that can actually execute code.</li>
+        <li><strong>P</strong> is a processor: the right to run Go code
+          on some M, plus a ready list of runnable goroutines. An M must
+          hold a P to execute your functions.</li>
+      </ul>
+      <!-- fs: os-io-primitives.md §7 (golang.design 9.1): G/M/P model; number of Ps
+           = GOMAXPROCS, default = number of CPUs -->
+
+      <p>The number of Ps is capped at <code>GOMAXPROCS</code>, which
+        defaults to your CPU count, so no matter how many goroutines
+        exist, only that many run simultaneously:</p>
+
+      <pre><code class="language-go">package main
+
+import (
+	"fmt"
+	"runtime"
+)
+
+func main() {
+	fmt.Println(runtime.GOMAXPROCS(0)) // how many Ps exist here
+}</code></pre>
+
+      <p>The elegant part is what happens when a goroutine blocks. Say it
+        reads a socket. The Go machinery knows about the read, hands the
+        waiting job to its built-in network poller (its private
+        epoll-shaped layer), and immediately runs a different goroutine on
+        the same M. The OS thread never sleeps. It does not even know a
+        context switch of the interesting kind happened; from the kernel's
+        point of view, that thread has been busy the whole time.</p>
+
+      <p>Goroutines need to talk to each other, and Go hands them typed
+        pipes, spelled <code>chan</code> in code. One goroutine puts a
+        value in, another takes it out, and if one side is not ready the
+        other suspends until it is:</p>
+
+      <pre><code class="language-go">package main
+
+import "fmt"
+
+func produce(out chan int) {
+	for i := 0; i &lt; 3; i++ {
+		out &lt;- i // hand a value to whoever receives
+	}
+	close(out)
+}
+
+func main() {
+	out := make(chan int)
+	go produce(out)
+	for v := range out { // receives until the pipe closes
+		fmt.Println("received", v)
+	}
+}</code></pre>
+
+      <h2>Stackful: the fine print on "anywhere"</h2>
+
+      <p>Notice what Go never asked you to mark. A goroutine can block
+        deep inside a nested call, ten frames down, inside a library you
+        do not control. That works because green threads are
+        <strong>stackful</strong>: each one carries its own call stack, so
+        to pause it, the machinery saves the whole stack, registers and
+        all, and can later resume it exactly where it stood, however deep
+        that was. Suspension can happen anywhere, because everything
+        needed to resume is kept.</p>
+
+      <p>That power is also the bill. A stack per green thread means
+        kilobytes at minimum, megabytes if a call graph gets deep, and it
+        means the stack must be managed: grown by copying, or chopped into
+        segments, both of which cost and both of which have bitten real
+        implementations. And it means trouble at the edges of the
+        language. Foreign function interfaces expect to run on a real
+        thread's stack; mixing your own stack switching with C code that
+        was never told about it is a permanent source of exotic bugs. Every
+        stackful system pays a complexity tax at that boundary.</p>
+
+      <h2>Java's virtual threads: the same idea, arriving officially</h2>
+
+      <p>Java spent years on the thread-per-request model, hit exactly the
+        arithmetic you saw in Part 1, and then shipped the M:N fix as
+        virtual threads. A virtual thread is a <code>java.lang.Thread</code>
+        that is not tied to any particular OS thread. A small pool of real
+        "carrier" threads (a default of one per available processor) runs
+        them, and when a virtual thread performs a blocking operation in
+        the standard library, the JDK quietly performs a non-blocking call
+        instead, unmounts the virtual thread from its carrier, and frees
+        the carrier for other work:</p>
+      <!-- fs: os-io-primitives.md §7 (JEP 444): virtual threads use M:N scheduling;
+           JDK dispatcher is a work-stealing ForkJoinPool in FIFO mode, parallelism
+           defaults to the number of available processors -->
+
+      <pre><code class="language-java">public class Main {
+    public static void main(String[] args) throws Exception {
+        try (var pool = java.util.concurrent.Executors
+                .newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i &lt; 100_000; i++) {
+                int id = i;
+                pool.submit(() -&gt; {
+                    Thread.sleep(1000); // suspends the virtual thread only
+                    return id;
+                });
+            }
+        } // closing waits for all 100,000 to finish
+    }
+}</code></pre>
+
+      <p>A hundred thousand sleeping threads, done in a page of code, with
+        the ordinary blocking style. The catch has two parts. First,
+        unlike the <a href="02-callbacks-and-event-loops.html">cooperative</a>
+        loop of the previous page, you control nothing about when the
+        switch happens: it is invisible, decided by the JDK at blocking
+        calls, which is ergonomic magic and a debugging puzzle at the same
+        time. Second, the escape hatches leak: inside a
+        <code>synchronized</code> block, or any native call, a virtual
+        thread cannot unmount, and its carrier is held hostage for the
+        duration. The official guidance is to swap long-blocking
+        <code>synchronized</code> sections for <code>ReentrantLock</code>
+        in hot paths.</p>
+      <!-- fs: os-io-primitives.md §7 (JEP 444): pinning inside synchronized blocks
+           and native calls prevents unmounting; ReentrantLock recommended -->
+
+      <div class="warning">
+        <p>M:N is a contract with the language's own machinery, and the
+          contract has fine print. If a library does I/O in a way the
+          machinery cannot see, the green thread cannot let go of its OS
+          thread, and your N quietly grows toward your M. Every green
+          thread ecosystem keeps a list of "known ways a thread gets
+          stuck to its carrier," and
+          every operator of one has personally found an entry the hard
+          way.</p>
+      </div>
+
+      <h2>The honest ledger</h2>
+
+      <p>Green threads deliver the dream ergonomics: blocking-style code
+        that scales to enormous concurrency, one color of function, no
+        inversion of control. The price is paid in memory, kilobytes per
+        waiter instead of bytes, and in machinery: your language needs a
+        dispatcher, stack management, a network poller, and answers for
+        every awkward boundary like foreign calls. Go and the modern JVM
+        decided that price is worth paying, and they may well be right for
+        their goals.</p>
+
+      <p>The next page keeps what green threads bought, cheap suspension
+        at scale, and throws away the thing that made it heavy. If you
+        only suspend at points you choose, you do not need a stack at all.
+        The pause can be a value.</p>
+
+      <div class="note">
+        <p>Rust walked through this door once: green threads shipped in
+          its pre-1.0 days and were deleted before 1.0. Part 3 explains
+          the bet Rust made instead. It is door number four.</p>
+      </div>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A green thread is a thread built by your language in user
+            space; M:N scheduling maps many of them onto a few kernel
+            threads, so blocking no longer costs a real thread.</li>
+          <li>Go's GMP: goroutines (G) run on OS threads (M) that hold
+            processors (P); the count of Ps is GOMAXPROCS, one per
+            CPU by default, and a built-in network poller absorbs socket
+            waits.</li>
+          <li>Stackful means each green thread carries a full call stack,
+            so it can pause anywhere, even ten frames deep; the price is
+            kilobytes per thread, stack growth machinery, and trouble at
+            foreign-call boundaries.</li>
+          <li>Java virtual threads are M:N arriving in the JVM: carriers
+            mount and unmount them at blocking calls, and the documented
+            fine print is that synchronized blocks can hold a carrier
+            hostage.</li>
+          <li>The strategy trades memory and hidden machinery for the
+            most familiar programming model of the five; the next strategy
+            trades the model instead.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pitfalls — Under the Await</title>
+  <meta name="description" content="Five classic async Rust mistakes, each traced through the runtime machinery from Part 4, each with the fix: blocking sleeps, guards across awaits, unbounded channels, detached tasks, and cancel-unsafe writes.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p05-05">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Pitfalls</h1>
+
+      <p>Almost every async Rust bug you will meet is one of two
+        shapes: code that blocks a
+        <a href="../01-foundations/02-processes-threads-context-switches.html">thread</a>
+        that is never allowed to block, or code that drops a future
+        that was not finished. The five classics below are all
+        variations on those two themes. Each one gets the same
+        treatment: the wrong code, the trace through the machinery
+        you now understand, and the fix, which is almost always to
+        move the work to the layer that was built for it.</p>
+
+      <h2>A blocking sleep in async clothing</h2>
+
+      <p>Wrong first. This retry loop looks innocent and parks a
+        worker:</p>
+
+      <pre><code class="language-rust">async fn health_check(db: &amp;Db) -&gt; bool {
+    for _ in 0..3 {
+        if db.ping().await.is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    false
+}</code></pre>
+
+      <p>Trace it. The task is mid-poll when it reaches the sleep, so
+        the thread that sleeps is the worker's own OS thread, the one
+        that is supposed to be polling
+        <a href="../04-tokio-internals/02-task-anatomy.html">every
+        other task in its queues</a>. For half a second, that worker
+        is gone: its run queues back up, its
+        <a href="../04-tokio-internals/03-scheduler.html">budget</a>
+        accounting is useless because the budget counts polls and
+        there are none, and the scheduler has no idea anything is
+        wrong. On a runtime with one worker, or in the main future
+        under block_on, the entire program freezes. Nothing crashed;
+        everything is just waiting for a thread that is asleep in the
+        kernel.</p>
+
+      <p>The fix depends on what the sleep was for. Waiting for time
+        to pass is the <a href="../04-tokio-internals/07-time-driver.html">time
+        driver's</a> job: <code>tokio::time::sleep</code> arms a wheel
+        entry, returns Pending, parks the task, and the worker moves
+        on to someone else's work. Genuinely blocking work, a
+        database driver stuck in a C library, a
+        <code>std::fs</code> call, a lock you cannot scope, belongs
+        on the <a href="../04-tokio-internals/04-blocking-pool.html">blocking
+        pool</a> via <code>spawn_blocking</code>, where parking a
+        thread is the entire point. The rule is one sentence: nothing
+        inside a poll may stop the thread it runs on.</p>
+
+      <h2>A guard held across the await</h2>
+
+      <p>Wrong again, and this one fails two different ways
+        depending on where the future runs:</p>
+
+      <pre><code class="language-rust">async fn refresh_if_missing(cache: &amp;Cache, key: String) {
+    let guard = cache.map.lock().unwrap();
+    if guard.contains_key(&amp;key) {
+        return;
+    }
+    let value = read_from_disk(&amp;key).await;
+    guard.insert(key, value);
+}</code></pre>
+
+      <p>The first failure is at compile time, and it is the kind
+        one. The future holds a <code>std::sync::MutexGuard</code>
+        across an await, so the future itself is not
+        <a href="../03-rust-async/01-rust-recap.html"><code>Send</code></a>,
+        and handing it to <code>tokio::spawn</code> is rejected on
+        the spot, with an error message that names the guard. The
+        compiler just stopped you from moving a lock between
+        threads. The second failure happens when you dodge the
+        spawn, say by polling this future directly, and a second
+        task wants the same lock: your task holds the guard, parks
+        at the disk read, the worker polls the other task, that task
+        calls <code>lock()</code>, and a std mutex blocks the worker's
+        thread on the spot. The disk read finishes and queues your
+        task to be woken, but the thread that would wake it is
+        blocked waiting for the very guard your task is holding.
+        Deadlock, one worker gone, no error message anywhere.</p>
+
+      <p>The fix in most code is not the async mutex; it is scope.
+        Hold the guard only for the synchronous part, drop it before
+        awaiting, and take it again after:</p>
+
+      <pre><code class="language-rust">async fn refresh_if_missing(cache: &amp;Cache, key: String) {
+    if cache.map.lock().unwrap().contains_key(&amp;key) {
+        return;
+    }
+    let value = read_from_disk(&amp;key).await;
+    cache.map.lock().unwrap().insert(key, value);
+}</code></pre>
+
+      <p>When a critical section genuinely must await while holding
+        the lock, that is what
+        <code>tokio::sync::Mutex</code> from the
+        <a href="../04-tokio-internals/08-sync-primitives.html">sync
+        chapter</a> is for: its <code>lock().await</code> parks the
+        task instead of the thread. Treat it as the exception;
+        most locked sections want to be short and synchronous, and
+        scoping makes them so.</p>
+
+      <h2>The channel without a brake</h2>
+
+      <pre><code class="language-rust">let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+tokio::spawn(async move {
+    while let Some(tick) = feed.next().await {
+        tx.send(tick).expect("consumer gone");
+    }
+});
+
+// elsewhere: a batch writer drains rx between disk flushes</code></pre>
+
+      <p>The trace is a slow-motion one. <code>unbounded_channel</code>
+        exists to make <code>send</code> synchronous: the value goes
+        into a queue that grows on demand, the call returns
+        immediately, and nobody parks, ever. That is exactly what
+        you want for a few log lines, and exactly wrong for a hot
+        producer feeding a slow consumer. The feed is faster than
+        the disk, so the queue grows, and grows, and every item you
+        are buffering is memory held plus latency added, with no
+        signal reaching the producer to slow down. The program does
+        not deadlock and does not error; it just quietly converts a
+        fast input stream into an ever-larger heap while the
+        consumer falls further behind. The
+        <a href="04-pipelines-and-channels.html">backpressure
+        demonstration</a> from the pipeline page showed the healthy
+        version of this exchange; the unbounded channel is that
+        demo with the brake sawn off.</p>
+
+      <p>The fix is the bounded channel: <code>mpsc::channel</code>
+        with a small capacity, and <code>send(...).await</code> so
+        the full buffer parks the producer at the lip. Pick the
+        capacity for how much burst you want to absorb, not for how
+        much data you hope never arrives; a bounded channel that is
+        always full is doing its job, keeping memory flat and the
+        producer honest.</p>
+
+      <h2>Fire, forget, and never hear</h2>
+
+      <pre><code class="language-rust">tokio::spawn(handle_request(socket));</code></pre>
+
+      <p>One line, no binding, and the
+        <a href="../04-tokio-internals/02-task-anatomy.html">JoinHandle</a>
+        drops on the spot. The task is now detached: it runs for as
+        long as it likes, and nothing in your program will ever know
+        how it ended. Trace the failure modes. If the task panics,
+        the panic is caught at the task boundary and packaged as a
+        <code>JoinError</code>, which is then dropped along with the
+        handle you never kept; a supervisor that swallowed every
+        exception would be called broken, and this is that
+        supervisor. If your program exits while the task is
+        mid-await, the runtime
+        <a href="01-boot-sequence.html">stops it at its next yield
+        point</a>, which for a protocol handler means half a
+        response written and the socket dropped mid-conversation.
+        And if the task is stuck in an infinite loop you forgot
+        about, nothing will ever collect it.</p>
+
+      <p>Sometimes fire-and-forget is correct: metrics ticks, log
+        flushes, work that truly has no failure your program could
+        act on. Make those deliberate. For everything else, own the
+        outcome: keep the handle and await it at the closing
+        bracket, or, better, spawn into a
+        <a href="04-pipelines-and-channels.html"><code>JoinSet</code></a>
+        and drain it with <code>join_next</code>, so panics surface
+        where you can log them and shutdown waits for stragglers
+        instead of cutting them. The pipeline page showed the whole
+        ceremony; it is four lines, and it converts invisible
+        failures into ordinary <code>Result</code>s.</p>
+
+      <h2>Racing a write that must not lose</h2>
+
+      <p>The last one is the most subtle, because every line looks
+        right and the program mostly works. A connection loop that
+        wants to honor shutdown races its socket write against a
+        shutdown signal:</p>
+
+      <pre><code class="language-rust">loop {
+    // ... assemble frame from upstream work ...
+    tokio::select! {
+        _ = socket.write_all(&amp;frame) =&gt; {}
+        _ = shutdown_rx.changed() =&gt; break,
+    }
+}</code></pre>
+
+      <p>Here is the trace. <code>write_all</code> is documented as
+        not <a href="../04-tokio-internals/09-cancellation-and-select.html">cancellation-safe</a>:
+        it loops internally until the whole buffer is out, and
+        nothing outside can see how far it got. Suppose the socket's
+        send buffer fills partway through the frame, the write parks,
+        and shutdown fires: <code>select!</code> drops the write
+        future mid-flight. The first half of the frame is already on
+        the wire; the second half never will be. The loop breaks,
+        the connection closes politely, and the peer is left holding
+        a truncated frame, which it will usually parse as garbage or,
+        worse, glue onto the front of whatever comes next. No
+        function returned an error. The corruption is silent and
+        rare, which is why this bug shape survives testing.</p>
+
+      <p>The fix is to move the race to the right granularity: race
+        for <em>work</em>, never inside a unit of work. Select on
+        &ldquo;next frame from upstream, or shutdown&rdquo;, and do
+        the write, uninterrupted, in the branch:</p>
+
+      <pre><code class="language-rust">loop {
+    let frame = tokio::select! {
+        frame = frames_rx.recv() =&gt; match frame {
+            Some(f) =&gt; f,
+            None =&gt; break,
+        },
+        _ = shutdown_rx.changed() =&gt; break,
+    };
+    socket.write_all(&amp;frame).await?;
+}</code></pre>
+
+      <p>Shutdown now lands between frames, never inside one. When
+        the writer must stay responsive while a large write drains,
+        give the write its own task fed by a channel and close the
+        channel to shut it down, the
+        <a href="04-pipelines-and-channels.html">close-by-ownership</a>
+        pattern; or use the library's <code>write_all_buf</code>
+        variant, which advances its buffer as it writes so a
+        cancelled attempt resumes where it stopped instead of
+        restarting from the top. All three fixes share one idea:
+        cancellation is only safe at points you chose, and the
+        <a href="../04-tokio-internals/09-cancellation-and-select.html">cancellation
+        chapter's</a> question, &ldquo;what happens if this await is
+        dropped right now?&rdquo;, is worth asking at every select
+        branch you write.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Nothing inside a poll may stop its thread:
+            <code>std::thread::sleep</code> and blocking locks park
+            the worker; use <code>tokio::time::sleep</code> or the
+            blocking pool.</li>
+          <li>A std mutex guard held across an await is a compile
+            error under spawn and a deadlock elsewhere; scope the
+            guard, and reserve the async mutex for critical sections
+            that truly await.</li>
+          <li>Unbounded channels remove backpressure; a bounded
+            channel plus <code>send().await</code> keeps memory flat
+            and producers honest for free.</li>
+          <li>A dropped JoinHandle detaches its task and silently
+            discards its panic; await handles or drain a JoinSet so
+            outcomes surface.</li>
+          <li>Race for work, never inside it: <code>write_all</code>
+            dropped mid-write loses the tail of the frame, so select
+            on &ldquo;next message or shutdown&rdquo; and write
+            uninterrupted in the branch.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

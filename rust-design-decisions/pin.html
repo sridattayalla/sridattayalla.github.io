@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pin: A Promise Not to Move — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="pin">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Six — The Escape Hatches</p>
+    <h1>Pin: A Promise Not to Move</h1>
+    <p class="lede">The previous page ended on the strangest-sounding
+    invariant you can inherit: never move the value. Most values
+    survive a move perfectly well — this page is about the ones that
+    do not, why the compiler cannot tell them apart by looking, and
+    the wrapper that turns the distinction into a checked fact. One
+    promise, one opt-out, and the reason paused computations can
+    live on the heap without fear of the floor moving.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#the-hidden-pointer">The pointer hidden inside a value</a></li>
+        <li><a href="#the-promise">The promise, made a type</a></li>
+        <li><a href="#the-opt-out">The opt-out, and two refusals</a></li>
+        <li><a href="#why-async-needed-it">Why async needed it</a></li>
+        <li><a href="#the-bill">The bill</a></li>
+      </ol>
+    </nav>
+
+    <section id="the-hidden-pointer">
+      <h2>The pointer hidden inside a value</h2>
+      <p>The unsafe page inherited three families of proofs —
+      aliasing, validity, exactly-once destruction — and ended by
+      calling one of them special. What kind of value cannot survive
+      a move? Picture a struct with two fields: a
+      <code>String</code>, and the address of that
+      <code>String</code> — a pointer stored inside the very struct
+      that owns the data. A value is
+      <dfn><a href="glossary.html#t-self-referential">self-referential</a></dfn>
+      when one of its fields points into the value itself.</p>
+      <p>Move the struct and the <code>String</code> lands at a new
+      address; the pointer field is bytes, and bytes do not update
+      themselves. Follow the pointer after the move and you read
+      whatever lives at the old address now — the founding page's
+      first C failure, the dangling pointer, hidden inside a single
+      value. No hatch, no trait, no second thread: a plain move
+      manufactures it.</p>
+      <p>Why have you never met one in safe code? Because the
+      checker refuses the shape at the source. A struct cannot hold
+      a reference into its own body — the reference's lifetime would
+      have to outlive the struct that contains it, and the lifetimes
+      page's checker refuses exactly that knot. The hatch from the
+      previous page is what makes one constructible: a raw pointer
+      carries no lifetime, so the checker does not follow it. And
+      notice the asymmetry when you build it — creating the pointer
+      is safe, no hatch required; following it is the audited act.
+      Aim the pointer with one safe write and you hold a value that
+      is correct at exactly one address. The missing piece is a way
+      to promise it stays there.</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 200"><title>A self-referential value before and after a move: the interior pointer keeps the old address and dangles</title>
+          <rect class="s-ink" fill="none" stroke-width="1.5" x="70" y="60" width="190" height="100"/>
+          <rect class="f-green s-ink" stroke-width="1.5" x="90" y="75" width="150" height="32"/>
+          <text x="165" y="95" text-anchor="middle" font-size="12">data: "hello"</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="90" y="115" width="150" height="32"/>
+          <text x="165" y="135" text-anchor="middle" font-size="12">ptr: 0x40</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M90 131 H80 V91 H84"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M84 87l6 4-6 4"/>
+          <text class="t-dim" x="165" y="185" text-anchor="middle" font-size="12">before: the stored address points at data</text>
+          <rect class="s-ink" fill="none" stroke-width="1.5" x="420" y="60" width="190" height="100"/>
+          <rect class="f-green s-ink" stroke-width="1.5" x="440" y="75" width="150" height="32"/>
+          <text x="515" y="95" text-anchor="middle" font-size="12">data: "hello"</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="440" y="115" width="150" height="32"/>
+          <text x="515" y="135" text-anchor="middle" font-size="12">ptr: 0x40</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M440 131 H404"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M386 125l12 12"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M398 125l-12 12"/>
+          <text class="t-dim" x="392" y="158" text-anchor="middle" font-size="12">gone</text>
+          <text class="t-dim" x="515" y="185" text-anchor="middle" font-size="12">after a move: the stored address points at nothing</text>
+        </svg>
+        <figcaption>The move problem in one picture: the fields land
+        at a new address, the stored pointer still holds the old
+        one, and the value breaks — quietly.</figcaption>
+      </figure>
+    </section>
+
+    <section id="the-promise">
+      <h2>The promise, made a type</h2>
+      <p>The missing piece is a wrapper whose entire meaning is one
+      sentence.
+      <dfn><a href="glossary.html#t-pin">Pin</a></dfn>
+      is a wrapper around a pointer that promises: the value behind
+      this pointer will never move before it is dropped. And
+      <dfn><a href="glossary.html#t-pinning">pinning</a></dfn>
+      is the act of placing a value behind that promise. RFC 2349
+      wrote both the motivation and the
+      goal:<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+      <blockquote>
+        <p>"A common motivation for this is when a struct contains a
+        pointer into its own representation — moving that struct
+        would invalidate that pointer."<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+      </blockquote>
+      <blockquote>
+        <p>"Provide a reference type where the referent is
+        guaranteed to never move before being
+        dropped."<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+      </blockquote>
+      <p>The mechanics of keeping that promise are the box page's,
+      promoted from convenience to guarantee. You cannot stop the
+      owner of a stack local from returning it, passing it, or
+      assigning it — so Pin does not police owners. Instead, the
+      promise is made at the moment the value goes behind a handle
+      that never moves its pointee: the Box. Moving a Box moves one
+      pointer — the handle travels, the value stays at its heap
+      address — and <code>Box::pin</code>, or
+      <code>Pin::from</code> on a box you already own, is the
+      sealing act.</p>
+      <p>Here is the whole design, running:</p>
+      <figure class="codeblock accept">
+        <figcaption>pin_demo.rs — a self-referential value, sealed
+        behind a stable handle</figcaption>
+<pre data-verify="run" data-expect="the handle moved, the value did not"><code class="language-rust">use std::marker::PhantomPinned;
+use std::pin::Pin;
+struct SelfRef {
+    data: String,
+    ptr: *const String,
+    _pin: PhantomPinned,
+}
+impl SelfRef {
+    fn report(self: Pin&lt;&amp;Self&gt;) -&gt; (usize, usize) {
+        let field = &amp;self.data as *const String as usize;
+        let held = self.ptr as usize;
+        // SAFETY: ptr was aimed at data before the value was pinned,
+        // and Pin guarantees the value has not moved since.
+        let text = unsafe { &amp;*self.ptr };
+        println!("field at {:#x}, stored pointer {:#x}, \"{}\"", field, held, text);
+        (field, held)
+    }
+}
+fn main() {
+    let mut boxed = Box::new(SelfRef { data: "hello".to_string(), ptr: std::ptr::null(), _pin: PhantomPinned });
+    // Creating the pointer is safe; following it is the audited part.
+    // The address stays valid: a Box never moves its pointee.
+    boxed.ptr = &amp;boxed.data as *const String;
+    let pinned = Pin::from(boxed);
+    let before = pinned.as_ref().report();
+    let moved = pinned;
+    let after = moved.as_ref().report();
+    assert_eq!(before, after);
+    println!("addresses unchanged: the handle moved, the value did not");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">field at 0x5e949d8e7ae0, stored pointer 0x5e949d8e7ae0, "hello"
+field at 0x5e949d8e7ae0, stored pointer 0x5e949d8e7ae0, "hello"
+addresses unchanged: the handle moved, the value did not</code></pre>
+      </figure>
+      <p>Walk it through. The struct is our self-referential value:
+      a <code>String</code>, a raw pointer aimed at it, and a marker
+      field whose meaning is the next section's business.
+      <code>report</code> reads the field's address and the stored
+      pointer, then follows the pointer — through the hatch — to
+      prove the text is still reachable. In <code>main</code>, the
+      handle is moved: <code>let moved = pinned;</code> rebinds it.
+      Both reports agree — same field address, same stored pointer,
+      same text — and the assert at the end turns that agreement
+      into a checked fact. The handle moved; the value did not. And
+      notice which line needed the hatch: not the store, which is
+      safe, but the follow — the read through the raw pointer —
+      with its written argument for why the address still
+      holds.<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+    </section>
+
+    <section id="the-opt-out">
+      <h2>The opt-out, and two refusals</h2>
+      <p>Before the refusals, the opt-out, because it answers the
+      obvious objection: almost every type you will ever write
+      points nowhere into itself.
+      <dfn><a href="glossary.html#t-unpin">Unpin</a></dfn>
+      is the marker that says so — a marker trait in the send-sync
+      page's sense, an empty badge, attached automatically to nearly
+      every type: a <code>String</code>, a number, a
+      <code>Vec</code> — all safe to move, always, so the promise
+      would buy them nothing. The badge is also removed
+      automatically when any field lacks it, and one field exists
+      purely to do that: <code>PhantomPinned</code>, a marker with
+      no data and no methods whose entire job is subtracting the
+      default. Our struct carries it — that is the marker field
+      from the demo — so <code>SelfRef</code> refuses the
+      badge.<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+      <p>The design shows its shape in two refusals. First: the
+      promise cannot be made for a value whose owner can still move
+      it. <code>Pin::new</code> — the constructor for pinning behind
+      a plain reference — refuses:</p>
+      <figure class="codeblock reject">
+        <figcaption>pin_new_err.rs — promising for a value that can
+        still move</figcaption>
+<pre data-verify="fail" data-error="E0277" data-expect="cannot be unpinned"><code class="language-rust">use std::marker::PhantomPinned;
+use std::pin::Pin;
+
+struct SelfRef {
+    data: String,
+    _pin: PhantomPinned,
+}
+
+fn main() {
+    let value = SelfRef {
+        data: "hello".to_string(),
+        _pin: PhantomPinned,
+    };
+    let pinned = Pin::new(&amp;value);
+    println!("pinned a stack value: {}", pinned.get_ref().data);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the first refusal, captured</figcaption>
+<pre><code class="language-text">error[E0277]: `PhantomPinned` cannot be unpinned
+   --&gt; pin_new_err.rs:14:27
+    |
+ 14 |     let pinned = Pin::new(&amp;value);
+    |                  -------- ^^^^^^ within `SelfRef`, the trait `Unpin` is not implemented for `PhantomPinned`
+    |                  |
+    |                  required by a bound introduced by this call
+    |
+    = note: consider using the `pin!` macro
+            consider using `Box::pin` if you need to access the pinned value outside of the current scope
+note: required because it appears within the type `SelfRef`
+   --&gt; pin_new_err.rs:4:8
+    |
+  4 | struct SelfRef {
+    |        ^^^^^^^
+note: required by a bound in `Pin::&lt;Ptr&gt;::new`
+   --&gt; library/core/src/pin.rs:1159:25
+    |
+1159 | impl&lt;Ptr: Deref&lt;Target: Unpin&gt;&gt; Pin&lt;Ptr&gt; {
+    |                         ^^^^^ required by this bound in `Pin::&lt;Ptr&gt;::new`
+...
+1181 |     pub const fn new(pointer: Ptr) -&gt; Pin&lt;Ptr&gt; {
+    |                  --- required by a bound in this associated function</code></pre>
+      </figure>
+      <p>Read the error's spine: the badge is missing, because it
+      is missing within the type. The help lines point at the two
+      sanctioned acts — the <code>pin!</code> macro for a value that
+      never leaves the current scope, and <code>Box::pin</code> when
+      it must — and our demo used the third spelling of the same
+      act, <code>Pin::from</code> on a box we owned. What the
+      refusal is really saying: a promise made for a stack address
+      is a promise the owner can break by returning, assigning, or
+      passing the value — so the constructor refuses to make
+      it.<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+      <p>Second: the promise must not be breakable afterwards. The
+      dangerous tool is <code>&amp;mut</code> — the borrowing page's
+      exclusive reference, which permits
+      <code>std::mem::swap</code>, which is a move wearing a
+      helper's badge. Hand one out to the pinned body and the
+      promise is void. So the accessor that would hand it out
+      simply does not exist for our type:</p>
+      <figure class="codeblock reject">
+        <figcaption>pin_get_mut_err.rs — asking for the one reference
+        that could break the promise</figcaption>
+<pre data-verify="fail" data-error="E0599" data-expect="no method named `get_mut`"><code class="language-rust">use std::marker::PhantomPinned;
+use std::pin::Pin;
+
+struct SelfRef {
+    data: String,
+    _pin: PhantomPinned,
+}
+
+fn main() {
+    let pinned = Pin::from(Box::new(SelfRef {
+        data: "hello".to_string(),
+        _pin: PhantomPinned,
+    }));
+    let whole: &amp;mut SelfRef = pinned.get_mut();
+    whole.data.clear();
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the second refusal, captured</figcaption>
+<pre><code class="language-text">error[E0599]: no method named `get_mut` found for struct `Pin&lt;Box&lt;SelfRef&gt;&gt;` in the current scope
+   --&gt; pin_get_mut_err.rs:14:38
+    |
+ 14 |     let whole: &amp;mut SelfRef = pinned.get_mut();
+    |                                      ^^^^^^^ method not found in `Pin&lt;Box&lt;SelfRef&gt;&gt;`
+    |
+note: method is available for `Pin&lt;&amp;mut Box&lt;SelfRef&gt;&gt;`
+   --&gt; library/core/src/pin.rs:1596:5
+    |
+1596 | /     pub const fn get_mut(self) -&gt; &amp;'a mut T
+1597 | |     where
+1598 | |         T: Unpin,
+     | |_________________^
+    = note: the method was found for `Pin&lt;&amp;'a mut T&gt;`</code></pre>
+      </figure>
+      <p>The error is the design. <code>get_mut</code> was found —
+      in the standard library's own source, quoted in the note —
+      with exactly one gate on it: the badge. For a type that
+      carries the badge, mutable access is business as usual. For
+      ours, the method is not callable, and the promise
+      holds.<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+    </section>
+
+    <section id="why-async-needed-it">
+      <h2>Why async needed it</h2>
+      <p>Now the customer that made this machinery load-bearing. A
+      <dfn><a href="glossary.html#t-future">future</a></dfn>
+      is a value that represents a computation which has started,
+      paused, and may be resumed — not a callback, not a thread: a
+      value. And <dfn><a href="glossary.html#t-async">async</a></dfn>
+      is the keyword that makes one: write an async function, and
+      the compiler compiles the body into a state machine whose
+      fields are the function's locals, paused at each suspension
+      point and resumable from there.</p>
+      <p>Why does that need the promise? Pause an async function
+      mid-body and look at what the state machine holds: its
+      locals, as fields. One local can hold a reference to another
+      local — the borrowing rules allow it inside the body — and
+      once both are fields of one struct, that reference is a
+      pointer into the same value. The state machine is
+      self-referential, manufactured by the compiler, not by you.
+      Resume it after it moved and the stale self-pointers are
+      followed — the founding failure again, this time with no
+      unsafe block in
+      sight.<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+      <p>That is the sentence that explains the whole mechanism.
+      The runtime that schedules these values — the executor, the
+      code that resumes futures — moves them constantly: into
+      queues, into task tables, out again. Moving the body is the
+      one fatal act; moving the handle is the scheduler's daily
+      business. So the executor's currency is exactly our demo's
+      type: a pinned, boxed handle — the handle moves freely
+      through the machinery while every paused body stays put on
+      the heap. The RFC's own phrase, "especially important
+      recently with work on generators," was written before the
+      async story settled; generators grew into it, and a niche
+      tool for intrusive lists became the floor under all of
+      it.<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+    </section>
+
+    <section id="the-bill">
+      <h2>The bill</h2>
+      <p>The costs are honest. A pinned value cannot move — even
+      safely, even to a better home — for the rest of its life,
+      which for a long-lived task is the program's duration. Code
+      that touches pinned data must speak the vocabulary:
+      <code>Pin&lt;&amp;mut T&gt;</code> where plain
+      <code>&amp;mut T</code> used to be — a cost every low-level
+      library paid once, in its interface, forever. And the opt-out
+      spreads: a field without the badge makes the containing
+      struct lose it too, so <code>PhantomPinned</code>'s single
+      effect compounds through composition, the same way the
+      send-sync badges did.<a class="prov" data-src="research/unsafe-pin.md" href="links.html#s-unsafe-pin" title="unsafe pin — research/unsafe-pin.md">[unsafe-pin]</a></p>
+      <p>And the symmetry with the previous page completes the
+      design. Unsafe is the hatch out of the checker's world — the
+      place where you make the machine's promises by hand. Unpin is
+      the door back into the ordinary world — the place where you
+      say, in a type, "this value points nowhere into itself; the
+      promise would buy nothing here." Most types walk through that
+      door by default, because most values are exactly that. The
+      ones that cannot — the paused computations, the intrusive
+      structures — stay behind the promise, and the rest of the
+      program moves around them at full speed.</p>
+      <p>Every page so far has assumed the happy path: values are
+      constructed, used, and dropped, and nothing fails on the way.
+      Failure needs the same discipline the rest of the language
+      has — visible, typed, and predictable. The next page is that
+      discipline.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A self-referential value holds a pointer into its own
+        body; a move strands that pointer — the founding page's
+        failure, hidden inside one value.</li>
+        <li>Pin is one promise as a type: the value behind this
+        pointer never moves before it is dropped; pinning happens
+        at the moment the value goes behind a stable handle.</li>
+        <li>The demo's proof: the handle moved, and the field
+        address, stored pointer, and text were unchanged — the
+        promise held by construction.</li>
+        <li>Two refusals bracket the promise: Pin::new will not
+        promise for a movable owner; get_mut does not exist without
+        the Unpin badge.</li>
+        <li>A paused async function is a self-referential state
+        machine, which is why the executor's currency is the
+        pinned, boxed handle.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="unsafe.html"><span class="cap">Previous</span><span class="pg-title">Unsafe: The Escape Hatch</span></a>
+    <a class="pager-card" rel="next" href="error-handling.html"><span class="cap">Next</span><span class="pg-title">Errors and Panics: Two Tiers of Failure</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

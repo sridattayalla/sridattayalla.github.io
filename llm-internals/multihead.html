@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-Head Attention and GQA — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="multihead">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Machine</p>
+    <h1>Multi-Head Attention and GQA</h1>
+    <p class="lede">After this page you can say what changes when a floor
+    runs thirty-two gathers instead of one — and why the biggest models
+    deliberately shrink the offering side.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-one">One gather is one opinion</a></li>
+        <li><a href="#sec-slice">Slice the width, run the same recipe</a></li>
+        <li><a href="#sec-learn">What the extra finders buy</a></li>
+        <li><a href="#sec-share">Sharing the offering side</a></li>
+        <li><a href="#sec-count">What the floor's tables weigh</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-one">
+      <h2>One gather is one opinion</h2>
+      <p>The last page ended with a pronoun holding cat-ness: one gather,
+      one mixture, one new vector per piece. Nothing on this page replaces
+      that machinery. The change is the count.</p>
+      <p>One gather per position forces a compromise. A real position wants
+      several relationships at once — the noun it refers to, the verb it
+      belongs to, the neighbors it sits between, the topic of the passage
+      so far. A single weighted average can only blend those into one
+      mixture, splitting its budget among them. If reference needs "cat"
+      and the action needs "ate", one gather gives each a share and
+      neither the full picture.</p>
+      <p>The architecture's answer is blunt: run the whole apparatus
+      several times per floor, in parallel. Not by copying the width — by
+      slicing it. Each slice gets its own tables, asks its own question,
+      runs its own gather. The floor's output stops being one opinion per
+      position and becomes several.</p>
+    </section>
+
+    <section id="sec-slice">
+      <h2>Slice the width, run the same recipe</h2>
+      <p>The arrangement has a name.
+      <dfn><a href="glossary.html#t-multi-head-attention">Multi-head
+      attention</a></dfn> splits the working width into heads — each head
+      owning a slice of every piece's vector — gives each head its own
+      asking, offering, and payload tables (each d_model by d_head, the
+      slice width), runs the same gather recipe on every slice in
+      parallel, concatenates the results back to the full width, and mixes
+      them through one shared output table,
+      <code>W_o</code>
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>Concrete numbers, from the 8B model's floor: working width 4096,
+      thirty-two heads, each slice 128 wide
+      <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>.
+      The asking table <code>W_q</code> is 4096 by 4096 — its output is
+      the full working width, which then reshapes into thirty-two slices
+      of 128. The offering and payload tables are narrower — 4096 by 1024
+      — for a reason that arrives later this page.</p>
+      <p>The structural fact to hold onto: heads are blind to each other.
+      During the gather, head three's score grid knows nothing of head
+      seven's — no shared scores, no averaging across heads. The only
+      place head outputs meet is after concatenation, through
+      <code>W_o</code>. Every coordination between heads happens there,
+      or in the floors above.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the 8B floor's gathering
+        half, shapes only</p>
+        <div class="worked-body">
+<pre><code class="language-text">the 8B model's floor, gathering half — shapes only:
+
+  piece vectors X:              (n, 4096)     n pieces, working width 4096
+
+  asking copies   X @ W_q:      (n, 4096) -> reshape (n, 32, 128)
+                                one 128-wide slice per query head
+
+  offering copies X @ W_k:      (n, 1024) -> reshape (n,  8, 128)
+  payload copies  X @ W_v:      (n, 1024) -> reshape (n,  8, 128)
+                                8 KV heads; each serves a group of 4
+
+  per head:  scores (n, n) -> weights (n, n) -> gather (n, 128)
+  (every query head runs its own grid, against its group's shared keys)
+
+  all 32 gathers, concatenated:        (n, 4096)
+  mixed by W_o (4096 x 4096):          (n, 4096)</code></pre>
+        </div>
+      </div>
+
+      <p>Read the panel with the last page's machinery in mind and notice
+      that nothing new happened. The same three copies, the same score
+      grids, the same softmax and gather — one set per head, over narrower
+      slices. Even the position rotation runs unchanged, inside each
+      slice.</p>
+    </section>
+
+    <section id="sec-learn">
+      <h2>What the extra finders buy</h2>
+      <p>What do the heads look for? Each head's tables start at random
+      values, and training pushes them wherever regularities in the text
+      help next-piece prediction. The architecture guarantees only the
+      division of labor: thirty-two independent pattern-finders per
+      position, each filling its own slice of the width. Nothing forces
+      them to specialize; specialization is what training makes of the
+      room.</p>
+      <p>One budget detail is easy to miss: slicing does not multiply the
+      width. Thirty-two heads of 128 entries still total 4096 — the same
+      working width, divided. Multi-head buys more simultaneous
+      questions, not more room per question. The trade-off is real:
+      fewer, wider heads give each finder more entries to work with;
+      more, narrower heads give each position more finders.</p>
+      <p>Where the dial settles is strikingly consistent across families:
+      GPT-3's largest model and the Llama line both land on 128 entries
+      per head — the former with 96 heads across a 12,288-wide vector,
+      the latter with 32 across 4096
+      <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>.</p>
+    </section>
+
+    <section id="sec-share">
+      <h2>Sharing the offering side</h2>
+      <p>Now the asymmetry that motivates the rest of the page. When the
+      model generates — extends text one piece at a time — each new piece
+      brings one asking copy per head: cheap, transient, used once. But
+      its gather must meet every earlier piece's offering copy, and
+      gather from every earlier payload. The offering side therefore
+      accumulates as the text grows: keys and values for every piece so
+      far, per head, per floor.</p>
+      <p>That accumulating store has a name, and the model keeps it
+      deliberately. The
+      <dfn><a href="glossary.html#t-kv-cache">KV cache</a></dfn> is the
+      stored key and value rows for every piece processed so far: as the
+      model first reads the text it computes each piece's offering and
+      payload rows and keeps them, so that each later piece's gather
+      meets those stored rows instead of forcing the model to rebuild
+      them
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      One new piece adds one new row per key-value head; nothing already
+      stored is recomputed.</p>
+      <p>The cost lever sits inside the store. It holds one key row and
+      one value row per piece, per key-value head — so fewer key-value
+      heads means a smaller store, in exact proportion. The asking side
+      is untouched: queries are per-piece and transient.</p>
+      <p>Which invites the obvious move.
+      <dfn><a href="glossary.html#t-gqa">GQA</a></dfn> — grouped-query
+      attention — arranges the query heads into groups and gives each
+      group a single shared key-value pair of tables: one key-value head
+      serves several query heads
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.
+      The 8B model runs thirty-two query heads in eight groups of four,
+      so the store shrinks to a quarter of its full multi-head size —
+      and the design was introduced with the quality cost measured at
+      negligible
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>The extreme is
+      <dfn><a href="glossary.html#t-mqa">MQA</a></dfn> — multi-query
+      attention — where every query head shares one single key-value
+      head: the smallest possible store, and a bigger quality price than
+      grouping
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.
+      Grouping sits between the extremes, and close enough to full
+      multi-head that the biggest model families shipped it.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 320"><title>Thirty-two query heads drawn as eight rows of four small squares; each row is outlined as one group, and a line runs from each group outline to one of eight key-value squares stacked on the right</title>
+          <text class="t-dim" x="121" y="26" text-anchor="middle" font-size="12">query heads</text>
+          <text class="t-dim" x="492" y="26" text-anchor="middle" font-size="12">key-value heads</text>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="44" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="44" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="44" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="44" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="76" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="76" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="76" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="76" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="108" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="108" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="108" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="108" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="140" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="140" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="140" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="140" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="172" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="172" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="172" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="172" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="204" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="204" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="204" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="204" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="236" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="236" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="236" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="236" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="60" y="268" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="90" y="268" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="120" y="268" width="24" height="24"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="268" width="24" height="24"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="39" width="134" height="34"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="71" width="134" height="34"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="103" width="134" height="34"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="135" width="134" height="34"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="167" width="134" height="34"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="199" width="134" height="34"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="231" width="134" height="34"/>
+          <rect fill="none" class="s-accent" stroke-width="2" rx="7" x="50" y="263" width="134" height="34"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="56" x2="470" y2="53"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="88" x2="470" y2="85"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="120" x2="470" y2="117"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="152" x2="470" y2="149"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="184" x2="470" y2="181"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="216" x2="470" y2="213"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="248" x2="470" y2="245"/>
+          <line class="s-ink3" stroke-width="1.5" x1="184" y1="280" x2="470" y2="277"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="40" width="26" height="26"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="72" width="26" height="26"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="104" width="26" height="26"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="136" width="26" height="26"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="168" width="26" height="26"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="200" width="26" height="26"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="232" width="26" height="26"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="470" y="264" width="26" height="26"/>
+        </svg>
+        <figcaption>Grouped-query attention in the 8B model: thirty-two
+        query heads in eight groups of four, each group sharing one
+        key-value head. The stored offering rows shrink to a quarter of
+        the full size; each of the four askers still runs its own score
+        grid against the shared keys.</figcaption>
+      </figure>
+
+      <p>Why sharing works at all: within a group, each query head still
+      runs its own score grid against the shared keys and gathers its own
+      mixture from the shared values. Four askers with four different
+      questions consult the same labeled shelves. What the group shares
+      is infrastructure, not opinion.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the offering store, three
+        ways</p>
+        <div class="worked-body">
+<pre><code class="language-text">stored offering rows per piece, per floor (relative units):
+
+  full multi-head:    32 KV heads    32 units    full size
+  grouped (GQA-8):     8 KV heads     8 units    one quarter
+  multi-query (MQA):   1 KV head      1 unit     one thirty-second
+
+  quality: GQA-8 measured within rounding of full multi-head
+  (the GQA paper's finding); MQA gives up more</code></pre>
+        </div>
+      </div>
+
+      <p>One side effect lands in the tables: the offering and payload
+      tables narrow with the group count — in the 8B model, W_k and W_v
+      are 4096 by 1024 rather than 4096 by 4096
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>The companion script's model runs two heads with no sharing —
+      the grouped variant changes only the widths of those two tables —
+      but its forward pass shows the slicing, the store, and the mixing
+      in one place:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the gathering half of the forward pass,
+        exactly as shipped (two heads in the toy; the slicing, the stored
+        rows, and the mixing are the same)</figcaption>
+<pre><code class="language-python">H, d_model = cfg['n_heads'], cfg['d_model']
+dh = d_model // H
+x0 = params['emb'][np.asarray(ids)]
+n = x0.shape[0]
+pos0 = 0 if kv is None else kv['k'].shape[0]
+positions = np.arange(pos0, pos0 + n)
+
+h1 = rmsnorm(x0, params['ln1'])
+q = rope((h1 @ params['Wq']).reshape(n, H, dh), positions)
+k = rope((h1 @ params['Wk']).reshape(n, H, dh), positions)
+v = (h1 @ params['Wv']).reshape(n, H, dh)
+if kv is not None:
+    k = np.concatenate([kv['k'], k], axis=0)
+    v = np.concatenate([kv['v'], v], axis=0)
+
+scores = np.einsum('qhd,khd->hqk', q, k) / np.sqrt(dh)
+if kv is None:
+    scores = np.where(np.tril(np.ones((n, n))) > 0, scores, -np.inf)
+A = softmax(scores)
+ctx = np.einsum('hqk,khd->qhd', A, v).reshape(n, d_model)
+x1 = x0 + ctx @ params['Wo']</code></pre>
+      </figure>
+
+      <p>Three things to see. The reshape into <code>(n, H, dh)</code> is
+      the slicing. The two concatenate lines extend the stored rows
+      during generation — that store is the cache defined above; when
+      reading fresh text the model skips them and blocks the future
+      instead, exactly as on the last page. And the final line mixes the
+      concatenated gathers through <code>W_o</code>, with an add-back of
+      <code>x0</code> whose meaning is deliberately two pages ahead.
+      (The scaling step that produces <code>h1</code> is two pages ahead
+      too.)</p>
+    </section>
+
+    <section id="sec-count">
+      <h2>What the floor's tables weigh</h2>
+      <p>Count the gathering half's tables, in entries, for one 8B floor
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the gathering tables,
+        counted</p>
+        <div class="worked-body">
+<pre><code class="language-text">the 8B model's gathering tables, per floor:
+
+  W_q   4096 x 4096  = 16.8M
+  W_k   4096 x 1024  =  4.2M      (8 KV heads x 128)
+  W_v   4096 x 1024  =  4.2M      (8 KV heads x 128)
+  W_o   4096 x 4096  = 16.8M
+                              total ~42M entries
+
+  without sharing, W_k and W_v would be 4096 x 4096 each:
+  the half would hold ~67M entries</code></pre>
+        </div>
+      </div>
+
+      <p>About 42 million entries
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.
+      Notice what sharing did to the count: without it, W_k and W_v
+      would each be 4096 by 4096, and the half would hold about 67
+      million — sharing shaved roughly 25 million entries, more than a
+      third of the half, along with the store.</p>
+      <p>The other half of the floor is heavier — over four times heavier
+      — and it is the next page's whole subject. The handoff is clean:
+      the gathering half moved information between positions; the other
+      half processes each position alone.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>One gather per position forces a single compromise mixture;
+        multiple heads give each position several independent gathers —
+        more simultaneous questions, not more width.</li>
+        <li>Multi-head slices the working width (32 heads of 128 entries
+        = 4096 in the 8B model); W_o after concatenation is the only
+        place head outputs mix.</li>
+        <li>During generation the offering side accumulates — the KV
+        cache, one key and value row per piece per key-value head —
+        while asking copies stay per-piece and transient.</li>
+        <li>GQA shares key-value heads among query groups (32 heads into
+        8, a quarter of the store) at negligible quality cost; MQA is
+        the one-head extreme.</li>
+        <li>The gathering half of one 8B floor holds about 42 million
+        entries; the other half holds over four times more — next
+        page.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="attention.html"><span class="cap">Previous</span><span class="pg-title">Attention: Every Token Looks at Every Earlier Token</span></a>
+    <a class="pager-card" rel="next" href="ffn.html"><span class="cap">Next</span><span class="pg-title">The Feed-Forward Network</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

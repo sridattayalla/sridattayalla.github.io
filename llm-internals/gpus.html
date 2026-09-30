@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPUs: Where the Math Lives — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="gpus">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Two — Training</p>
+    <h1>GPUs: Where the Math Lives</h1>
+    <p class="lede">After this page you can say what a GPU is in two
+    sentences, why fetching a number costs far more than multiplying
+    it, and why that one asymmetry explains both training's memory
+    bill and the speed limits of generating text.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-chip">The chip the math runs on</a></li>
+        <li><a href="#sec-asymmetry">The asymmetry that rules everything</a></li>
+        <li><a href="#sec-regimes">Two regimes of work</a></li>
+        <li><a href="#sec-memory">Training's memory bill</a></li>
+        <li><a href="#sec-split">One model, many chips</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-chip">
+      <h2>The chip the math runs on</h2>
+      <p>The training step is now fully specified — charge, walk,
+      move — and it is enormous: hundreds of quadrillions of
+      multiply-adds per step, for millions of steps, on tables that
+      must be fetched from somewhere. The somewhere, and the machine
+      doing the multiplying, is this page. This is not a detour into
+      hardware for its own sake: the physical facts here are what
+      every later choice — batch size, model size, serving speed —
+      bends around.</p>
+      <p>Strip a GPU to what matters for this work. It is a chip with
+      thousands of small arithmetic units running in lockstep, and its
+      whole design bets on one shape of work: the same operation,
+      applied to enormous piles of numbers at once. Learned-table
+      multiplies are exactly that shape — every entry of an input
+      vector meets every column of a table — which is why the machine
+      built for graphics became the machine this field runs on. The
+      peak rates are quoted for the chip's
+      <dfn><a href="glossary.html#t-tensor-core">tensor core</a></dfn>
+      units, the ones that perform matrix products rather than
+      isolated multiplies
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.</p>
+      <p>Around the arithmetic sits memory in two tiers, and the tier
+      distinction will explain most of this page.
+      <dfn><a href="glossary.html#t-hbm">HBM</a></dfn> — high-bandwidth
+      memory — is the large store: tens of gigabytes stacked beside
+      the processing units on the same package, where a model's
+      entries live while work runs (80 GB on an A100, the same on an
+      H100)
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      <dfn><a href="glossary.html#t-sram">SRAM</a></dfn> is the other
+      tier: the small, much faster memory embedded right beside the
+      arithmetic units — far too small to hold a model, fast enough
+      to keep the units fed once data reaches it.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 240"><title>A GPU in two parts: arithmetic units with a small fast memory embedded beside them on the left, and a much larger high-bandwidth memory box on the right, connected by a single labeled pipe along which bytes flow to the left</title>
+          <rect class="f-accent s-ink" stroke-width="1" x="40" y="70" width="200" height="70"/>
+          <text x="140" y="100" text-anchor="middle" font-size="13">arithmetic units</text>
+          <text x="140" y="120" text-anchor="middle" font-size="12" class="t-dim">trillions of operations per second</text>
+          <rect fill="none" class="s-ink" stroke-width="1" x="40" y="160" width="200" height="55"/>
+          <text x="140" y="183" text-anchor="middle" font-size="13">small fast memory</text>
+          <text x="140" y="201" text-anchor="middle" font-size="12" class="t-dim">embedded beside the units</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="430" y="70" width="170" height="145"/>
+          <text x="515" y="100" text-anchor="middle" font-size="13">high-bandwidth</text>
+          <text x="515" y="118" text-anchor="middle" font-size="13">memory (HBM)</text>
+          <text x="515" y="145" text-anchor="middle" font-size="12" class="t-dim">the entries live here</text>
+          <text x="515" y="163" text-anchor="middle" font-size="12" class="t-dim">tens of gigabytes</text>
+          <line class="s-accent" stroke-width="3" x1="430" y1="140" x2="240" y2="105"/>
+          <text x="330" y="92" text-anchor="middle" font-size="12">the pipe:</text>
+          <text x="330" y="110" text-anchor="middle" font-size="12">about 2,000 GB per second</text>
+        </svg>
+        <figcaption>A GPU's two worlds: the arithmetic units with a
+        small fast memory embedded beside them, and the large
+        high-bandwidth memory where the model's entries live. The pipe
+        between the two is the scarce resource.</figcaption>
+      </figure>
+    </section>
+
+    <section id="sec-asymmetry">
+      <h2>The asymmetry that rules everything</h2>
+      <p>Now the two speeds, and the ratio between them that rules
+      everything downstream. Moving bytes from HBM to the arithmetic
+      happens at a fixed rate — the chip's
+      <dfn><a href="glossary.html#t-memory-bandwidth">memory
+      bandwidth</a></dfn>: about 2,039 gigabytes per second on an
+      A100, about 3,350 on an H100
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      Arithmetic is counted in
+      <dfn><a href="glossary.html#t-flops">FLOPs</a></dfn> —
+      floating-point operations, one multiply or one add each — and
+      the same chips perform, on table-shaped work, roughly 312
+      trillion and 990 trillion of those per second respectively
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.</p>
+      <p>Put the two together and the asymmetry appears: for every
+      byte the chip fetches, it can perform on the order of a couple
+      hundred operations — by the datasheets' arithmetic, computing on
+      a number is roughly one hundred fifty to six hundred times
+      cheaper than fetching it
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      Read that as a rule of economics: fetched bytes are the scarce
+      currency; arithmetic is nearly free by comparison. Work that
+      reuses each fetched entry many times runs at the arithmetic
+      speed. Work that fetches every entry to use it once runs at the
+      memory speed — and the memory speed is the slow one.</p>
+    </section>
+
+    <section id="sec-regimes">
+      <h2>Two regimes of work</h2>
+      <p>The two situations have names. Work is
+      <dfn><a href="glossary.html#t-compute-bound">compute-bound</a></dfn>
+      when its time is set by the number of operations — which happens
+      when each fetched entry feeds many operations. Work is
+      <dfn><a href="glossary.html#t-memory-bound">memory-bound</a></dfn>
+      when its time is set by fetching — which happens when each
+      fetched entry feeds few. The two shapes of running a language
+      model land one in each regime, and the split is stark.</p>
+      <p>Reading a text in — hundreds or thousands of positions at
+      once — is compute-bound: every table is fetched once and then
+      applied at every position, so one fetch serves the whole text,
+      and the arithmetic units set the pace. Generating text — one
+      piece at a time — is memory-bound: to produce a single piece,
+      every table in the machine must be fetched in full, used once,
+      and thrown away; the pipe sets the pace and the arithmetic units
+      sit idle. Part Four builds the entire serving story on this
+      split; the speed numbers wait there.</p>
+      <p>The asymmetry also names the two escape hatches, which is why
+      they work: shrink the bytes per entry — fewer bytes per fetch
+      means more entries per second through the same pipe — and share
+      each fetch across many sequences at once, so one fetch serves
+      many users. Both attack the scarce resource directly, and both
+      get their own page in Part Four.</p>
+    </section>
+
+    <section id="sec-memory">
+      <h2>Training's memory bill</h2>
+      <p>Back to training, whose bill is dominated by the same
+      hierarchy. The last page established that the backward walk must
+      hold every intermediate value; add the update rule's own needs,
+      and the full cost per entry comes into view. Training runs in
+      <dfn><a href="glossary.html#t-mixed-precision">mixed
+      precision</a></dfn>: the forward and backward walks compute in
+      two-byte numbers, while the master copy of every entry — and the
+      two running averages the update keeps for it — sit in four-byte
+      precision
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the bill for one
+        entry</p>
+        <div class="worked-body">
+<pre><code class="language-text">the memory bill for one entry, in training
+(mixed precision, AdamW-family update):
+
+  the entry itself, two bytes          2
+  its slope, two bytes                 2
+  master copy, four bytes              4
+  running average of its slope         4
+  running average of squared size      4
+                                      ---
+  total                               16 bytes
+
+  a 7B-entry model:   ~14 GB of entries alone,
+                      ~112 GB to train on</code></pre>
+        </div>
+      </div>
+
+      <p>Sixteen bytes per entry
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      The 7B model — fourteen billion bytes of entries in two-byte
+      dress
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>
+      — occupies about a hundred twelve billion bytes in training:
+      the entries alone are one-eighth of the bill. An eighty-gigabyte
+      chip cannot hold it before any work begins.</p>
+      <p>One trade exists between the two currencies.
+      <dfn><a href="glossary.html#t-gradient-checkpointing">Gradient
+      checkpointing</a></dfn>: do not store every intermediate value
+      from the forward pass — recompute them during the backward walk
+      instead. The trade costs roughly a third more arithmetic and
+      buys a large cut in the memory the walk needs
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      When the memory bill, not the operation count, is what caps the
+      run, this is the standard lever.</p>
+    </section>
+
+    <section id="sec-split">
+      <h2>One model, many chips</h2>
+      <p>And when one chip cannot hold the model at all, the model is
+      split — along the three natural axes.
+      <dfn><a href="glossary.html#t-tensor-parallel">Tensor
+      parallel</a></dfn> splits each table multiply across chips:
+      every chip holds a slice of every table, and the slices' partial
+      results are combined after each floor, which demands a fast
+      interconnect between chips.
+      <dfn><a href="glossary.html#t-pipeline-parallel">Pipeline
+      parallel</a></dfn> splits the floors: one chip owns the first
+      run of floors, the next chip owns the following run, and work
+      flows through the machine in stages — kept busy by feeding many
+      small batches one after another.
+      <dfn><a href="glossary.html#t-data-parallel">Data
+      parallel</a></dfn> splits the batches: several identical copies
+      of the whole model each work a different batch, and the copies
+      combine their slopes after every step; the modern sharded
+      variants go further, each chip holding a slice of the entries
+      rather than a full copy
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.</p>
+      <p>The largest runs use every axis at once. The biggest of the
+      Llama 3 family — over four hundred billion entries — trained on
+      sixteen thousand H100s, with the batches, the floors, the
+      tables, and even the long sequences themselves split across the
+      machine
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.</p>
+      <p>So the machine exists, its speeds are datasheet facts, and
+      its cost is a multiplication away: chips times hours. Given the
+      machine, the question that remains is the oldest one in
+      engineering — how big to build, and how long to run, before the
+      next dollar is better spent elsewhere. The field's empirical
+      answer to that question, and the budget philosophy that followed
+      it, is the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A GPU is thousands of lockstep arithmetic units plus a
+        two-tier memory: small fast storage embedded beside the units,
+        and tens of gigabytes of HBM where the model's entries
+        live.</li>
+        <li>The ruling asymmetry: per byte fetched, the chip can
+        perform on the order of a couple hundred operations — fetched
+        bytes are the scarce currency, arithmetic nearly free.</li>
+        <li>Two regimes: reading a whole text at once is compute-bound
+        (one fetch serves every position); generating one piece at a
+        time is memory-bound (every table fetched per piece).</li>
+        <li>Training's bill is sixteen bytes per entry in mixed
+        precision — a 7B model's ~14 GB of entries becomes ~112 GB in
+        training dress; gradient checkpointing trades a third more
+        compute for a large memory cut.</li>
+        <li>Beyond one chip: split the tables (tensor parallel), the
+        floors (pipeline parallel), or the batches (data parallel) —
+        the largest runs use all three, on sixteen-thousand-chip
+        clusters.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="backprop.html"><span class="cap">Previous</span><span class="pg-title">Backpropagation and the Training Step</span></a>
+    <a class="pager-card" rel="next" href="scaling.html"><span class="cap">Next</span><span class="pg-title">Scaling Laws and Chinchilla</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

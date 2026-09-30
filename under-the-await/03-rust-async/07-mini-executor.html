@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Building a mini executor — Under the Await</title>
+  <meta name="description" content="A complete block_on in twenty lines, then a multi-job engine with a ready queue, built from std only. The whole wake-poll loop, hand-cranked.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p03-07">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Building a mini executor</h1>
+
+      <p>Pages 2 through 6 handed you every component: futures that are
+        state machines, wakers that travel between threads, the contract,
+        the memory rules. What is still missing is the thing at the bottom
+        of it all: the code that calls <code>poll</code>, owns the wakers,
+        and decides what runs when. That code is the
+        <strong>executor</strong>, and this page builds two of them from
+        std alone. The first drives a single future on the calling thread.
+        The second drives many. Together they are about sixty lines, and
+        they are, mechanically, a small Tokio: everything Part 4 shows you
+        about the real engine will be some scaled-up version of a decision
+        on this page.</p>
+
+      <h2>block_on: one future, one thread</h2>
+
+      <p>The simplest possible engine is a function, conventionally named
+        <strong>block_on</strong>: run one future to completion, on this
+        thread, and while it is pending, actually sleep. "Block" in the
+        name is honest: the calling thread does no other work until the
+        future finishes. It is the tool a program uses at the top of its
+        main function to cross from the synchronous world into the async
+        one, exactly once.</p>
+
+      <p>The design falls straight out of the contract. Poll the future. If
+        it says <code>Ready</code>, return the value. If it says
+        <code>Pending</code>, then by rule 3 it has stored our waker
+        somewhere, so we can safely go to sleep, and the waker's job is to
+        wake us. The loop is three lines; the only real question is how a
+        thread sleeps and gets woken, and std has a matched pair for
+        exactly that.</p>
+
+      <!-- fs: research/rust-async.md §5 — canonical minimal block_on from the std task::Wake docs: ThreadWaker + park, poll/Pending loop -->
+      <p><code>thread::park()</code> puts the calling thread to sleep at
+        negligible cost: no timer, no condition variable setup, the thread
+        simply leaves the run state until something calls
+        <code>unpark</code> on its handle. The matching
+        <strong>unpark</strong> carries a saved credit: if the thread is
+        parked, it wakes; if it is not parked, the credit is remembered, and
+        the very next <code>park</code> consumes it and returns immediately.
+        That saved credit is the answer to the race you should be worried
+        about, "what
+        if the waker fires between my <code>Pending</code> and my going to
+        sleep": the unpark that arrives early is not lost, so the thread
+        cannot sleep through a wake-up. Here is the whole engine:</p>
+
+      <pre><code class="language-rust">use std::future::Future;
+use std::pin::pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
+use std::thread::{self, Thread};
+
+struct ThreadWaker(Thread);
+
+impl Wake for ThreadWaker {
+    fn wake(self: Arc&lt;Self&gt;) {
+        self.0.unpark();
+    }
+}
+
+fn block_on&lt;F: Future&gt;(fut: F) -&gt; F::Output {
+    let mut fut = pin!(fut);
+    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+    let mut cx = Context::from_waker(&amp;waker);
+    loop {
+        match fut.as_mut().poll(&amp;mut cx) {
+            Poll::Ready(out) =&gt; return out,
+            Poll::Pending =&gt; thread::park(),
+        }
+    }
+}</code></pre>
+
+      <p>Take it line by line. The waker wraps one value:
+        <code>thread::current()</code>, a handle to ourselves, and its
+        <code>wake</code> is a single <code>unpark</code>. When any thread
+        anywhere fires this waker, the <code>Arc</code> lands in our
+        thread's pocket and the thread wakes. Back in
+        <code>block_on</code>: <code>pin!(fut)</code> fixes the future in
+        place, because compiler-generated futures are
+        <a href="06-pin.html">not safe to move once running</a> and
+        <code>poll</code> demands the promise. Then the loop: poll, and on
+        <code>Pending</code>, <strong>park</strong>, which is the same
+        sleep-until-readiness the kernel gave you in
+        <a href="../01-foundations/06-io-multiplexing-readiness.html">Part
+        1</a>, now built from threads instead of epoll. The saved-credit
+        semantics make the loop correct even under the early-wake race:
+        an unpark that arrives while we are still finishing the poll is
+        banked, and the <code>park()</code> returns instantly.</p>
+
+      <!-- fs: research/rust-async.md §5 — std docs caveat: this example "trades correctness for simplicity"; production implementations must also handle intermediate unparks and nested invocations -->
+      <p>The std documentation itself shows this design, with a warning
+        label worth quoting: it trades correctness for simplicity, and
+        production engines must additionally handle intermediate unpark
+        calls and nested invocations of the loop from the same thread. Our
+        version inherits those sharp edges and, for teaching, keeps them.
+        File the caveat; Part 4 shows how the industrial version earns its
+        keep.</p>
+
+      <h2>The full circle</h2>
+
+      <p>Now the moment this whole part has been walking toward. Take the
+        <code>Delay</code> from page 4, unchanged, and drive it with the
+        engine you just wrote; then drive an actual <code>async</code>
+        block with it:</p>
+
+      <pre><code class="language-rust">fn main() {
+    let started = Instant::now();
+    block_on(delay(Duration::from_millis(50)));
+    println!("one delay: {:?}", started.elapsed());
+
+    let started = Instant::now();
+    block_on(async {
+        delay(Duration::from_millis(30)).await;
+        delay(Duration::from_millis(30)).await;
+    });
+    println!("two awaits: {:?}", started.elapsed());
+}</code></pre>
+
+      <pre><code class="language-plaintext">one delay: 50.2ms
+two awaits: 60.6ms</code></pre>
+
+      <p>Read the second demo slowly, because it is the hinge of the entire
+        book. That <code>async</code> block is a compiler-generated state
+        machine, from page 5. Its two <code>.await</code>s poll a
+        hand-written future, from page 4, whose waker is
+        <code>ThreadWaker::wake</code>, from this page, and whose timer
+        thread is a plain <code>std::thread</code>. Every layer is
+        something you have built or dissected by hand. Sixty milliseconds
+        is just two thirty-millisecond delays run one after another, and
+        the thread slept through almost all of it: no busy-waiting, no
+        blocked kernel calls, one wake-up per delay. The async stack,
+        bottom to top, is closed.</p>
+
+      <h2>Many jobs: a queue, not a loop</h2>
+
+      <p><code>block_on</code> drives one future. The interesting engines
+        drive thousands, which changes the design in one way: there must
+        be a place where woken futures wait to be polled. Recall
+        <a href="../02-concurrency-models/05-cooperative-scheduling.html">Part
+        2's run queues</a>: here is one being born. The plan: keep the jobs
+        in a <code>Vec</code>, keep a queue of indices of jobs that are
+        ready to be polled, and build each job's waker so that waking it
+        means "push my index and wake the engine thread":</p>
+
+      <pre><code class="language-rust">use std::collections::VecDeque;
+
+struct Shared {
+    ready: Mutex&lt;VecDeque&lt;usize&gt;&gt;, // indices of jobs to poll
+}
+
+struct JobWaker {
+    shared: Arc&lt;Shared&gt;,
+    index: usize,
+    main: Thread,
+}
+
+impl Wake for JobWaker {
+    fn wake(self: Arc&lt;Self&gt;) {
+        self.shared.ready.lock().unwrap().push_back(self.index);
+        self.main.unpark();
+    }
+}</code></pre>
+
+      <p>The <code>JobWaker</code> is the entire scheduling policy of this
+        engine in four lines: a wake re-enqueues the job and pokes the
+        thread. Because a waker may be fired from any thread, the queue
+        lives behind a <code>Mutex</code> with
+        <a href="01-rust-recap.html">atomics</a> doing the thread-safe
+        counting inside the <code>Arc</code>. Now the engine loop:</p>
+
+      <pre><code class="language-rust">fn run_all(futures: Vec&lt;Pin&lt;Box&lt;dyn Future&lt;Output = ()&gt;&gt;&gt;&gt;) {
+    let mut jobs: Vec&lt;Option&lt;Pin&lt;Box&lt;dyn Future&lt;Output = ()&gt;&gt;&gt;&gt; =
+        futures.into_iter().map(Some).collect();
+    let shared = Arc::new(Shared {
+        ready: Mutex::new((0..jobs.len()).collect()),
+    });
+    while jobs.iter().any(Option::is_some) {
+        let next = shared.ready.lock().unwrap().pop_front();
+        let i = match next {
+            Some(i) =&gt; i,
+            None =&gt; {
+                thread::park(); // queue dry: sleep until a wake arrives
+                continue;
+            }
+        };
+        let Some(slot) = jobs.get_mut(i) else { continue };
+        let Some(fut) = slot.as_mut() else { continue }; // finished earlier
+        let waker = Waker::from(Arc::new(JobWaker {
+            shared: Arc::clone(&amp;shared),
+            index: i,
+            main: thread::current(),
+        }));
+        let mut cx = Context::from_waker(&amp;waker);
+        if fut.as_mut().poll(&amp;mut cx).is_ready() {
+            *slot = None; // retire the job
+        }
+    }
+}</code></pre>
+
+      <p>Walk the loop. The jobs start boxed and pinned, uniform
+        <code>Pin&lt;Box&lt;dyn Future&gt;&gt;</code> values regardless of
+        their concrete types, which is the page 5 sizing note doing real
+        work. Every index starts in the ready queue, so the first sweep
+        polls everything once. Each iteration pops one index, skips it if
+        the job has already finished (wakes can arrive late), builds that
+        job's waker, polls once, and retires the job on
+        <code>Ready</code>. When the queue runs dry while jobs still sleep,
+        the engine parks, exactly like <code>block_on</code>, and any
+        <code>JobWaker</code> firing anywhere pushes an index and unparks
+        it. There is no polling in a tight loop, no busy waiting: the
+        thread sleeps whenever there is nothing to do, and every wake is
+        caused by an event that might genuinely make progress.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 220" role="img" aria-label="The engine loop: pop an index from the ready queue, poll that job, retire it on Ready or leave it pending; when the queue is dry the thread parks; a wake pushes an index and unparks the thread">
+          <title>The mini engine loop</title>
+          <rect class="box" x="20" y="60" width="150" height="70" rx="8"/>
+          <text class="label" x="95" y="88" text-anchor="middle">ready queue</text>
+          <text class="label muted" x="95" y="108" text-anchor="middle">Mutex&lt;VecDeque&gt;</text>
+          <line class="arrow" x1="170" y1="95" x2="260" y2="95"/>
+          <polygon class="arrow-head" points="260,90 270,95 260,100"/>
+          <text class="label mono" x="215" y="80" text-anchor="middle">pop</text>
+          <rect class="box" x="270" y="60" width="130" height="70" rx="8"/>
+          <text class="label mono" x="335" y="88" text-anchor="middle">poll job</text>
+          <text class="label muted" x="335" y="108" text-anchor="middle">with its waker</text>
+          <line class="arrow accent" x1="400" y1="80" x2="500" y2="45"/>
+          <polygon class="arrow-head accent" points="500,40 510,45 500,52"/>
+          <text class="label mono accent" x="450" y="45" text-anchor="middle">Ready</text>
+          <rect class="box accent" x="510" y="25" width="110" height="45" rx="8"/>
+          <text class="label" x="565" y="45" text-anchor="middle">retire job</text>
+          <line class="arrow" x1="400" y1="110" x2="500" y2="145"/>
+          <polygon class="arrow-head" points="500,150 510,145 500,138"/>
+          <text class="label mono" x="450" y="165" text-anchor="middle">Pending</text>
+          <rect class="box" x="510" y="125" width="110" height="45" rx="8"/>
+          <text class="label" x="565" y="145" text-anchor="middle">job sleeps,</text>
+          <text class="label" x="565" y="163" text-anchor="middle">waker stored</text>
+          <line class="arrow" x1="95" y1="130" x2="95" y2="175"/>
+          <polygon class="arrow-head" points="90,175 100,175 95,185"/>
+          <rect class="box" x="20" y="190" width="150" height="0" rx="0"/>
+          <text class="label muted" x="95" y="206" text-anchor="middle">queue dry: thread parks</text>
+          <line class="arrow accent" x1="270" y1="185" x2="170" y2="150"/>
+          <polygon class="arrow-head accent" points="172,145 162,152 174,156"/>
+          <text class="label mono accent" x="260" y="200" text-anchor="middle">wake: push + unpark</text>
+        </svg>
+        <figcaption>Figure 1: the whole engine. Pop, poll, retire or leave
+          pending; sleep when the queue is dry; a wake restarts the
+          cycle.</figcaption>
+      </figure>
+
+      <p>Prove it composes. Three <code>Delay</code>s, all on one thread:</p>
+
+      <pre><code class="language-rust">fn main() {
+    let started = Instant::now();
+    run_all(vec![
+        Box::pin(delay(Duration::from_millis(80))),
+        Box::pin(delay(Duration::from_millis(40))),
+        Box::pin(delay(Duration::from_millis(60))),
+    ]);
+    println!("three jobs: {:?}", started.elapsed());
+}</code></pre>
+
+      <pre><code class="language-plaintext">three jobs: 80.3ms</code></pre>
+
+      <p>Three timers, one OS thread, and the total is roughly the longest
+        delay, not the sum of all three. The engine polls each job once,
+        each job's timer thread holds its waker, and the engine sleeps in
+        between wakes. That is concurrency without additional threads: the
+        cooperative promise from Part 2, made mechanical. Each
+        <code>Pending</code> return is a
+        <a href="../02-concurrency-models/05-cooperative-scheduling.html">yield
+        point</a>, and this engine's fairness policy is the queue itself:
+        round-robin, one poll per turn, no job can starve another because
+        no job may refuse to return <code>Pending</code>.</p>
+
+      <div class="pitfall">
+        <p>Here is a bug that was genuinely in this page's code the first
+          time it ran, and it is subtle enough to be worth your time.
+          Consider writing the queue pop like this:</p>
+        <pre><code class="language-rust">// BUGGY: the lock guard lives for the whole match statement
+let i = match shared.ready.lock().unwrap().pop_front() {
+    Some(i) =&gt; i,
+    None =&gt; { thread::park(); continue; }
+};</code></pre>
+        <p>The temporary <code>MutexGuard</code> produced in the match
+          scrutinee is not dropped until the <em>end of the match</em>, so
+          the <code>park()</code> sleeps while still holding the queue's
+          lock. The program hangs, silently. When a timer fires, the
+          waker's <code>wake</code> dutifully tries to lock the queue to
+          push its index, blocks on the mutex held by the sleeping engine
+          thread, and never reaches the <code>unpark</code>. Deadlock:
+          everyone waiting for everyone, no panic, no message. The fix is
+          the <code>let next = ...;</code> binding you see in the real
+          listing, which ends the guard's life at the semicolon. The
+          general law: never hold a lock across a sleep, and know that
+          match scrutinee temporaries outlive their line.</p>
+      </div>
+
+      <h2>What we cut</h2>
+
+      <p>An honest accounting, because the gaps are where
+        <a href="../04-tokio-internals/01-runtime-overview.html">Part 4</a>
+        lives.
+        This engine allocates a fresh waker for every poll of every job;
+        Tokio embeds wakers in the jobs themselves. This engine has one
+        queue and one thread; Tokio gives each worker thread its own queue
+        plus a shared overflow lane, moves work between them by
+        <a href="../02-concurrency-models/05-cooperative-scheduling.html">stealing</a>,
+        and caps how long any job may run without yielding. This engine
+        knows nothing about sockets or files; hooking readiness events
+        from the kernel up to wakers is the machinery that Part 4's I/O
+        chapters dissect in full. This engine sleeps in
+        <code>park</code> waiting for any wake at all; a production engine
+        parks <em>inside</em> the readiness machinery so the same sleep
+        covers timers, sockets, and queues at once. And where this engine
+        starts a thread per timer, the real one keeps every deadline in
+        one data structure with a single clock.</p>
+
+      <p>None of those gaps change the shape. Pop, poll, park, wake: that
+        loop is the shape of every async engine Rust has ever grown, and
+        you now own a working one. The remaining question is why Rust
+        built its language around this particular loop instead of the
+        greener threads of Part 2, and that decision, its costs paid in
+        full and its payoff banked, is the last page of this part.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>An <strong>executor</strong> is the code that calls
+            <code>poll</code>, owns wakers, and decides what runs;
+            <strong>block_on</strong> is the smallest one: poll, and on
+            <code>Pending</code>, sleep the thread.</li>
+          <li><code>thread::park</code> and <code>unpark</code> form a
+            credit-based sleep: an early unpark is banked, closing the
+            wake-versus-sleep race.</li>
+          <li>Waking a job means "enqueue it, then wake the engine"; a
+            <code>Mutex</code>-guarded queue of indices is a run queue in
+            embryo.</li>
+          <li>Never hold a lock across a park: the waker that should rescue
+            you deadlocks on the lock you never released.</li>
+          <li>Three delays on one thread finish in roughly the longest
+            delay: concurrency without threads, the Part 2 cooperative
+            model made mechanical.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

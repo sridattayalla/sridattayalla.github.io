@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<!-- Deliberately broken fixture: seeds every error class the checker must catch. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Wrong Title</title>
+</head>
+<body data-page="wrong">
+<main>
+<h2>Deliberately broken</h2>
+<p>Early use of panic before its defining page.</p>
+<p>The magic answer is 42 with no citation anywhere nearby.</p>
+<p>A dangling link to <a href="missing-page.html">nowhere</a>.</p>
+<p>An anchor to <a href="#nowhere">nothing</a>.</p>
+<p>An outbound link to <a href="https://example.com/x">example</a>.</p>
+<p>A remote image <img src="http://example.com/i.png" alt="remote">.</p>
+<!-- term-ok: legitimate forward reference, silenced by the escape hatch -->
+<p>The move count stays small.</p>
+<pre data-verify="cont"><code class="language-rust">fn main() {}
+</code></pre>
+<pre><code class="language-rust">fn main() {
+    let s = String::from("no data-verify attribute here");
+    println!("{}", s);
+}</code></pre>
+<pre data-verify="compiles"><code class="language-rust">fn main() {}
+</code></pre>
+<pre data-verify="ok"><code class="language-c">int main(void) { return 0; }
+</code></pre>
+<pre data-verify="skip"><code class="language-rust">fn main() {}
+</code></pre>
+<pre data-verify="ok"><code class="language-text">text blocks must not carry verification</code></pre>
+<pre data-verify="fail"><code class="language-rust">fn main() {
+    println!("fail without data-error");
+}
+</code></pre>
+<pre data-verify="fail" data-error="E0382"><code class="language-rust">fn main() {
+    let s = String::from("report entry says this failed");
+    let t = s;
+    println!("{}", s);
+}</code></pre>
+<pre data-verify="ok"><code class="language-rust">fn main() {
+    println!("no report entry for this block");
+}
+</code></pre>
+<pre data-verify="run"><code class="language-rust">fn main() {
+    println!("report mode says panic");
+}
+</code></pre>
+<pre><code class="language-js">var x = 1</code></pre>
+<pre><code class="language-text">a
+b
+c
+d
+e
+f
+g
+h
+i
+j
+k
+l
+m
+n
+o
+p
+q
+r
+s
+t
+u
+v
+w
+x
+y
+z
+aa
+bb
+cc
+dd
+ee
+ff</code></pre>
+<svg width="10" height="10"><rect width="10" height="10"/></svg>
+<p>A claim with a broken citation <a class="prov" data-src="research/missing.md" href="#top">[x]</a> marked 7 here.</p>
+<aside class="takeaways">
+<ul>
+<li>Only two takeaways here.</li>
+<li>Both are wrong.</li>
+</ul>
+</aside>
+</main>
+</body>
+</html>

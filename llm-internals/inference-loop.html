@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Inference Loop — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="inference-loop">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Four — Inference at Scale</p>
+    <h1>The Inference Loop</h1>
+    <p class="lede">One choice is now fully specified — scale, squash,
+    cut, draw. A reply is that choice run in a loop, and the loop has
+    a shape you can price. After this page you can say where a
+    reply's waiting time goes: which phase eats it, what sets the
+    pace of each, and why you wait for the first piece, then watch
+    the rest flow.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-loop">The loop, end to end</a></li>
+        <li><a href="#sec-stream">What arrives at your screen</a></li>
+        <li><a href="#sec-phases">Two kinds of work</a></li>
+        <li><a href="#sec-timers">The two timers</a></li>
+        <li><a href="#sec-sweep">The weight sweep, and a hidden cost</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-loop">
+      <h2>The loop, end to end</h2>
+      <p>Start from the sampling page's end. The model has produced a
+      probability distribution for the next piece; you draw one. Now
+      what? The drawn piece is appended to the text, and everything
+      runs again — that is the whole trick.
+      <dfn><a href="glossary.html#t-decode">Decode</a></dfn> is the
+      name for this loop: turning a prompt into generated pieces, one
+      draw and one forward pass at a time
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>Walk one reply end to end
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The prompt arrives as text and is tokenized into pieces. One
+      forward pass runs over all of them — every piece of the question
+      processed together. The distribution at the last position is
+      taken, one piece is sampled from it, and the piece is appended.
+      Then the loop proper: a forward pass — at minimum over the new
+      piece alone — produces the next distribution, the next piece is
+      drawn and appended, and so on.</p>
+      <p>Two things end the loop. The model can draw
+      <dfn><a href="glossary.html#t-eos">eos</a></dfn> — the
+      end-of-sequence piece, a special token that means "this reply
+      is finished" — or the host can cut it at a length cap
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      Until one of those happens, the loop has no reason to stop.</p>
+      <p>Notice what is absent: a plan. No outline is drafted first,
+      no sentence sketched and revised. Each step is one forward pass
+      conditioned on everything so far — the question, and every piece
+      the model itself has already produced. Every generated piece
+      becomes part of the input for the next step
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The loop is also bounded behind itself: it cannot condition on
+      more than the context window, the maximum number of pieces the
+      model can see at once — GPT-3's was 2,048 pieces; Llama 3 ships
+      at 8K and extends to 128K
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+    </section>
+
+    <section id="sec-stream">
+      <h2>What arrives at your screen</h2>
+      <p>What does the user actually see? Not the loop — its output,
+      delivered as it runs. Pieces are byte strings; detokenization
+      turns each into text as it arrives, so a long reply can begin
+      rendering before it finishes generating
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>One wrinkle: pieces do not respect character boundaries. A
+      multi-byte character — an accented letter, most non-Latin
+      scripts — can be split across two piece ids, its bytes divided
+      between them. A streaming renderer must buffer until a complete
+      character arrives, or the user sees half a glyph flash before
+      its other half
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>The delivery mechanism is ordinary web plumbing: one
+      long-lived response in the event-stream style, the server
+      pushing small chunks as they are ready, each chunk carrying the
+      text of roughly one piece. The app glues the deltas together as
+      they land
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+    </section>
+
+    <section id="sec-phases">
+      <h2>Two kinds of work</h2>
+      <p>Now price the loop. Its work comes in two shapes, so
+      different that they get separate names.
+      <dfn><a href="glossary.html#t-prefill">Prefill</a></dfn> is the
+      opening forward pass over the whole prompt — every piece of the
+      question processed in one go
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      Everything after it is the
+      <dfn><a href="glossary.html#t-decode-phase">decode phase</a></dfn>:
+      one piece per forward pass, repeated until the reply ends
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>Part Two's GPU page named the two regimes, and they map
+      exactly. Prefill is compute-bound: it reads the weights once
+      and does arithmetic for every prompt position on that single
+      read, so the arithmetic units set the pace. Decode is
+      memory-bound: it reads all the weights again for every single
+      piece, so the memory system sets the pace
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 230"><title>Diagram with two lanes: the prefill lane shows one forward pass over every prompt piece at once, producing the first piece; the decode lane shows a chain of one-piece steps, each its own forward pass, ending at a stop piece</title>
+          <text x="15" y="75" font-size="13">prefill</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="85" y="48" width="290" height="54"/>
+          <text x="230" y="71" text-anchor="middle" font-size="13">one forward pass,</text>
+          <text x="230" y="91" text-anchor="middle" font-size="11" class="t-dim">every prompt piece at once</text>
+          <line class="s-ink" stroke-width="1.5" x1="375" y1="75" x2="412" y2="75"/>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="412" y="48" width="115" height="54"/>
+          <text x="469" y="71" text-anchor="middle" font-size="13">first piece</text>
+          <text x="469" y="91" text-anchor="middle" font-size="11" class="t-dim">out</text>
+          <text x="230" y="120" text-anchor="middle" font-size="11" class="t-dim">compute-bound — the arithmetic units set the pace</text>
+          <text x="15" y="165" font-size="13">decode</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="85" y="138" width="80" height="54"/>
+          <text x="125" y="166" text-anchor="middle" font-size="12">one piece</text>
+          <text x="125" y="186" text-anchor="middle" font-size="11" class="t-dim">one pass</text>
+          <line class="s-ink" stroke-width="1.5" x1="165" y1="165" x2="185" y2="165"/>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="185" y="138" width="80" height="54"/>
+          <text x="225" y="166" text-anchor="middle" font-size="12">one piece</text>
+          <text x="225" y="186" text-anchor="middle" font-size="11" class="t-dim">one pass</text>
+          <line class="s-ink" stroke-width="1.5" x1="265" y1="165" x2="285" y2="165"/>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="285" y="138" width="80" height="54"/>
+          <text x="325" y="166" text-anchor="middle" font-size="12">one piece</text>
+          <text x="325" y="186" text-anchor="middle" font-size="11" class="t-dim">one pass</text>
+          <line class="s-ink" stroke-width="1.5" x1="365" y1="165" x2="380" y2="165"/>
+          <text x="392" y="170" font-size="14">…</text>
+          <line class="s-ink" stroke-width="1.5" x1="405" y1="165" x2="425" y2="165"/>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="425" y="138" width="100" height="54"/>
+          <text x="475" y="166" text-anchor="middle" font-size="12">stop piece</text>
+          <text x="475" y="186" text-anchor="middle" font-size="11" class="t-dim">eos</text>
+          <text x="230" y="215" text-anchor="middle" font-size="11" class="t-dim">memory-bound — reading the weights sets the pace</text>
+        </svg>
+        <figcaption>One reply, two phases: prefill reads the weights
+        once and processes every prompt piece in a single
+        compute-bound pass; the decode phase then reads all the
+        weights again for every single piece, memory-bound, until the
+        stop piece ends the loop.</figcaption>
+      </figure>
+
+      <p>The asymmetry is extreme at real sizes. A prefill of a
+      thousand pieces takes tens of milliseconds on 7B-class
+      hardware; each decode step costs at least 6.87 ms — the
+      bandwidth floor for a lone sequence
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      A two-hundred-piece reply on that setup: roughly 1.4 s of
+      decode against roughly fifty milliseconds of prefill — about
+      ninety-seven percent of the wait is the decode phase
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The asymmetry even shows up in price lists: commercial APIs
+      bill a completed piece at several times the rate of a prompt
+      piece, because each one costs a full weight sweep
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+    </section>
+
+    <section id="sec-timers">
+      <h2>The two timers</h2>
+      <p>Users feel the loop through two numbers.
+      <dfn><a href="glossary.html#t-ttft">TTFT</a></dfn> — time to
+      first token; the field says token, this site says piece, same
+      thing — is how long the user waits before the first piece
+      appears
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      <dfn><a href="glossary.html#t-tpot">TPOT</a></dfn> — time per
+      output token — is the pace of every piece after the first
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>TTFT is dominated by prefill; TPOT is the decode step time
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      With streaming,
+      <dfn><a href="glossary.html#t-latency">latency</a></dfn> — the
+      felt delay between asking and seeing anything — is the wait for
+      the first byte: TTFT plus the network
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      After that, a healthy decode pace outruns reading; the reply
+      feels like it is being typed by something faster than you.</p>
+      <p>Both timers move with the request's shape. A longer prompt
+      stretches TTFT, because prefill arithmetic grows with the
+      prompt; a longer reply multiplies the decode phase, because
+      every extra piece is another full weight sweep
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      Ask a book-length question and the wait before the first piece
+      grows; ask for a book-length answer and the trickle after it
+      does.</p>
+    </section>
+
+    <section id="sec-sweep">
+      <h2>The weight sweep, and a hidden cost</h2>
+      <p>Memory-bound was a claim from the GPU page; here is the
+      arithmetic under it. Each decode step must read every active
+      weight at least once — two bytes per parameter in the
+      half-precision format the model was trained in. The time for
+      one step is therefore at least the weight bytes divided by the
+      card's memory bandwidth, and the ceiling pace is the bandwidth
+      divided by the bytes
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      Run it for the standard cards
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the pace ceiling</p>
+        <div class="worked-body">
+<pre><code class="language-text">the pace ceiling: one weight sweep per piece
+(research/gpus.md — verified arithmetic):
+
+  7B model, fp16:  13.04 GiB = 14e9 bytes
+  A100:  14e9 / 2.039e12 B/s = 6.87 ms per piece
+         -&gt; 146 pieces/s ceiling
+  H100:  14e9 / 3.35e12 B/s  = 4.18 ms per piece
+         -&gt; 239 pieces/s ceiling
+  70B model, fp16: 130.4 GiB
+         -&gt; does not fit one 80 GB card at all
+
+  (real deployments reach ~60-80% of these)</code></pre>
+        </div>
+      </div>
+
+      <p>Real deployments reach sixty to eighty percent of those
+      ceilings — framework overhead, attention bookkeeping,
+      everything that is not the weight read itself. Measured systems
+      serve a 7B model at fifty to one hundred fifty pieces per
+      second on A100-class hardware
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      And the arithmetic units — the ones the spec sheet brags about —
+      sit nearly idle: a 7B forward pass is about 1.4e10 FLOPs riding
+      on a 14 GB read, roughly one operation per byte against a
+      machine whose balance point sits hundreds of times higher
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.</p>
+
+      <p>One reply, priced to the millisecond. For a thousand-piece
+      prompt and a two-hundred-piece reply on 7B-class hardware
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the bill for one
+        reply</p>
+        <div class="worked-body">
+<pre><code class="language-text">the bill for one reply
+(7B model on an A100; 1,000-piece prompt,
+200-piece reply):
+
+  prefill:  one pass over 1,000 pieces    ~ 50 ms
+  decode:   200 steps x 6.87 ms          ~ 1.4 s
+                                        --------
+  total                                 ~ 1.45 s
+
+  decode's share: ~97% of the wait</code></pre>
+        </div>
+      </div>
+
+      <p>This accounting still hides a cost. Attention: each new
+      piece must look at every earlier piece, and looking requires
+      the keys and values those positions produced — work the forward
+      pass already did, once, during prefill and during every decode
+      step since. The naive loop throws that work away and redoes it,
+      every step, for everything so far
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The fix is not to compute faster but to remember: keep what the
+      earlier passes produced, and let each new step consult it. That
+      memory — what it holds, what it costs, and why it grows with
+      every piece — is the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A reply is the sampling decision looped: forward pass,
+        take the last position's distribution, draw, append, repeat
+        until eos or a length cap — no plan, every step conditioned
+        on everything so far.</li>
+        <li>Generation has two shapes of work: prefill — one forward
+        pass over the whole prompt, compute-bound — and the decode
+        phase — one piece per pass, memory-bound.</li>
+        <li>TTFT is dominated by prefill; TPOT is the decode pace;
+        latency to first byte is TTFT plus network. A longer prompt
+        stretches the first, a longer reply multiplies the second.</li>
+        <li>Decode's floor is the weight sweep: every active weight
+        read once per piece, so the ceiling pace is memory bandwidth
+        divided by weight bytes — 146 pieces per second for a 7B
+        model on an A100.</li>
+        <li>At a lone sequence the arithmetic units sit nearly idle;
+        the memory system is the whole game — which is why the next
+        page's memory, the KV cache, is worth a page of its own.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="sampling.html"><span class="cap">Previous</span><span class="pg-title">Sampling: Choosing the Next Token</span></a>
+    <a class="pager-card" rel="next" href="kv-cache.html"><span class="cap">Next</span><span class="pg-title">The KV Cache</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "site": "Rust Design Decisions — Why the Language Is Shaped the Way It Is",
+  "external_links_page": "links.html",
+  "glossary_page": "glossary.html",
+  "verify_report": "tools/verify-report.json",
+  "allowed_code_languages": ["rust", "c", "text"],
+  "default_word_window": [1200, 2200],
+  "pages": [
+    { "file": "index.html", "id": "index", "title": "Why Rust Is Shaped the Way It Is", "word_window": [500, 1100] },
+    { "file": "founding-constraint.html", "id": "founding-constraint", "title": "The Constraint: Safe, Fast, No Runtime", "word_window": [1300, 2200] },
+    { "file": "ownership.html", "id": "ownership", "title": "Ownership: One Owner Per Value", "word_window": [1200, 2200] },
+    { "file": "move-copy-clone.html", "id": "move-copy-clone", "title": "Move, Copy, Clone", "word_window": [1200, 2200] },
+    { "file": "borrowing.html", "id": "borrowing", "title": "Borrowing: Aliasing XOR Mutability", "word_window": [1300, 2200] },
+    { "file": "lifetimes.html", "id": "lifetimes", "title": "Lifetimes: Constraints, Not Timers", "word_window": [1300, 2200] },
+    { "file": "stack-and-heap.html", "id": "stack-and-heap", "title": "Stack and Heap: Owners and Views", "word_window": [1200, 2200] },
+    { "file": "box.html", "id": "box", "title": "Box: The One-Word Heap Pointer", "word_window": [1200, 2200] },
+    { "file": "rc-arc.html", "id": "rc-arc", "title": "Rc and Arc: Opting Into Shared Ownership", "word_window": [1300, 2200] },
+    { "file": "interior-mutability.html", "id": "interior-mutability", "title": "Interior Mutability: Mutation Through a Shared Handle", "word_window": [1300, 2200] },
+    { "file": "send-sync.html", "id": "send-sync", "title": "Send and Sync: Thread Safety in the Type System", "word_window": [1300, 2200] },
+    { "file": "unsafe.html", "id": "unsafe", "title": "Unsafe: The Escape Hatch", "word_window": [1300, 2200] },
+    { "file": "pin.html", "id": "pin", "title": "Pin: A Promise Not to Move", "word_window": [1200, 2200] },
+    { "file": "error-handling.html", "id": "error-handling", "title": "Errors and Panics: Two Tiers of Failure", "word_window": [1300, 2200] },
+    { "file": "traits.html", "id": "traits", "title": "Traits: Dispatch, Coherence, and dyn", "word_window": [1300, 2200] },
+    { "file": "capstone.html", "id": "capstone", "title": "The Whole Language in Two Programs", "word_window": [1400, 2400] },
+    { "file": "glossary.html", "id": "glossary", "title": "Glossary", "word_window": [600, 2600] },
+    { "file": "links.html", "id": "links", "title": "Sources and Further Reading", "word_window": [250, 1500] }
+  ]
+}

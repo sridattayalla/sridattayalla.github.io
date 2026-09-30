@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The multi-threaded scheduler — Under the Await</title>
+  <meta name="description" content="Tokio's run queue hierarchy: the LIFO slot, 256-entry local queues, the global inject queue, steal-by-half work stealing, and the cooperative budget of 128 polls.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p04-03">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>The multi-threaded scheduler</h1>
+
+      <p><a href="../02-concurrency-models/05-cooperative-scheduling.html">Part
+        2’s cooperative scheduling page</a> described the general deal: tasks
+        must yield, workers keep run queues, and idle workers steal work from
+        busy ones. This page is that deal implemented, and it is the deepest
+        page of the part. The <strong>scheduler</strong> is the workers plus
+        the queues they pull from plus the decision procedure every worker
+        runs on every lap of its loop. You already know the workers and the
+        <a href="02-task-anatomy.html">tasks</a> they run; what is left is
+        where a task waits, how a worker finds it, and what stops one greedy
+        task from ruining everyone’s latency.</p>
+
+      <h2>The three places a task waits</h2>
+
+      <p>A task that is not running and not finished is always in exactly one
+        of three places: its worker’s LIFO slot, its worker’s local queue, or
+        the global inject queue. They are checked in roughly that order, and
+        they get progressively slower and progressively more shared.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 260" role="img">
+          <title>Run queue hierarchy: two workers, each with a LIFO slot and a local queue, a shared global inject queue, and a steal arrow between the workers</title>
+          <line class="lane" x1="16" y1="94" x2="340" y2="94"/>
+          <line class="lane" x1="16" y1="164" x2="340" y2="164"/>
+
+          <rect class="box" x="24" y="40" width="110" height="40" rx="8"/>
+          <text class="label" x="79" y="58" text-anchor="middle">worker A</text>
+          <text class="label muted" x="79" y="74" text-anchor="middle">OS thread</text>
+          <rect class="box accent" x="150" y="40" width="110" height="40" rx="8"/>
+          <text class="label" x="205" y="58" text-anchor="middle">LIFO slot</text>
+          <text class="label muted" x="205" y="74" text-anchor="middle">woken tasks</text>
+          <rect class="box" x="280" y="40" width="170" height="40" rx="8"/>
+          <text class="label" x="365" y="58" text-anchor="middle">local queue</text>
+          <text class="label muted" x="365" y="74" text-anchor="middle">ring of 256</text>
+          <line class="arrow" x1="150" y1="60" x2="138" y2="60"/>
+          <polygon class="arrow-head" points="130,60 142,55 142,65"/>
+
+          <rect class="box" x="24" y="110" width="110" height="40" rx="8"/>
+          <text class="label" x="79" y="128" text-anchor="middle">worker B</text>
+          <text class="label muted" x="79" y="144" text-anchor="middle">OS thread</text>
+          <rect class="box accent" x="150" y="110" width="110" height="40" rx="8"/>
+          <text class="label" x="205" y="128" text-anchor="middle">LIFO slot</text>
+          <text class="label muted" x="205" y="144" text-anchor="middle">woken tasks</text>
+          <rect class="box" x="280" y="110" width="170" height="40" rx="8"/>
+          <text class="label" x="365" y="128" text-anchor="middle">local queue</text>
+          <text class="label muted" x="365" y="144" text-anchor="middle">ring of 256</text>
+          <line class="arrow" x1="150" y1="130" x2="138" y2="130"/>
+          <polygon class="arrow-head" points="130,130 142,125 142,135"/>
+
+          <line class="arrow accent" x1="365" y1="108" x2="365" y2="96"/>
+          <polygon class="arrow-head accent" points="365,84 359,96 371,96"/>
+          <text class="label accent" x="377" y="102">steal half</text>
+
+          <rect class="box" x="490" y="55" width="140" height="80" rx="8"/>
+          <text class="label" x="560" y="80" text-anchor="middle">global</text>
+          <text class="label" x="560" y="98" text-anchor="middle">inject queue</text>
+          <text class="label muted" x="560" y="116" text-anchor="middle" style="font-size:12px">any thread · overflow</text>
+          <line class="arrow" x1="490" y1="75" x2="466" y2="75"/>
+          <polygon class="arrow-head" points="456,75 468,70 468,80"/>
+
+          <rect class="box" x="490" y="190" width="140" height="50" rx="8"/>
+          <text class="label muted" x="560" y="210" text-anchor="middle">wakes from</text>
+          <text class="label muted" x="560" y="226" text-anchor="middle">other threads</text>
+          <line class="arrow" x1="560" y1="190" x2="560" y2="151"/>
+          <polygon class="arrow-head" points="560,139 554,151 566,151"/>
+        </svg>
+        <figcaption>Figure 1. The hierarchy. Each worker checks its LIFO
+          slot, then its local queue, then the global inject queue, and only
+          then considers stealing. A steal takes half the victim’s ring in
+          one atomic operation, not one task at a time.</figcaption>
+      </figure>
+
+      <h3>The local queue</h3>
+
+      <p>Each worker owns a <strong>local queue</strong>: a fixed ring buffer
+        with capacity for 256 tasks.
+        <!-- fs: research/tokio-internals.md §1: LOCAL_QUEUE_CAPACITY = 256, tokio/src/runtime/scheduler/multi_thread/queue.rs at HEAD e37e284 -->
+        It is lock-free in the common case because it has exactly one
+        producer, the owning worker itself, and the producer’s end of the
+        ring is written with plain stores. The beautiful part is what the
+        ring contains: not boxes, not handles, but the
+        <a href="02-task-anatomy.html">task headers themselves</a>. The queue
+        is an intrusive linked list threaded through the tasks; a task
+        <em>is</em> its own queue node. Pushing a task costs no allocation at
+        all, just a pointer splice and a bump of the tail index.</p>
+
+      <p>When the ring is full, the worker does not block and does not grow
+        anything. It pushes the newest task, plus half of the queue’s current
+        contents (the newer 128 tasks), over to the global inject queue, and
+        alerts its siblings that food is available.
+        <!-- fs: research/tokio-internals.md §1: NUM_TASKS_TAKEN = LOCAL_QUEUE_CAPACITY / 2 = 128 on overflow; push_overflow pushes the second (newer) half plus the new task and keeps the first half, so tasks just adopted from the global queue are not immediately re-overflowed -->
+        Notice it keeps the older half, and the choice is deliberate: tasks a
+        worker adopts out of the inject queue land in the front half of its
+        ring, so by shedding the back half the worker never takes a task out
+        of the inject queue only to hand it straight back. Whatever it
+        adopted keeps its seat until it has been polled at least once.</p>
+
+      <h3>The global inject queue</h3>
+
+      <p>The inject queue is the shared front door. Two kinds of traffic use
+        it: tasks submitted from threads that are not workers (the main
+        thread, or the extra threads you will meet on
+        <a href="04-blocking-pool.html">page four</a>), and overflow pushed
+        out of a saturated local ring. It is guarded by a single mutex, which
+        sounds alarming until you remember what it is for: it is the slow
+        path, measured against a lock-free ring that a worker hits thousands
+        of times per second. Correct and boring beats clever here.</p>
+
+      <h3>The LIFO slot</h3>
+
+      <p>Each worker also keeps one extra holding cell, the <strong>LIFO
+        slot</strong>: space for exactly one “run this next” task. The rule
+        is narrow but pays off constantly. When the task a worker is
+        currently polling <a href="../03-rust-async/03-waker-and-context.html">wakes
+        another task</a>, the woken task goes into this slot, ahead of the
+        whole queue, so it runs immediately after the current poll returns.
+        Message-passing programs turn into ping-pong rallies: a request task
+        wakes the handler, the handler wakes the responder, and each bounce
+        happens with the relevant data still warm in the CPU cache, with no
+        queue traversal in between.</p>
+
+      <p>An unbraked fast path like that is a starvation hazard, so it comes
+        with a throttle: the slot only gets priority 3 times per tick, after
+        which the worker ignores it until an ordinary queue task has run.
+        <!-- fs: research/tokio-internals.md §1: MAX_LIFO_POLLS_PER_TICK = 3, worker.rs at HEAD e37e284; LIFO tasks inherit the waking task's poll budget -->
+        A <strong>tick</strong>, in this page’s vocabulary, is one lap of a
+        worker’s main loop: pick a task, run it, do the bookkeeping. The
+        counter exists because two tasks that wake each other in a tight
+        loop would otherwise monopolize their worker forever, the same
+        ping-pong that makes the slot valuable making it lethal at full
+        speed. There is a second subtlety worth savoring: a task promoted
+        through the LIFO slot does not get a fresh fairness allowance. It
+        inherits the poll budget of the task that woke it, so a chain of
+        LIFO promotions shares one allowance rather than minting a new one
+        per hop. (Budgets get their own section below.)</p>
+
+      <h2>The search order</h2>
+
+      <p>When a worker needs work, it runs the same procedure every time. In
+        order:</p>
+
+      <ol>
+        <li><strong>The LIFO slot</strong>, if the throttle has not disabled
+          it.</li>
+        <li><strong>The local queue</strong>, popping from its own ring.</li>
+        <li><strong>The global inject queue</strong>, but not on every lap:
+          the worker checks it on a cadence, tuned dynamically to land
+          roughly every 10 ms of wall time (the historical hard-coded
+          default was 61 local polls between checks, a number the source
+          comments describe as copied from Go).
+          <!-- fs: research/tokio-internals.md §1: global_queue_interval dynamically targets 10ms intervals (tokio::runtime module docs); historical default 61 "copied from golang" --></li>
+        <li><strong>Steal</strong>: pick a random sibling and try to take
+          half of its local queue. The random start is deliberate; without
+          it, every idle worker would pile onto the same busy victim. And a
+          worker only enters the searching state at all if fewer than half
+          of the workers are already searching, because steal attempts are
+          not free.
+          <!-- fs: research/tokio-internals.md §1: steal_work doc, "only if less than half the workers are searching" --></li>
+        <li><strong>Park</strong>: nothing to do, anywhere. The worker goes
+          to sleep inside a driver, resting in epoll until the kernel
+          reports an event or the next timer deadline approaches. How a
+          parked worker sleeps, and who wakes it, is
+          <a href="05-io-driver.html">page five’s</a> story.</li>
+      </ol>
+
+      <p>One more cadence knob rounds out the picture: a worker polls the
+        drivers every 61 ticks even while busy, so a worker deep in
+        compute-heavy work still delivers socket events and timer wakes
+        between slices.
+        <!-- fs: research/tokio-internals.md §1: event_interval = 61 ticks between driver polls, multi-thread default -->
+        The searching rule has a mirror image too: when a searching worker
+        <em>finds</em> work, it alerts a parked sibling, because work that
+        just arrived tends to keep arriving.</p>
+
+      <h2>Stealing, up close</h2>
+
+      <p>Why half, rather than one task or the whole ring? One task at a
+        time would make stealing a permanent tax: the thief would be back
+        almost immediately, paying the atomic operations again. The whole
+        ring would punish the victim for being productive. Half is the
+        balance point: enough to amortize the cost of the steal across many
+        future polls, little enough that the victim, which is demonstrably
+        the machine’s best source of work, keeps producing. The theft itself
+        is a single atomic multi-word grab against the victim’s ring, the
+        one place where the local queue’s lock-free design has to tolerate
+        foreigners at the door.</p>
+
+      <h2>The cooperative budget</h2>
+
+      <p>Everything so far assumed tasks play along: poll, suspend, yield
+        the worker. What if one does not? A tight <code>loop</code> with no
+        <code>await</code> in it never returns control; there is no timer
+        interrupt coming to the rescue, because the kernel does not even
+        know a task exists
+        (<a href="../01-foundations/02-processes-threads-context-switches.html">Part
+        1’s preemption</a> does not reach user-space scheduling). Every
+        other task on that worker would wait forever.</p>
+
+      <p>The fix is the <strong>budget</strong>: every task slice carries an
+        allowance of 128 polls. Runtime operations spend from it as the task
+        runs; when the allowance hits zero, the next suspension point
+        returns <code>Pending</code> whether or not the work was ready, and
+        the task is re-filed at the back of a queue with a fresh slice
+        eventually coming.
+        <!-- fs: research/tokio-internals.md §1: coop::Budget of ~128 poll credits; exhausted budget forces Pending and re-queues the task -->
+        A well-behaved task never notices the budget exists. A badly behaved
+        one is defanged: it still makes progress, poll by poll, but between
+        each slice everyone else gets their turn. This is
+        <a href="../02-concurrency-models/05-cooperative-scheduling.html">Part
+        2’s fairness contract</a> made mechanical, a real number enforced by
+        real code instead of a plea in a style guide.</p>
+
+      <p>You can spend the allowance willingly, too, which is the polite
+        thing to do in a long-running loop:</p>
+
+      <pre><code class="language-rust">async fn chew_through(mut jobs: Vec&lt;Job&gt;) {
+    while let Some(job) = jobs.pop() {
+        job.process().await;
+        // hand the worker back between jobs
+        tokio::task::yield_now().await;
+    }
+}</code></pre>
+
+      <p><code>yield_now</code> is the explicit version of what the budget
+        does implicitly: suspend here, go to the back of the queue, let a
+        sibling run. Used well, it flattens the latency your longest loops
+        impose on everyone else.</p>
+
+      <h2>Where a spawn lands</h2>
+
+      <p>Two cases, from <a href="02-task-anatomy.html">the anatomy page</a>’s
+        wrapping ritual. A task spawned <em>from a worker</em> (from inside
+        other async code) is scheduled the same way a wake is: into that
+        worker’s LIFO slot, or onto the back of its local ring when the
+        throttle has the slot switched off. Same thread, same cache, no
+        coordination. A task spawned from anywhere else lands in the inject
+        queue, because a foreign thread cannot safely touch a worker’s
+        ring:</p>
+
+      <pre><code class="language-rust">use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+
+    // we are on the main thread, not a worker: inject queue
+    let handle = rt.spawn(followup_work());
+
+    rt.block_on(handle).unwrap();
+}</code></pre>
+
+      <p>The inject path costs a mutex and waits for a worker’s adoption
+      cadence, so a burst of work spawned from outside takes slightly
+      longer to start than the same work spawned from inside. In the
+      common shapes of real programs this gap is noise; it is worth knowing
+      it exists, and worth knowing which side of the door you are standing
+      on when you call spawn.</p>
+
+      <h2>One round trip, start to finish</h2>
+
+      <p>Here is the whole page compressed into a single story: a file read
+        finishes on one of page four’s extra threads, the follow-up work is
+        spawned, and it crosses the machine to completion.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 380" role="img">
+          <title>Sequence diagram: a task is spawned from an outside thread into the inject queue, adopted by worker 0, stolen by worker 1, run to completion, and its join waker wakes the awaiting task into worker 0's LIFO slot</title>
+          <rect class="box" x="25" y="20" width="90" height="32" rx="8"/>
+          <text class="label" x="70" y="40" text-anchor="middle">outside</text>
+          <rect class="box" x="185" y="20" width="90" height="32" rx="8"/>
+          <text class="label" x="230" y="40" text-anchor="middle">inject</text>
+          <rect class="box" x="355" y="20" width="90" height="32" rx="8"/>
+          <text class="label" x="400" y="40" text-anchor="middle">worker 0</text>
+          <rect class="box" x="515" y="20" width="90" height="32" rx="8"/>
+          <text class="label" x="560" y="40" text-anchor="middle">worker 1</text>
+
+          <line class="lane" x1="70" y1="52" x2="70" y2="370"/>
+          <line class="lane" x1="230" y1="52" x2="230" y2="370"/>
+          <line class="lane" x1="400" y1="52" x2="400" y2="370"/>
+          <line class="lane" x1="560" y1="52" x2="560" y2="370"/>
+
+          <line class="arrow" x1="70" y1="90" x2="222" y2="90"/>
+          <polygon class="arrow-head" points="230,90 218,85 218,95"/>
+          <text class="label" x="150" y="80" text-anchor="middle">1 · spawn</text>
+
+          <line class="arrow" x1="230" y1="130" x2="392" y2="130"/>
+          <polygon class="arrow-head" points="400,130 388,125 388,135"/>
+          <text class="label" x="315" y="120" text-anchor="middle">2 · adopt</text>
+
+          <rect class="box" x="310" y="150" width="180" height="44" rx="8"/>
+          <text class="label muted" x="400" y="168" text-anchor="middle">local ring fills</text>
+          <text class="label muted" x="400" y="184" text-anchor="middle">with woken work</text>
+
+          <line class="arrow accent" x1="560" y1="230" x2="414" y2="230"/>
+          <polygon class="arrow-head accent" points="404,230 416,225 416,235"/>
+          <text class="label accent" x="480" y="220" text-anchor="middle">4 · steal half</text>
+
+          <text class="label" x="560" y="255" text-anchor="middle">5 · polls to Ready</text>
+
+          <line class="arrow" x1="560" y1="290" x2="414" y2="290"/>
+          <polygon class="arrow-head" points="404,290 416,285 416,295"/>
+          <text class="label" x="480" y="280" text-anchor="middle">6 · join waker fires</text>
+
+          <text class="label" x="400" y="310" text-anchor="middle">7 · the awaiting task wakes</text>
+          <text class="label" x="400" y="326" text-anchor="middle">into worker 0’s LIFO slot</text>
+
+          <text class="label" x="400" y="356" text-anchor="middle">8 · handle.await returns</text>
+        </svg>
+        <figcaption>Figure 2. Spawn, adopt, steal, run, wake: one task’s
+          journey across the machine. The awaiting future from step 7 is
+          the one that spawned this one; step 3 is the note box on worker
+          0’s lifeline.</figcaption>
+      </figure>
+
+      <p>Walk it once more with the machinery in mind. The outside thread
+        cannot touch any worker’s ring, so step 1 files the new task into
+        the inject queue under its mutex. Worker 0, busy but hitting its
+        global-check cadence, adopts the task (step 2) into its local ring,
+        which is already filling with other woken work (step 3). Worker 1,
+        having found its own slot, ring, and the inject queue empty, picked
+        a sibling at random and stole half of worker 0’s ring (step 4), our
+        task included. It polls the task to completion (step 5), which sets
+        the completion bit and fires the join waker stored in the task’s
+        header (step 6). The task doing the awaiting lives on worker 0, so
+        the wake routes it into worker 0’s LIFO slot (step 7), and on
+        worker 0’s next lap it resumes with the value in hand (step 8). No
+        thread was created, blocked, or harmed in the making of this
+        request.</p>
+
+      <h2>The one-worker flavor</h2>
+
+      <p>For completeness: the current-thread runtime runs the same design
+        with the worker count pinned to one. There is no stealing (no
+        siblings), no LIFO slot, and the global queue is checked after 31
+        consecutive local picks rather than on a time-based cadence.
+        <!-- fs: research/tokio-internals.md §6: current-thread flavor, global_queue_interval = 31, no LIFO slot, no work stealing -->
+        The budget, the queues, and the rules are otherwise identical. The
+        choosing logic is short: if you need work stealing, take
+        multi-thread; if your futures cannot be sent across threads, or you
+        are on one core anyway, the single worker is cheaper and
+        smaller.</p>
+
+      <!-- fs: research/tokio-internals.md §1: LOCAL_QUEUE_CAPACITY = 256; MAX_LIFO_POLLS_PER_TICK = 3; coop budget ~128 polls; global_queue_interval targets ~10ms -->
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A waiting task sits in exactly one of three places: its
+            worker’s LIFO slot, its worker’s 256-entry local ring, or the
+            mutex-guarded global inject queue.</li>
+          <li>The local ring is an intrusive list threaded through the task
+            headers; overflow pushes the newer half plus the new task to
+            inject and keeps the older half, so tasks just adopted from
+            inject are not pushed straight back.</li>
+          <li>Workers search slot → ring → inject on a tuned cadence →
+            steal half a random sibling’s ring → park inside a driver.</li>
+          <li>The LIFO slot gives wake-driven ping-pong cache locality but
+            is throttled to 3 uses per tick to prevent starvation, and its
+            passengers inherit the waker’s budget.</li>
+          <li>The budget of 128 polls per slice is the enforcement arm of
+            cooperative fairness: exhaust it and the task is re-queued at
+            the back, ready or not.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

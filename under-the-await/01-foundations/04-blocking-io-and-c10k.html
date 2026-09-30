@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blocking I/O and the C10K problem — Under the Await</title>
+  <meta name="description" content="What blocking really means, where a waiting thread actually goes, the thread-per-connection server, and the arithmetic that breaks it at ten thousand clients.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-04">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Blocking I/O and the C10K problem</h1>
+
+      <p>Chapter 3 ended on a cliffhanger: you knock on the kernel's door
+        asking for data, and there is no data yet. This chapter is the
+        answer, and the answer is where your thread goes while it waits.
+        That single mechanism, called blocking, is the default behavior of
+        nearly every I/O call you have ever written, and it is simultaneously
+        the most comfortable idea in network programming and the reason a
+        naive server falls over at ten thousand clients. Both halves are
+        true, and this chapter does justice to each.</p>
+
+      <h2>What blocking actually is</h2>
+
+      <p>A call is blocking when your thread enters the kernel to ask for
+        something and does not come back until the something exists. The
+        thread does not spin and does not burn CPU. It sleeps, deeply and
+        officially, and the kernel shakes it awake when the answer arrives.
+        The step-by-step, for a <code>read</code> on a socket with an empty
+        receive buffer, is worth walking slowly:</p>
+
+      <ol>
+        <li>Your thread traps into the kernel, as in chapter 3, asking for
+          bytes from descriptor 3.</li>
+        <li>The kernel checks the socket's receive buffer and finds it
+          empty.</li>
+        <li>Because the descriptor is in its default mode, the kernel does
+          not answer "nothing yet". Instead it moves the thread off the
+          ready list of runnable threads and onto a wait queue attached to
+          that socket, marking it sleeping.</li>
+        <li>The kernel's scheduling code immediately picks another runnable
+          thread and performs a context switch to it. Your thread has left
+          the building.</li>
+        <li>Some time later, a packet lands. The kernel's network code
+          fills the socket's buffer, finds the wait queue behind it, and
+          moves your thread back onto the ready list.</li>
+        <li>Sooner or later a core becomes free, the scheduling code picks
+          your thread again, another context switch restores it, and the
+          <code>read</code> finally returns with the bytes.</li>
+      </ol>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 210" role="img">
+          <title>A thread moves from the ready list to a socket wait queue and back when a packet arrives</title>
+          <rect class="box" x="40" y="24" width="230" height="56" rx="8"/>
+          <text class="label" x="155" y="47" text-anchor="middle">the ready list</text>
+          <text class="label muted" x="155" y="67" text-anchor="middle">runnable threads</text>
+          <rect class="box accent" x="370" y="24" width="230" height="56" rx="8"/>
+          <text class="label" x="485" y="47" text-anchor="middle">the socket's wait queue</text>
+          <text class="label muted" x="485" y="67" text-anchor="middle">sleeping threads</text>
+          <line class="arrow" x1="270" y1="52" x2="364" y2="52"/>
+          <polygon class="arrow-head" points="364,47 376,52 364,57"/>
+          <text class="label mono muted" x="320" y="36" text-anchor="middle" style="font-size:12px">read(): empty</text>
+          <polyline class="lane" points="485,80 485,150 155,150 155,86"/>
+          <polygon class="arrow-head" points="149,88 161,88 155,78"/>
+          <text class="label muted" x="320" y="140" text-anchor="middle">packet arrives, thread becomes runnable</text>
+          <text class="label muted" x="320" y="178" text-anchor="middle">meanwhile the core runs other threads</text>
+        </svg>
+        <figcaption>Figure 1: where a waiting thread actually goes. The
+          kernel's scheduling code forgets it until the packet
+          arrives.</figcaption>
+      </figure>
+
+      <p>Reads are the common case but not the only one.
+        <code>accept</code> blocks waiting for a new connection,
+        <code>connect</code> blocks waiting for a handshake, and
+        <code>write</code> can block when the socket's outgoing buffer is
+        full.
+        The unifying idea is the wait queue: whenever a kernel call cannot
+        finish now, the calling thread beds down on a queue tied to the
+        thing it is waiting for, and the kernel lends the core to someone
+        else. From inside the program, this is a gift: your code reads like
+        the story it tells. Ask for data, get data. The complexity of
+        waiting is someone else's problem.</p>
+
+      <div class="note"><p>One misconception to retire early: a blocked
+        thread is not wasting CPU. It consumes no cycles while it sleeps.
+        What it consumes is a whole OS thread, stack, kernel bookkeeping,
+        and all, per thing being waited on. The waste at scale is threads,
+        not spinning. Remember that; it sharpens every tradeoff that
+        follows.</p></div>
+
+      <h2>A thread per connection: the honest default</h2>
+
+      <p>Given blocking calls, the natural server writes itself: accept a
+        connection, hand it to a fresh thread, let that thread's reads and
+        writes fall asleep whenever they must. Every connection gets its
+        own private thread, blocking is fine because each thread has
+        nothing else to do, and the code stays dumb in the best way. In
+        Python it fits on one screen:</p>
+
+      <pre><code class="language-python">import socket
+import threading
+
+def handle(conn):
+    with conn:                      # closes the descriptor on return
+        while True:
+            data = conn.recv(4096)  # sleeps until bytes arrive
+            if not data:
+                break               # the peer closed the connection
+            conn.sendall(data)      # echo the bytes back
+
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("0.0.0.0", 8080))
+listener.listen(128)
+
+while True:
+    conn, addr = listener.accept()  # sleeps until a client connects
+    threading.Thread(target=handle, args=(conn,)).start()</code></pre>
+
+      <p>Read it and notice how little there is to get wrong. Each
+        connection is a file descriptor (chapter 3) owned by one thread;
+        each <code>recv</code> is a <a href="03-syscalls-and-file-descriptors.html">knock
+        on the kernel's door</a> that turns into a nap when the client is
+        quiet; each nap is a <a href="02-processes-threads-context-switches.html">context switch</a> (chapter 2) someone else pays
+        for. For an internal tool, a database with twenty clients, or a
+        build server, this design is not merely acceptable. It is
+        correct: simple, debuggable, and honest about what the machine
+        does.</p>
+
+      <h2>The arithmetic of ten thousand</h2>
+
+      <p>In 1999, Dan Kegel wrote a page titled "The C10K problem" that
+        opened with a question: "It's time for web servers to handle ten
+        thousand clients simultaneously, don't you think?" His observation
+        was that hardware had stopped being the excuse. A busy site of the
+        era already pushed ten thousand simultaneous clients through a
+        single Gigabit Ethernet pipe; the machine could move the bytes.
+        What could not move them was the server software, and thread-per-
+        connection designs were exhibit A.</p>
+      <!-- fs: fact sheet §6 — Kegel, "The C10K problem" (1999), kegel.com/c10k: quote and the cdrom.com 10,000-client Gigabit pipe -->
+
+      <p>Run the arithmetic of one thread per client at ten thousand
+        clients, using the numbers from chapter 2. Each thread reserves
+        its own stack, 8 MiB by default on Linux, so 10,000 threads
+        reserve roughly 80 GB of virtual address space. That reservation
+        alone survives on a 64-bit machine, but it is not free: page
+        tables and kernel bookkeeping for every thread, real RAM for every
+        page of stack actually touched, and hard ceilings, since Linux
+        limits a process to a few thousand to a few tens of thousands of
+        threads depending on configuration. Creation cost compounds it:
+        at roughly 5 to 20 µs per thread, creating ten thousand of them
+        takes a noticeable fraction of a second, every time a
+        burst arrives. And then the waiters start waking up.</p>
+      <!-- fs: fact sheet §1 and §6 — 8 MiB default stack; 10,000 threads reserve ~80 GB virtual; thread creation ~5–20 µs; practical ceiling a few thousand to ~30k threads (Orlov 2023: ~32,000 created before OS limits) -->
+
+      <p>A server with ten thousand connected but idle clients is fine:
+        idle threads sleep cheaply. The pain arrives when traffic makes
+        them runnable together. Hundreds or thousands of runnable threads
+        per core mean the kernel's scheduling code switches constantly,
+        each switch costing roughly 1.2 to 2.3 µs of bookkeeping plus the
+        cache damage from chapter 2, and much of the work accomplished per
+        switch is tiny: read a few hundred bytes, write them, sleep again.
+        The machine spends its life swapping threads instead of moving
+        bytes. Kegel's page, tellingly, catalogs the escape routes as
+        variations on one theme: stop dedicating a thread to each
+        waiter.</p>
+      <!-- fs: fact sheet §1 — context switch ~1.2–1.6 µs same-core, ~2.2–2.3 µs across cores (Bendersky 2018, Orlov 2023) -->
+
+      <table>
+        <thead>
+          <tr><th>Per-connection cost</th><th>Size</th><th>What it buys</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>stack reservation</td><td>8 MiB virtual</td>
+            <td>a private call stack that mostly sits idle</td></tr>
+          <tr><td>thread creation</td><td>roughly 5–20 µs</td>
+            <td>kernel structures, scheduling bookkeeping</td></tr>
+          <tr><td>each wake-up</td><td>roughly 1–2 µs plus cache churn</td>
+            <td>the context switch back in</td></tr>
+          <tr><td>system ceiling</td><td>a few thousand to tens of
+            thousands of threads</td><td>an absolute wall, not a slowdown
+            curve</td></tr>
+        </tbody>
+      </table>
+      <!-- fs: fact sheet §1/§6 — stack 8 MiB; creation 5–20 µs; switch 1.2–2.3 µs direct; ceiling few thousand to ~30k threads -->
+
+      <div class="pitfall"><p>The seductive version of this failure goes
+        "memory is cheap now, 8 MiB times ten thousand is nothing on a
+        64-bit box with plenty of RAM". Virtual is not free. Page tables,
+        kernel structures, and committed stack pages all cost real memory,
+        and the ceiling on total threads is a wall you hit at full speed,
+        not a slope you slide down. The problem was never that any single
+        thread is expensive. It is that none of them ever
+        leave.</p></div>
+
+      <h2>When blocking is exactly right</h2>
+
+      <p>Before this chapter becomes a morality tale, an honest accounting.
+        Most software serves tens of connections, not tens of thousands:
+        internal services, databases with a known client population,
+        daemons, CLIs, test harnesses. For all of these, thread-per-
+        connection with blocking calls is the right answer, because the
+        costs above are all per-connection and the connection count is
+        small. The design buys simplicity, the most valuable currency in
+        software, at a price that rounds to zero. Do not redesign your
+        way out of a problem you do not have. The C10K problem is a
+        problem of scale, and it arrives with its own signature: thousands
+        of mostly idle connections that must all stay open at once.</p>
+
+      <p>So the goal is not "never block". The goal is: when you must hold
+        ten thousand waiters open, stop paying one thread per waiter. But
+        blocking is a package deal between you and the kernel: you ask for
+        data, and you do not come back without it. To keep many
+        connections on few threads, something about that contract has to
+        change. The next chapter changes exactly one thing, the smallest
+        possible thing, and it starts with a socket that refuses to
+        wait.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A blocking call carries your thread into the kernel and
+            leaves it sleeping on a wait queue until the answer exists; a
+            sleeping thread burns no CPU, but it occupies a full OS
+            thread.</li>
+          <li>Thread-per-connection servers are simple and correct for
+            tens of clients; their per-connection costs only become fatal
+            through multiplication.</li>
+          <li>C10K (1999) named the scale where software, not hardware,
+            became the bottleneck: ten thousand simultaneous clients on
+            one machine.</li>
+          <li>At that scale: 10,000 threads reserve roughly 80 GB of
+            virtual stack space, creation costs microseconds each, and
+            waking crowds of them turn the machine into a factory that
+            mostly swaps threads.</li>
+          <li>The escape is to stop dedicating a thread to each waiter,
+            which requires changing the kernel's contract about waiting;
+            that change begins in the next chapter.</li>
+        </ul>
+      </aside>
+      <!-- fs: fact sheet §1/§6 — 10,000 threads × 8 MiB stacks ≈ 80 GB virtual; creation ~5–20 µs each -->
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

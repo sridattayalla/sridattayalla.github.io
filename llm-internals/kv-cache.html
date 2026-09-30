@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The KV Cache — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="kv-cache">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Four — Inference at Scale</p>
+    <h1>The KV Cache</h1>
+    <p class="lede">The last page priced the loop and ended on a
+    hidden cost: attention work thrown away at every step. This page
+    is the fix — a memory that grows one row per piece — and the
+    bill for it: at the longest windows, one conversation's memory
+    reaches the size of the model's own weights.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-recompute">The work that gets thrown away</a></li>
+        <li><a href="#sec-mechanism">Keep the keys and values</a></li>
+        <li><a href="#sec-bytes">What the memory costs</a></li>
+        <li><a href="#sec-trade">The trade, and what it caps</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-recompute">
+      <h2>The work that gets thrown away</h2>
+      <p>The last page ended on a hidden cost; name it precisely.
+      When the model generates a new piece, that piece's attention
+      must look at every piece before it — the question and
+      everything generated so far. Looking requires keys and values:
+      each earlier position, in every head of every layer, produced
+      a key vector and a value vector when its forward pass ran
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>The naive loop recomputes them. Each step forwards
+      everything so far, from scratch — which recomputes, for the
+      identical positions, keys and values that earlier steps
+      already computed. Same weights, same inputs, same outputs: the
+      work is not approximated, it is repeated
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>Why is the repeated work identical? Causality. The causal
+      mask from Part One's attention page lets a position see only
+      the positions before it — so the key and value a position
+      produces depend on the pieces up to it and nothing after.
+      Appending piece forty changes nothing about the keys and
+      values of pieces one through thirty-nine; recomputing them
+      re-derives the same numbers from the same inputs. The
+      recomputation is not refining an estimate — it is the same
+      arithmetic, run again, because nothing kept the result.</p>
+      <p>Count it on the toy — a three-piece prompt, ten generated
+      pieces. Step one forwards three pieces; step two forwards
+      four; step ten forwards twelve. Three plus four plus five, on
+      up to twelve: seventy-five token-forwards to produce ten
+      pieces
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The per-step work grows with the reply so far, so the total
+      grows with its square — and every wasted forward re-reads all
+      the weights besides
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+    </section>
+
+    <section id="sec-mechanism">
+      <h2>Keep the keys and values</h2>
+      <p>The fix is to stop throwing the work away. On the prefill
+      pass — the single forward pass over the whole prompt — every
+      position, in every head of every layer, produces its key and
+      value vectors. Keep them. That store is the KV cache Part One
+      named: nothing but the keys and values from every position
+      processed so far
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>After prefill, each new piece needs a forward pass over
+      itself alone. Its query scores against every cached key; the
+      resulting attention weights combine the cached values; and the
+      key and value the new piece produces in that same pass are
+      appended to the store, ready for every later piece
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      One new row per piece, per layer, per head — the cache is
+      append-only.</p>
+      <p>Notice what the cache does not store: hidden states, block
+      outputs, query vectors. Each new piece's query is computed
+      fresh, used once against the cached rows, and discarded — only
+      its key and value rows persist
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The store is narrow on purpose: exactly what later pieces will
+      need, and nothing they will not.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 230"><title>A stack of key-value rows grows downward, one row per piece; a box labeled new piece sends one arrow reading every cached row and another arrow appending its own row</title>
+          <text x="120" y="16" text-anchor="middle" font-size="11" class="t-dim">one row per piece, per layer, per head</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="70" y="28" width="100" height="26"/>
+          <text x="120" y="45" text-anchor="middle" font-size="12">K V</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="70" y="58" width="100" height="26"/>
+          <text x="120" y="75" text-anchor="middle" font-size="12">K V</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="70" y="88" width="100" height="26"/>
+          <text x="120" y="105" text-anchor="middle" font-size="12">K V</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="70" y="118" width="100" height="26"/>
+          <text x="120" y="135" text-anchor="middle" font-size="12">K V</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="70" y="148" width="100" height="26"/>
+          <text x="120" y="165" text-anchor="middle" font-size="12">K V</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="330" y="100" width="130" height="56"/>
+          <text x="395" y="122" text-anchor="middle" font-size="13">new piece</text>
+          <text x="395" y="142" text-anchor="middle" font-size="11" class="t-dim">one query</text>
+          <line class="s-ink" stroke-width="1.5" x1="330" y1="115" x2="174" y2="115"/>
+          <text x="252" y="105" text-anchor="middle" font-size="11" class="t-dim">reads every cached row</text>
+          <line class="s-ink" stroke-width="1.5" x1="330" y1="145" x2="174" y2="145"/>
+          <text x="252" y="163" text-anchor="middle" font-size="11" class="t-dim">appends its own row</text>
+          <text x="320" y="210" text-anchor="middle" font-size="11" class="t-dim">append-only: prefill fills the first rows; every decode step adds one more</text>
+        </svg>
+        <figcaption>The cache is append-only: prefill fills the first
+        rows — one per prompt piece — and every decode step appends
+        exactly one row per layer per head while its query reads all
+        the rows above. Nothing already stored is ever recomputed or
+        rewritten.</figcaption>
+      </figure>
+
+      <p>The two paths through the loop differ by one expression —
+      forward everything so far, or forward the new piece and
+      consult the stash:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the loop both ways: without a
+        cache, forward everything so far; with one, forward only the
+        new piece and keep the keys and values</figcaption>
+<pre><code class="language-python">def greedy(params, cfg, prompt, steps, use_cache):
+    out, kv = list(prompt), None
+    for _ in range(steps):
+        logits, cache = forward(
+            params, out if kv is None else [out[-1]], cfg, kv=kv)
+        if use_cache:
+            kv = {'k': cache['k'], 'v': cache['v']}
+        out.append(int(np.argmax(logits[-1])))
+    return out</code></pre>
+      </figure>
+
+      <p>Exact, not approximate: the new piece's attention needs
+      precisely those cached keys and values, and recomputing them
+      would yield the identical numbers. The script runs both paths
+      and asserts it — same ten pieces either way
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the toy, both ways</p>
+        <div class="worked-body">
+<pre><code class="language-text">the toy, both ways
+(tiny_llm.py, stage 5 — prompt of 3 pieces,
+10 generated):
+
+  full recompute:
+    3 + 4 + 5 + ... + 12 = 75 token-forwards
+  kv cache:
+    3 (prefill) + 9 (one per piece) = 12 token-forwards
+
+  identical output: True (asserted)
+  ids: [15, 3, 15, 3, 0, 20, 0, 20, 20, 0]</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="sec-bytes">
+      <h2>What the memory costs</h2>
+      <p>Speed was bought with memory, and the memory can be priced
+      to the byte. The cache holds, for every piece so far, a key
+      vector and a value vector in every head of every layer. Bytes
+      per piece = two, for key and value, times layers times kv
+      heads times head width times the bytes of the stored format
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.</p>
+      <p>Walk the factors — each is a Part One concept. Two, because
+      every position stores both a key vector and a value vector.
+      Layers, because every transformer block keeps its own
+      attention, its own keys and values, at its own place in the
+      stack. KV heads, because GQA shares one set of key-value heads
+      across groups of query heads — the count the design already
+      shrank. Head width, the length of each stored vector. And the
+      stored format's width: two bytes per number in half precision.
+      Multiply the machine's memory geometry by the length of the
+      conversation, and the bytes fall out.</p>
+      <p>Price it for two real designs
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — pricing the cache,
+        two designs</p>
+        <div class="worked-body">
+<pre><code class="language-text">one sequence's cache, two real designs
+(bytes per piece = 2 x layers x kv_heads
+ x d_head x dtype bytes; research/gpus.md):
+
+  Llama 2 7B — 32 layers, 32 kv heads, 128 wide, fp16:
+    2 x 32 x 32 x 128 x 2 = 524,288 B = 512 KiB per piece
+    at 4,096-piece context:   2 GiB
+
+  Llama 3 8B — 32 layers, 8 kv heads, 128 wide, fp16:
+    2 x 32 x 8 x 128 x 2 = 131,072 B = 128 KiB per piece
+    at 8K context:            1 GiB
+    at 128K context:         16 GiB — one sequence's cache,
+                              the size of the model's own weights
+
+  (GQA's cut: 32 kv heads -&gt; 8 = 4x fewer bytes per piece)</code></pre>
+        </div>
+      </div>
+
+      <p>Read the last line of the panel twice. At the 128K context
+      window Llama 3 ships with, one sequence's cache — 16 GiB —
+      reaches the size of the model's own weights, roughly 15 GiB of
+      them
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      The memory holding one conversation rivals the memory holding
+      the machine.</p>
+      <p>This is what GQA was for. Part One's multi-head page
+      described the design: fewer key-value heads, groups of query
+      heads sharing them. Llama 2 7B kept thirty-two key-value
+      heads; Llama 3 8B keeps eight. The cut lands directly here —
+      512 KiB per piece against 128 KiB, a straight four-times
+      reduction in cache bytes
+      <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus" title="gpus — research/gpus.md">[gpus]</a>.
+      Part One covered what the sharing costs in expressiveness;
+      this page is what it buys.</p>
+    </section>
+
+    <section id="sec-trade">
+      <h2>The trade, and what it caps</h2>
+      <p>With the cache in place, the decode floor from the last
+      page gains a second term. Each generated piece now costs: read
+      every weight once — the term the weight sweep set — plus read
+      the whole cache, which grows with every piece so far, plus a
+      trickle of arithmetic
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      At short windows the weight term dominates; at long ones the
+      cache term closes in.</p>
+      <p>The cache is also a choice, not a law. The alternative is
+      recomputation — trading the memory back for the quadratic work
+      the loop just escaped. Systems pick per situation: memory is
+      the scarce resource at long windows and many simultaneous
+      requests; arithmetic is scarce everywhere else
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>And the cache is per sequence. Weights are read shared;
+      caches are not — every conversation brings its own, growing
+      with its window and its reply length
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      A card that holds a model's weights with room to spare holds
+      only so many long conversations before the room fills with
+      keys and values. What a production system does about that —
+      how it packs this memory, moves it, and keeps many replies
+      flowing at once — is the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Each new piece's attention needs the keys and values of
+        every earlier position; recomputing them every step makes
+        the loop's work grow with the square of the length — ten toy
+        pieces cost seventy-five token-forwards.</li>
+        <li>The KV cache keeps them instead: prefill fills the first
+        rows, every decode step appends one row per layer per head,
+        and each new query reads them all.</li>
+        <li>The cached path is exact — both paths emit identical
+        pieces; the script asserts it, and the fork is one
+        conditional expression.</li>
+        <li>Bytes per piece = two × layers × kv heads × head width ×
+        dtype bytes: 128 KiB for Llama 3 8B, 512 KiB for Llama 2 7B
+        — GQA's four-times cut, straight off the cache bill.</li>
+        <li>At a 128K context window, one sequence's cache reaches
+        the model's own weight size; weights plus every sequence's
+        cache must fit the card — which caps how much can run at
+        once.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="inference-loop.html"><span class="cap">Previous</span><span class="pg-title">The Inference Loop</span></a>
+    <a class="pager-card" rel="next" href="serving.html"><span class="cap">Next</span><span class="pg-title">Serving: Batching, PagedAttention, FlashAttention</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

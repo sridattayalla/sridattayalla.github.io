@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valid Fixture — Rust Fixtures</title>
+</head>
+<body data-page="valid" id="top">
+<nav>
+<a href="glossary.html">Glossary</a>
+<a href="valid.html#work">Work</a>
+<a href="glossary.html#t-move">Move entry</a>
+</nav>
+<main>
+<h1>Valid fixture</h1>
+<p id="work">The word move appears freely because this page is its defining page in the ledger, and so does panic. The cache holds 128 KiB per entry<a class="prov" data-src="research/fixture-facts.md" href="#top">[fx]</a>.</p>
+<!-- prov-ok: structural count of fixture sections, not a factual claim -->
+<p>There are 3 sections in this fixture.</p>
+<p>A second cited claim: the reference floor sits near 7 ms<a class="prov" data-src="research/fixture-facts.md" href="#top">[fx]</a> on the named part.</p>
+<pre data-verify="ok"><code class="language-rust">fn main() {
+    let values = vec![1, 2, 3];
+    let total: i32 = values.iter().sum();
+    assert!(total == 6);
+}</code></pre>
+<pre data-verify="fail" data-error="E0382"><code class="language-rust">fn main() {
+    let s = String::from("hi");
+    let t = s;
+    println!("{}", s);
+}</code></pre>
+<pre data-verify="run" data-expect="sum is 6"><code class="language-rust">fn main() {
+    let values = [1, 2, 3];
+    println!("sum is {}", values.iter().sum::&lt;i32&gt;());
+}</code></pre>
+<pre data-verify="panic" data-expect="index out of bounds"><code class="language-rust">fn main() {
+    let values = [10, 20, 30];
+    let i: usize = "5".parse().unwrap();
+    println!("{}", values[i]);
+}</code></pre>
+<pre data-verify="skip" data-reason="illustrative fragment, deliberately not a program"><code class="language-rust">// the runnable programs live in the blocks above
+</code></pre>
+<pre data-verify="run" data-expect="42"><code class="language-rust">struct Pair {
+    a: u32,
+    b: u32,
+}</code></pre>
+<pre data-verify="cont"><code class="language-rust">fn main() {
+    let p = Pair { a: 40, b: 2 };
+    println!("{}", p.a + p.b);
+}</code></pre>
+<pre data-verify="c-ok"><code class="language-c">#include &lt;stdio.h&gt;
+
+int main(void) {
+    printf("hello from c\n");
+    return 0;
+}</code></pre>
+<pre data-verify="c-asan" data-expect="heap-use-after-free"><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+int main(void) {
+    int *p = malloc(sizeof(int));
+    *p = 41;
+    free(p);
+    printf("%d\n", *p);
+    return 0;
+}</code></pre>
+<pre><code class="language-text">plain text output blocks carry no data-verify</code></pre>
+<figure>
+<svg role="img" viewBox="0 0 100 40"><title>Fixture diagram</title><rect width="100" height="40" fill="none" stroke="currentColor"/></svg>
+<figcaption>A tiny labelled svg.</figcaption>
+</figure>
+</main>
+<footer class="pager">
+<a rel="prev" href="broken.html">Broken</a>
+<a rel="next" href="glossary.html">Glossary</a>
+</footer>
+<aside class="takeaways">
+<h2>Takeaways</h2>
+<ul>
+<li>Structure is complete.</li>
+<li>Every number carries provenance.</li>
+<li>Terms precede use.</li>
+</ul>
+</aside>
+</body>
+</html>

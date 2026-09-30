@@ -1,0 +1,450 @@
+{
+ "generated": "2026-09-26T20:00:12+00:00",
+ "toolchain": {
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "clang": "Ubuntu clang version 14.0.0-1ubuntu1.1",
+  "gcc": "gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0"
+ },
+ "entries": [
+  {
+   "page": "borrowing.html",
+   "line": 113,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0596]: cannot borrow `*r` as mutable, as it is behind a `&` reference)",
+   "expect": "E0596"
+  },
+  {
+   "page": "borrowing.html",
+   "line": 192,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0499]: cannot borrow `s` as mutable more than once at a time)",
+   "expect": "E0499"
+  },
+  {
+   "page": "borrowing.html",
+   "line": 231,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0502]: cannot borrow `v` as mutable because it is also borrowed as immutable)",
+   "expect": "E0502"
+  },
+  {
+   "page": "borrowing.html",
+   "line": 276,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0506]: cannot assign to `s` because it is borrowed)",
+   "expect": "E0506"
+  },
+  {
+   "page": "borrowing.html",
+   "line": 332,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "len 4"
+  },
+  {
+   "page": "borrowing.html",
+   "line": 350,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "first 10"
+  },
+  {
+   "page": "box.html",
+   "line": 136,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "hello"
+  },
+  {
+   "page": "box.html",
+   "line": 166,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0072]: recursive type `List` has infinite size)",
+   "expect": "E0072"
+  },
+  {
+   "page": "box.html",
+   "line": 258,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "tail head 2"
+  },
+  {
+   "page": "capstone.html",
+   "line": 104,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "entries: 6, writes: 6"
+  },
+  {
+   "page": "capstone.html",
+   "line": 196,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "pool shut down cleanly"
+  },
+  {
+   "page": "error-handling.html",
+   "line": 200,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "No such file or directory (os error 2)"
+  },
+  {
+   "page": "error-handling.html",
+   "line": 252,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "main still running"
+  },
+  {
+   "page": "founding-constraint.html",
+   "line": 192,
+   "mode": "c-asan",
+   "ok": true,
+   "detail": "AddressSanitizer caught the bug as expected",
+   "expect": "stack-use-after-return"
+  },
+  {
+   "page": "founding-constraint.html",
+   "line": 229,
+   "mode": "c-asan",
+   "ok": true,
+   "detail": "AddressSanitizer caught the bug as expected",
+   "expect": "heap-use-after-free"
+  },
+  {
+   "page": "founding-constraint.html",
+   "line": 267,
+   "mode": "c-asan",
+   "ok": true,
+   "detail": "AddressSanitizer caught the bug as expected",
+   "expect": "attempting double-free"
+  },
+  {
+   "page": "founding-constraint.html",
+   "line": 297,
+   "mode": "c-asan",
+   "ok": true,
+   "detail": "AddressSanitizer caught the bug as expected",
+   "expect": "heap-use-after-free"
+  },
+  {
+   "page": "founding-constraint.html",
+   "line": 345,
+   "mode": "c-tsan",
+   "ok": true,
+   "detail": "ThreadSanitizer caught the race as expected",
+   "expect": "data race"
+  },
+  {
+   "page": "index.html",
+   "line": 86,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0382]: borrow of moved value: `s`)",
+   "expect": "E0382"
+  },
+  {
+   "page": "interior-mutability.html",
+   "line": 161,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "value: 42"
+  },
+  {
+   "page": "interior-mutability.html",
+   "line": 209,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "len: 4"
+  },
+  {
+   "page": "interior-mutability.html",
+   "line": 229,
+   "mode": "panic",
+   "ok": true,
+   "detail": "panicked as expected",
+   "expect": "RefCell already borrowed"
+  },
+  {
+   "page": "interior-mutability.html",
+   "line": 283,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "recovered [1, 2, 3, 4]"
+  },
+  {
+   "page": "lifetimes.html",
+   "line": 158,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0597]: `s` does not live long enough)",
+   "expect": "E0597"
+  },
+  {
+   "page": "lifetimes.html",
+   "line": 225,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0106]: missing lifetime specifier)",
+   "expect": "E0106"
+  },
+  {
+   "page": "lifetimes.html",
+   "line": 272,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0106]: missing lifetime specifier)",
+   "expect": "E0106"
+  },
+  {
+   "page": "lifetimes.html",
+   "line": 304,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "hello alpha"
+  },
+  {
+   "page": "lifetimes.html",
+   "line": 339,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0515]: cannot return reference to local variable `s`)",
+   "expect": "E0515"
+  },
+  {
+   "page": "move-copy-clone.html",
+   "line": 175,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0204]: the trait `Copy` cannot be implemented for this type)",
+   "expect": "E0204"
+  },
+  {
+   "page": "move-copy-clone.html",
+   "line": 209,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "a=5 b=5"
+  },
+  {
+   "page": "move-copy-clone.html",
+   "line": 259,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "hello and hello"
+  },
+  {
+   "page": "ownership.html",
+   "line": 116,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0382]: borrow of moved value: `s`)",
+   "expect": "E0382"
+  },
+  {
+   "page": "ownership.html",
+   "line": 195,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "hi"
+  },
+  {
+   "page": "ownership.html",
+   "line": 244,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "drop a-first"
+  },
+  {
+   "page": "ownership.html",
+   "line": 287,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "drop first"
+  },
+  {
+   "page": "pin.html",
+   "line": 181,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "the handle moved, the value did not"
+  },
+  {
+   "page": "pin.html",
+   "line": 258,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0277]: `PhantomPinned` cannot be unpinned)",
+   "expect": "E0277"
+  },
+  {
+   "page": "pin.html",
+   "line": 321,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0599]: no method named `get_mut` found for struct `Pin<Box<SelfRef>>` in the current scope)",
+   "expect": "E0599"
+  },
+  {
+   "page": "rc-arc.html",
+   "line": 104,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "count after dropping b: 2"
+  },
+  {
+   "page": "rc-arc.html",
+   "line": 167,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "a count: 2"
+  },
+  {
+   "page": "rc-arc.html",
+   "line": 254,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "Node dropped"
+  },
+  {
+   "page": "rc-arc.html",
+   "line": 293,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "after drop: None"
+  },
+  {
+   "page": "rc-arc.html",
+   "line": 349,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0277]: `Rc<String>` cannot be sent between threads safely)",
+   "expect": "E0277"
+  },
+  {
+   "page": "rc-arc.html",
+   "line": 401,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "total: 4000"
+  },
+  {
+   "page": "send-sync.html",
+   "line": 176,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "the marks are in the types"
+  },
+  {
+   "page": "send-sync.html",
+   "line": 265,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0277]: `Cell<u32>` cannot be shared between threads safely)",
+   "expect": "E0277"
+  },
+  {
+   "page": "send-sync.html",
+   "line": 387,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "sum: 60, len: 3"
+  },
+  {
+   "page": "stack-and-heap.html",
+   "line": 176,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "16 bytes"
+  },
+  {
+   "page": "stack-and-heap.html",
+   "line": 233,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "middle [20, 30]"
+  },
+  {
+   "page": "stack-and-heap.html",
+   "line": 288,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0308]: mismatched types)",
+   "expect": "E0308"
+  },
+  {
+   "page": "traits.html",
+   "line": 141,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0117]: only traits defined in the current crate can be implemented for types defined outside of the crate)",
+   "expect": "E0117"
+  },
+  {
+   "page": "traits.html",
+   "line": 205,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "max s: pear"
+  },
+  {
+   "page": "traits.html",
+   "line": 270,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "&dyn Shape size: 16"
+  },
+  {
+   "page": "unsafe.html",
+   "line": 147,
+   "mode": "fail",
+   "ok": true,
+   "detail": "rejected as expected (error[E0499]: cannot borrow `*slice` as mutable more than once at a time)",
+   "expect": "E0499"
+  },
+  {
+   "page": "unsafe.html",
+   "line": 230,
+   "mode": "run",
+   "ok": true,
+   "detail": "compiled and ran (exit 0)",
+   "expect": "[100, 2, 3, 200, 5, 6]"
+  }
+ ]
+}

@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>I/O multiplexing: the readiness model — Under the Await</title>
+  <meta name="description" content="select, poll, and epoll: how one sleeping question covers thousands of descriptors, and why level-triggered versus edge-triggered matters.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-06">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>I/O multiplexing: the readiness model</h1>
+
+      <p><a href="05-nonblocking-io.html">Chapter 5</a> left you with sockets that never confiscate a thread
+        and an error code meaning "not ready yet", and the observation that
+        retrying in a loop burns a core. What was missing was a single
+        question that sleeps until any one of many descriptors is ready,
+        then names the ready ones. That question exists. Unix has actually
+        answered it three times, <code>select</code> first, then
+        <code>poll</code>, then epoll, each answer fixing the previous
+        one's scaling flaw. This chapter walks all three, because the
+        flaws are the fastest way to understand the fix, and because the
+        machinery this book is heading for sits directly on the third
+        answer, nearly unchanged. This is the most load-bearing chapter in
+        Part 1; take it slowly.</p>
+
+      <h2>The idea: many conversations, one question</h2>
+
+      <p>The telephone engineers had a word for carrying many calls over
+        one cable: multiplexing. It means exactly this: several
+        independent streams of information sharing one wire, with some
+        mechanism for keeping them separate. I/O multiplexing brings the
+        idea to descriptors. Instead of your program asking each socket
+        "ready yet?" in turn, it hands the kernel one list and asks one
+        question: "which of these are ready right now?" The call sleeps
+        until at least one is, then returns the answer. Your thread pays
+        for exactly one nap, no matter how many thousands of descriptors
+        are silent.</p>
+
+      <p>Notice how perfectly this complements chapter 5. The
+        multiplexing question never touches data; it only reports
+        readiness. The reads and writes that follow are the non-blocking
+        kind, so they cannot strand your thread either. Combine the two
+        and the <a href="04-blocking-io-and-c10k.html">C10K arithmetic</a> from chapter 4 dissolves: ten thousand
+        waiters no longer cost ten thousand sleeping threads, because
+        nobody is sleeping per-connection anymore. There is one sleeper,
+        asking one question, and it only sleeps when there is genuinely
+        nothing to do.</p>
+
+      <h2>select: the first answer</h2>
+
+      <p>The original interface builds the question out of bitmasks. You
+        prepare three fixed-size sets of descriptors, for reading,
+        writing, and errors, and hand all three to
+        <code>select</code> along with a maximum wait. The kernel scans
+        every descriptor in every set, notes which are ready, rewrites the
+        sets in place to show only those, and returns a count. Your code
+        then walks the rewritten sets and serves whoever survived.</p>
+
+      <p>It works, and it worked for decades. But two walls are built
+        into the type itself. First, the sets are fixed-size, and the
+        size is <code>FD_SETSIZE</code>, 1024: descriptors numbered 1024
+        or higher simply cannot be monitored, and a busy server's
+        descriptor numbers climb quickly. The man page is blunt that this
+        will never change. Second, the whole arrangement forgets
+        everything between calls. The kernel rescans every descriptor you
+        listed, every single time, and your code rescans the rewritten
+        sets to find the survivors, and you rebuild the original sets for
+        the next call because the call just destroyed them. The man page
+        itself calls the in-place rewriting "a design error that is
+        avoided in <code>poll</code> and epoll".</p>
+      <!-- fs: fact sheet §4 — select(2): FD_SETSIZE 1024 fixed-size fd_set, fds >= 1024 unmonitorable; O(n) scan; value-result sets called a design error -->
+
+      <h2>The second answer: arrays instead of bitmasks</h2>
+
+      <p>The second answer replaces bitmasks with an array of small
+        structs, one per descriptor, each holding the descriptor number,
+        the events you care about, and a slot for the kernel's reply. No
+        fixed cap now: the limit is just the system's cap on open
+        descriptors per process. And the kernel fills in the reply slots
+        rather than destroying your input, so you stop rebuilding the
+        list every call.</p>
+
+      <p>But the deeper cost survives untouched. The kernel still scans
+        every entry on every call, and your code still walks the whole
+        array afterward to find the entries with replies. Both sides are
+        proportional to the number of descriptors monitored, and the
+        number of descriptors is precisely the thing that grows when you
+        are big. At ten thousand connections, mostly idle, every wait
+        means a ten-thousand-entry scan to discover that five sockets
+        have work. The question was right; the bookkeeping was in the
+        wrong place.</p>
+
+      <h2>epoll: the kernel keeps the list</h2>
+
+      <p>The third answer, Linux's epoll, makes one structural move:
+        stop re-telling the kernel what you care about. An epoll instance
+        is a kernel object that remembers. You create it once with
+        <code>epoll_create1</code> (yes, it is itself a file descriptor;
+        chapter 3's <a href="03-syscalls-and-file-descriptors.html">everything-is-an-integer</a> strikes again), and then you
+        register each socket exactly once with
+        <code>epoll_ctl</code>. From then on, the kernel maintains two
+        lists for you: the registration list, every descriptor you asked
+        to monitor, and the ready list, the subset with something to say.
+        The registration happens when a connection arrives, not when you
+        ask the question.</p>
+
+      <p>Here is the part worth reading twice. The kernel does not build
+        the ready list when you ask. It appends to the ready list at the
+        moment I/O activity happens, in the kernel's own packet-handling
+        code, as events occur. So <code>epoll_wait</code> is not a scan
+        at all; the man page describes it as fetching items from a list
+        that is already built. Its cost grows with the number of events
+        it returns, not with the number of descriptors you monitor, which
+        is the difference between doing work proportional to your
+        problems and work proportional to your size. Ten thousand idle
+        connections cost memory, roughly 160 bytes of kernel bookkeeping
+        each, and nothing else. No rescan, no sleeping thread, no burned
+        core.</p>
+      <!-- fs: fact sheet §4 — epoll(7): ready list populated by the kernel as I/O activity happens; ~160 bytes per registered fd on 64-bit; max_user_watches default scales with memory -->
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 240" role="img">
+          <title>Sockets register once into the kernel's epoll instance; arrivals move a socket to the ready list; epoll_wait fetches only the ready ones</title>
+          <rect class="box" x="20" y="40" width="95" height="36" rx="6"/>
+          <text class="label" x="67" y="63" text-anchor="middle">socket A</text>
+          <rect class="box" x="20" y="95" width="95" height="36" rx="6"/>
+          <text class="label" x="67" y="118" text-anchor="middle">socket B</text>
+          <rect class="box" x="20" y="150" width="95" height="36" rx="6"/>
+          <text class="label" x="67" y="173" text-anchor="middle">socket C</text>
+          <line class="lane" x1="115" y1="58" x2="168" y2="88"/>
+          <line class="lane" x1="115" y1="113" x2="168" y2="113"/>
+          <line class="lane" x1="115" y1="168" x2="168" y2="138"/>
+          <rect class="box" x="170" y="30" width="240" height="180" rx="10"/>
+          <text class="label" x="290" y="52" text-anchor="middle">the kernel's epoll instance</text>
+          <rect class="box" x="185" y="70" width="210" height="44" rx="6"/>
+          <text class="label" x="290" y="88" text-anchor="middle">registration list</text>
+          <text class="label muted" x="290" y="106" text-anchor="middle">A, B, C: added once each</text>
+          <rect class="box accent" x="185" y="135" width="210" height="44" rx="6"/>
+          <text class="label" x="290" y="153" text-anchor="middle">ready list</text>
+          <text class="label muted" x="290" y="171" text-anchor="middle">B: a packet arrived</text>
+          <rect class="box" x="450" y="135" width="140" height="44" rx="6"/>
+          <text class="label mono" x="520" y="153" text-anchor="middle">epoll_wait</text>
+          <text class="label muted" x="520" y="171" text-anchor="middle">returns: B</text>
+          <line class="arrow" x1="395" y1="157" x2="448" y2="157"/>
+          <polygon class="arrow-head" points="448,152 458,157 448,162"/>
+          <text class="label muted" x="290" y="228" text-anchor="middle">one epoll_ctl per socket, ever; the kernel remembers between calls</text>
+        </svg>
+        <figcaption>Figure 1: the inversion. The set of monitored
+          descriptors lives kernel-side, so asking the question costs
+          nothing proportional to its size.</figcaption>
+      </figure>
+
+      <h2>An echo server's core, in C</h2>
+
+      <p>The whole pattern fits in three fragments. First, create the
+        instance and register the listening socket, once:</p>
+
+      <pre><code class="language-c">#include &lt;sys/epoll.h&gt;
+#include &lt;unistd.h&gt;
+
+/* one epoll instance for the whole server */
+int epfd = epoll_create1(0);
+if (epfd &lt; 0) {
+    perror("epoll_create1");
+    return 1;
+}
+
+/* register the listening socket, once */
+struct epoll_event ev;
+ev.events = EPOLLIN;              /* report "readable" */
+ev.data.fd = listener_fd;
+if (epoll_ctl(epfd, EPOLL_CTL_ADD, listener_fd, &amp;ev) &lt; 0) {
+    perror("epoll_ctl");
+    return 1;
+}</code></pre>
+
+      <p>Second, the loop: sleep on the one question, then dispatch on
+        the answer. The last argument to <code>epoll_wait</code> is a
+        maximum wait in milliseconds; <code>-1</code> means wait
+        indefinitely:</p>
+
+      <pre><code class="language-c">struct epoll_event events[64];
+
+for (;;) {
+    /* sleep until something happens */
+    int n = epoll_wait(epfd, events, 64, -1);
+    if (n &lt; 0) {
+        perror("epoll_wait");
+        break;
+    }
+    for (int i = 0; i &lt; n; i++) {
+        if (events[i].data.fd == listener_fd) {
+            /* new client: accept(), then register the new socket */
+        } else {
+            /* existing client: readable, drain it (next fragment) */
+        }
+    }
+}</code></pre>
+
+      <p>Third, when a client socket is reported readable, read it until
+        the kernel says otherwise. On a non-blocking socket, that means
+        looping until <code>EAGAIN</code>, not reading once:</p>
+
+      <pre><code class="language-c">/* inside the "existing client" branch */
+for (;;) {
+    char buf[4096];
+    ssize_t k = read(fd, buf, sizeof buf);
+    if (k &gt; 0) {
+        handle_bytes(fd, buf, (size_t)k);
+        continue;                 /* maybe more: keep draining */
+    }
+    if (k == 0) {
+        close(fd);                /* the peer hung up */
+        break;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+        break;                    /* drained: nothing more right now */
+    perror("read");
+    break;
+}</code></pre>
+
+      <p>Count the threads in that server: one. Count the syscalls per
+        quiet moment: zero. When five hundred clients are silent, the
+        single thread is asleep inside <code>epoll_wait</code>, costing
+        nothing, and the moment any packet lands, the kernel has already
+        placed that socket on the ready list, so the wake-up hands your
+        thread a precise to-do list. This loop, register once, sleep on
+        the question, act on the answer, drain until
+        <code>EAGAIN</code>, is the skeleton of every serious network
+        server on Linux, whatever language it is written in.</p>
+
+      <h2>Level-triggered and edge-triggered</h2>
+
+      <p>One epoll decision remains, and it is subtle enough to deserve
+        its own vocabulary. When the kernel reports a socket as ready,
+        how long does the report last? The default is
+        level-triggered: a descriptor is reported whenever it is in the
+        ready state, and it keeps being reported on every subsequent
+        <code>epoll_wait</code> for as long as data remains unread. If
+        you read only half the available bytes, the next wait mentions
+        the socket again. Used this way, the man page says, epoll is
+        "simply a faster <code>poll</code>". Hard to break, mildly
+        redundant.</p>
+
+      <p>The alternative, enabled with the <code>EPOLLET</code> flag, is
+        edge-triggered: the kernel reports a descriptor only when
+        readiness newly appears, a transition rather than a state. Read
+        half the bytes and wait again, and you will likely wait forever:
+        the man page walks a pipe example where
+        <code>epoll_wait</code> hangs despite data sitting in the pipe,
+        because no new arrival happened to re-trigger the report. The
+        rule that makes edge-triggered safe is the one the echo server
+        above already follows: always drain to <code>EAGAIN</code>, on a
+        non-blocking socket, before you go back to waiting. That is why
+        the third fragment loops.</p>
+
+      <table>
+        <thead>
+          <tr><th></th><th>level-triggered (default)</th>
+            <th>edge-triggered (<code>EPOLLET</code>)</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>reports</th><td>whenever data remains</td>
+            <td>only on each new arrival</td></tr>
+          <tr><th>after a partial read</th><td>reported again on the
+            next wait</td><td>not reported again; you must drain to
+            <code>EAGAIN</code></td></tr>
+          <tr><th>if you forget to drain</th><td>wasteful, not
+            fatal</td><td>the next wait may hang with data
+            present</td></tr>
+          <tr><th>several waiting threads</th><td>all may wake for one
+            event</td><td>exactly one wakes, avoiding the thundering
+            herd</td></tr>
+        </tbody>
+      </table>
+
+      <p>Why would anyone accept edge-triggered's sharp edges? Fewer
+        redundant wake-ups, and that last table row: when several
+        threads wait on one epoll instance and an edge-triggered
+        descriptor becomes ready, the kernel wakes exactly one of them,
+        which the man page highlights as a deliberate optimization. The
+        machinery at the heart of this book makes a specific choice on
+        this exact fork; when you reach Part 4 and see which, come back
+        here and you will know why the question was hard.</p>
+
+      <h2>Not just Linux</h2>
+
+      <p>Epoll is a Linux affair, but the pattern is not. The BSD and
+        macOS world has kqueue, the same shape of idea, one queue you
+        register with and one call that fetches ready events, with a
+        broader appetite: it can also report child processes ending,
+        signals arriving, timers firing, and files changing. illumos
+        offers event ports to the same end. The APIs differ enough that
+        portable code wraps them behind one interface, and every serious
+        high-performance library does exactly that. Remember this
+        paragraph; it explains a layer you will meet in Part 4.</p>
+
+      <p>So here is the state of the machine after six chapters. A
+        thread can ask one sleeping question about thousands of
+        descriptors, and the kernel will answer with a precise list.
+        Waiters no longer cost threads, so the C10K arithmetic is
+        dead. What remains is a change in the shape of your code: a
+        program is no longer one thread per conversation telling a
+        linear story, but one loop reacting to whatever the kernel says
+        happened. That change, and the five classic ways of living with
+        it, is Part 2. First, though, one more kernel contract deserves
+        a look, because readiness is not the only deal on offer, and a
+        newer kernel interface bets against it. That is the next
+        chapter.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Multiplexing means many independent streams sharing one
+            wire; for I/O it is one sleeping question, "which of these
+            descriptors are ready?", instead of one thread per
+            waiter.</li>
+          <li><code>select</code> caps at 1024 descriptors and rescans
+            everything every call; <code>poll</code> lifts the cap but
+            keeps the rescan; both do work proportional to size, not to
+            events.</li>
+          <li>epoll keeps the registration list kernel-side, appends to
+            a ready list as I/O happens, and <code>epoll_wait</code>
+            merely fetches it: cost scales with events, not with the
+            number monitored.</li>
+          <li>Level-triggered mode re-reports while data remains, a
+            faster <code>poll</code>; edge-triggered mode reports transitions only and
+            demands draining to <code>EAGAIN</code> on non-blocking
+            descriptors.</li>
+          <li>kqueue and event ports carry the same pattern beyond
+            Linux; portable servers wrap the differences behind one
+            interface.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

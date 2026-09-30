@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>What async/await compiles to — Under the Await</title>
+  <meta name="description" content="An async fn is a compiler-generated enum state machine in disguise. Its hand-written twin, side by side, line by line.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: light)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p03-05">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>What async/await compiles to</h1>
+
+      <p>Page 4 cost you eighty lines to hand-build one <em>sleep</em>. If that
+        were the price of every async operation, nobody would write async Rust.
+        Nobody does. The compiler writes it for you: every <code>async fn</code>
+        and every <code>.await</code> expands into the same shapes you just
+        wrote by hand, an enum with one variant per suspension point and a
+        <code>poll</code> that advances it. This page catches the compiler in
+        the act by building the two versions side by side, then states the
+        rules of the transform so precisely that you could do its job.</p>
+
+      <h2>First, what an async fn actually is</h2>
+
+      <!-- fs: research/rust-async.md §3 — async fn is sugar for a fn returning impl Future; calling it constructs the future and runs no body -->
+      <p>An <code>async fn</code> is sugar. <code>async fn f() -> T</code>
+        means a function returning <code>impl Future&lt;Output = T&gt;</code>:
+        some anonymous type that implements the <a href="02-future-trait.html">trait
+        from page 2</a>. And per that page's laziness rule, <em>calling</em>
+        <code>f()</code> runs none of the body. The call constructs the value
+        and returns it. The body executes only inside <code>poll</code>. So
+        the question "what does async fn compile to" is really "what is that
+        anonymous type", and the answer is: a state machine struct.</p>
+
+      <h2>The example</h2>
+
+      <p>Here is a small async function with three <code>.await</code> points
+        and one deliberate extra: a local, <code>len</code>, that is read
+        before the first await and used after the last one, so it must survive
+        across all three. The three awaited operations are hand-written
+        futures in the style of page 4, so we can name their types in the
+        hand-written twin:</p>
+
+      <pre><code class="language-rust">async fn pipeline(raw: String) -&gt; String {
+    let len = raw.len();                     // live across ALL awaits
+    let trimmed = Trim(raw).await;           // await #1
+    let shouted = Shout { text: trimmed,     // await #2
+                          polled_once: false }.await;
+    let wrapped = Wrap(shouted).await;       // await #3
+    format!("{wrapped} ({len} bytes)")
+}</code></pre>
+
+      <p>For this demo, <code>Trim</code> and <code>Wrap</code> finish on
+        their first poll. <code>Shout</code> is the interesting one: it
+        returns <code>Pending</code> on its first poll and
+        <code>Ready</code> on its second, standing in for any operation that
+        has to wait for something. Here are the three, in the page 4 style:</p>
+
+      <pre><code class="language-rust">struct Trim(String);
+
+impl Future for Trim {
+    type Output = String;
+    fn poll(self: Pin&lt;&amp;mut Self&gt;, _cx: &amp;mut Context&lt;'_&gt;) -&gt; Poll&lt;String&gt; {
+        let text = &amp;mut self.get_mut().0;
+        Poll::Ready(std::mem::take(text).trim().to_string())
+    }
+}
+
+/// Not ready on its first poll; ready on the second.
+struct Shout {
+    text: String,
+    polled_once: bool,
+}
+
+impl Future for Shout {
+    type Output = String;
+    fn poll(self: Pin&lt;&amp;mut Self&gt;, _cx: &amp;mut Context&lt;'_&gt;) -&gt; Poll&lt;String&gt; {
+        let this = self.get_mut();
+        if !this.polled_once {
+            this.polled_once = true;
+            return Poll::Pending;
+        }
+        Poll::Ready(std::mem::take(&amp;mut this.text).to_uppercase())
+    }
+}
+
+// Wrap is Trim with a format! call: Ready on the first poll.</code></pre>
+
+      <h2>The hand-written twin</h2>
+
+      <p>Now the same function written the way the compiler would, if the
+        compiler were paid by the hour. Compare it against the async version
+        above as you read: this is the payoff of page 4, because the shape is
+        <em>exactly</em> the <code>Delay</code>'s.</p>
+
+      <pre><code class="language-rust">struct PipelineFut {
+    len: usize,     // live across every await: a plain field
+    stage: Stage,   // "where was I when I last returned Pending?"
+}
+
+enum Stage {
+    Start { raw: String },
+    AwaitTrim(Trim),
+    AwaitShout(Shout),
+    AwaitWrap(Wrap),
+    Done,
+}</code></pre>
+
+      <p>One struct, two fields. The <code>stage</code> field is the
+        discriminant: which suspension point the function is stopped at, or
+        "not started", or "finished". Each variant of <code>Stage</code>
+        carries exactly the values that must survive <em>until the next
+        suspension point</em>: the not-yet-consumed argument in
+        <code>Start</code>, and the in-flight child future in each
+        <code>Await*</code> variant. And <code>len</code>, which is live
+        across all three awaits, sits in the shared part of the struct, a
+        field of every state at once.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 272" role="img" aria-label="Mapping from pipeline source lines to Stage enum variants: the body start maps to Start, each await maps to an Await variant, and completion maps to Done">
+          <title>Source lines map to enum variants</title>
+          <text class="label" x="110" y="24" text-anchor="middle">async fn body</text>
+          <text class="label" x="480" y="24" text-anchor="middle">Stage variant</text>
+          <rect class="box" x="20" y="35" width="190" height="34" rx="6"/>
+          <text class="label mono" x="115" y="57" text-anchor="middle">let len = raw.len();</text>
+          <rect class="box" x="380" y="35" width="170" height="34" rx="6"/>
+          <text class="label mono" x="465" y="57" text-anchor="middle">Start { raw }</text>
+          <line class="arrow" x1="210" y1="52" x2="375" y2="52"/>
+          <polygon class="arrow-head" points="375,47 385,52 375,57"/>
+          <rect class="box" x="20" y="85" width="190" height="34" rx="6"/>
+          <text class="label mono" x="115" y="107" text-anchor="middle">Trim(raw).await;</text>
+          <rect class="box" x="380" y="85" width="170" height="34" rx="6"/>
+          <text class="label mono" x="465" y="107" text-anchor="middle">AwaitTrim(Trim)</text>
+          <line class="arrow" x1="210" y1="102" x2="375" y2="102"/>
+          <polygon class="arrow-head" points="375,97 385,102 375,107"/>
+          <rect class="box" x="20" y="135" width="190" height="34" rx="6"/>
+          <text class="label mono" x="115" y="157" text-anchor="middle">Shout { .. }.await;</text>
+          <rect class="box" x="380" y="135" width="170" height="34" rx="6"/>
+          <text class="label mono" x="465" y="157" text-anchor="middle">AwaitShout(Shout)</text>
+          <line class="arrow" x1="210" y1="152" x2="375" y2="152"/>
+          <polygon class="arrow-head" points="375,147 385,152 375,157"/>
+          <rect class="box" x="20" y="185" width="190" height="34" rx="6"/>
+          <text class="label mono" x="115" y="207" text-anchor="middle">Wrap(shouted).await;</text>
+          <rect class="box" x="380" y="185" width="170" height="34" rx="6"/>
+          <text class="label mono" x="465" y="207" text-anchor="middle">AwaitWrap(Wrap)</text>
+          <line class="arrow" x1="210" y1="202" x2="375" y2="202"/>
+          <polygon class="arrow-head" points="375,197 385,202 375,207"/>
+          <rect class="box accent" x="20" y="235" width="190" height="34" rx="6"/>
+          <text class="label mono" x="115" y="250" text-anchor="middle">format!(..)</text>
+          <rect class="box accent" x="380" y="235" width="170" height="34" rx="6"/>
+          <text class="label mono" x="465" y="250" text-anchor="middle">Done</text>
+          <line class="arrow accent" x1="210" y1="252" x2="375" y2="252"/>
+          <polygon class="arrow-head accent" points="375,247 385,252 375,257"/>
+          <text class="label muted" x="300" y="230" text-anchor="middle">len rides along in every state</text>
+        </svg>
+        <figcaption>Figure 1: each suspension point in the source becomes one
+          variant of the generated enum; locals live across an await become
+          fields.</figcaption>
+      </figure>
+
+      <p>Now the <code>poll</code>. It is a loop over the stages, driving as
+        far forward as it can, exactly like the eager-until-Pending behavior
+        you observed on page 2:</p>
+
+      <pre><code class="language-rust">impl Future for PipelineFut {
+    type Output = String;
+
+    fn poll(self: Pin&lt;&amp;mut Self&gt;, cx: &amp;mut Context&lt;'_&gt;) -&gt; Poll&lt;String&gt; {
+        let this = self.get_mut();
+        loop {
+            match std::mem::replace(&amp;mut this.stage, Stage::Done) {
+                Stage::Start { raw } =&gt; {
+                    this.stage = Stage::AwaitTrim(Trim(raw));
+                }
+                Stage::AwaitTrim(mut fut) =&gt; match Pin::new(&amp;mut fut).poll(cx) {
+                    Poll::Ready(trimmed) =&gt; {
+                        this.stage = Stage::AwaitShout(Shout {
+                            text: trimmed,
+                            polled_once: false,
+                        });
+                    }
+                    Poll::Pending =&gt; {
+                        this.stage = Stage::AwaitTrim(fut); // put it back
+                        return Poll::Pending;
+                    }
+                },</code></pre>
+
+      <pre><code class="language-rust">                Stage::AwaitShout(mut fut) =&gt; match Pin::new(&amp;mut fut).poll(cx) {
+                    Poll::Ready(shouted) =&gt; {
+                        this.stage = Stage::AwaitWrap(Wrap(shouted));
+                    }
+                    Poll::Pending =&gt; {
+                        this.stage = Stage::AwaitShout(fut);
+                        return Poll::Pending;
+                    }
+                },
+                Stage::AwaitWrap(mut fut) =&gt; match Pin::new(&amp;mut fut).poll(cx) {
+                    Poll::Ready(wrapped) =&gt; {
+                        this.stage = Stage::Done;
+                        return Poll::Ready(
+                            format!("{wrapped} ({} bytes)", this.len));
+                    }
+                    Poll::Pending =&gt; {
+                        this.stage = Stage::AwaitWrap(fut);
+                        return Poll::Pending;
+                    }
+                },
+                Stage::Done =&gt; panic!("polled after completion"),
+            }
+        }
+    }
+}</code></pre>
+
+      <p>Read the <code>AwaitTrim</code> arm once, carefully, because every
+        await arm is the same sentence: move the child future out, poll it
+        with the <em>outer</em> <code>cx</code> (wakers flow down the chain,
+        one more reason they must be cloneable), and on <code>Ready</code>
+        store the result and loop into the next stage; on
+        <code>Pending</code>, put the child future back and return
+        <code>Pending</code> yourself. That last move is the suspension:
+        the <em>next</em> call to <code>poll</code> will match
+        <code>AwaitTrim</code> again and resume exactly here, with the same
+        child future, mid-operation. Suspension and resumption, in a
+        <code>match</code> arm.</p>
+
+      <!-- fs: research/rust-async.md §3 — .await desugars to polling the inner future: Ready advances the state machine, Pending early-returns Pending and resumes at the same point on the next poll (Rust Reference, await expressions) -->
+      <p>The constructor is one line, and the lazy rule falls out of the
+        design for free:</p>
+
+      <pre><code class="language-rust">fn pipeline_by_hand(raw: String) -&gt; PipelineFut {
+    PipelineFut { len: raw.len(), stage: Stage::Start { raw } }
+}</code></pre>
+
+      <h2>Both, driven by hand</h2>
+
+      <p>Now drive the compiler's version and the twin with the same two
+        manual polls and compare answers. One wrinkle first: the
+        compiler-generated future is <em>not</em> plain data, so
+        <code>Pin::new</code> refuses it; std's <code>pin!</code> macro fixes
+        it in place on the stack instead. Why that refusal exists, and why it
+        is the single most controversial decision in Rust async, is the next
+        page. For the demo, one macro call:</p>
+
+      <pre><code class="language-rust">fn main() {
+    let waker = /* a do-nothing waker, as on page 2 */;
+    let mut cx = Context::from_waker(&amp;waker);
+
+    // The compiler's version: pin! because it is generated code.
+    let mut fut = std::pin::pin!(pipeline("  hello  ".to_string()));
+    assert!(fut.as_mut().poll(&amp;mut cx).is_pending()); // parks at Shout
+    match fut.as_mut().poll(&amp;mut cx) {
+        Poll::Ready(s) =&gt; assert_eq!(s, "[HELLO] (9 bytes)"),
+        Poll::Pending =&gt; unreachable!(),
+    }
+
+    // The twin: plain data, so Pin::new is fine.
+    let mut hand = pipeline_by_hand("  hello  ".to_string());
+    assert!(Pin::new(&amp;mut hand).poll(&amp;mut cx).is_pending());
+    match Pin::new(&amp;mut hand).poll(&mut cx) {
+        Poll::Ready(s) =&gt; assert_eq!(s, "[HELLO] (9 bytes)"),
+        Poll::Pending =&gt; unreachable!(),
+    }
+    println!("both versions agree");
+}</code></pre>
+
+      <p>One more detail hides in the arms, and it matters enormously later.
+        Every child poll receives the <em>outer</em> <code>cx</code>, which
+        means every level of a nested async call tree sees the same waker.
+        When <code>Shout</code> eventually returns <code>Pending</code> after
+        storing that waker, one single wake-up from the outside can move the
+        entire tree: the outer future, the middle futures, and the leaf
+        waiting on reality. Wakers do not multiply per nesting level; they
+        flow through. That is the property that lets a real engine wake a
+        deep async call stack with one cheap notification, and you will see
+        it working at scale in Part 4.</p>
+
+      <p>The first poll runs eagerly from <code>Start</code> through
+        <code>Trim</code>, hits <code>Shout</code>'s <code>Pending</code>,
+        stores <code>AwaitShout</code> as the stage, and returns
+        <code>Pending</code>: the whole function is now a value suspended at
+        the second await. The second poll resumes inside the
+        <code>AwaitShout</code> arm, <code>Shout</code> finishes,
+        <code>Wrap</code> finishes in the same eager sweep, and
+        <code>Ready("[HELLO] (9 bytes)")</code> comes out. Both versions
+        print "both versions agree". The compiler is doing precisely what you
+        did on page 4, minus the salary.</p>
+
+      <h2>The rules of the transform</h2>
+
+      <!-- fs: research/rust-async.md §3 — one variant per suspension point, live locals as fields, arguments as fields from creation, conceptual model (compiler may add states for ? and drops) -->
+      <table>
+        <thead>
+          <tr><th>Source construct</th><th>Generated construct</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>each <code>.await</code> point</td><td>one enum variant
+            holding the awaited child future and the locals live until the
+            next suspension</td></tr>
+          <tr><td>locals live across an await</td><td>fields of the state
+            struct (like <code>len</code>), present in every variant they
+            outlive</td></tr>
+          <tr><td>function arguments</td><td>fields from the moment of
+            construction</td></tr>
+          <tr><td>the await itself</td><td>poll the child: on
+            <code>Ready</code> advance, on <code>Pending</code> store the
+            child and return <code>Pending</code></td></tr>
+          <tr><td>falling off the end</td><td>store <code>Done</code>,
+            return <code>Ready(output)</code></td></tr>
+          <tr><td>values that die before the next await</td><td>dropped at
+            the state transition, by compiler-inserted drop code</td></tr>
+        </tbody>
+      </table>
+
+      <p>Two honest footnotes. First, this is the <em>conceptual</em> model:
+        the real transform may add internal states for error propagation with
+        <code>?</code>, for drop cleanup, or merge variants it can prove
+        compatible; the underlying machinery is the same coroutine transform
+        that powers Rust's experimental generators. Second, memory: the
+        generated struct's size is the <em>maximum</em> over its variants,
+        because every state occupies the same allocation. A future holding a
+        hundred-byte buffer alive across one await costs a hundred bytes in
+        every state. That is why deeply nested or recursive async functions
+        sometimes need explicit heap indirection, and why engines that store
+        many different future types together reach for
+        <code>Box&lt;dyn Future&gt;</code>: one fat pointer, uniform size,
+        trading the <a href="01-rust-recap.html">vtable</a> indirection from
+        page 1 for the right to put anything in the same queue.</p>
+
+      <!-- fs: research/rust-async.md §3 — single struct, size = max over variants; Box::pin indirection for recursive async fns -->
+      <h2>The wrinkle we have been dodging</h2>
+
+      <p>There is one shape the twin above never draws. Suppose the async
+        function borrows one of its own locals across an await, where the
+        local is data stored inline, not behind a heap pointer:</p>
+
+      <pre><code class="language-rust">struct Blob {
+    bytes: [u8; 6],               // six bytes, no heap involved
+}
+
+async fn borrowing(blob: Blob) -&gt; usize {
+    let head = &amp;blob.bytes[0..3]; // a reference INTO the blob itself
+    something().await;            // head must survive this
+    head.len()
+}</code></pre>
+
+      <p>After the transform, <code>blob</code> lives in a field of the
+        generated struct, and <code>head</code>, which must survive the
+        await, lives in a field too. But <code>head</code> is not a copy of
+        the bytes; it is a reference, an address, and the address it holds
+        points into <em>the same struct</em>, into the six bytes of the
+        <code>blob</code> field. The future contains a pointer to
+        itself.</p>
+
+      <p>Now recall page 1: futures get moved. They are handed to engines,
+        stored in queues, shifted between threads. Move a struct that
+        contains a pointer into itself and the pointer still holds the
+        <em>old</em> address; it now points at whatever garbage occupies the
+        old memory. Safe Rust would never let you build such a struct by
+        hand; the borrow checker rejects the shape outright. The async
+        transform builds it anyway, behind your back, and that is why
+        <code>poll</code>'s receiver is not a plain <code>&amp;mut</code>,
+        why <code>Pin::new</code> refused our generated future above, and why
+        there is a type called <code>Pin</code> whose entire job is to make
+        that pointer safe. That story, the one piece of this machinery with
+        no equivalent in any other language you have met in this book, is the
+        next page.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li><code>async fn</code> is sugar for returning an anonymous type
+            that implements <code>Future</code>; calling it runs nothing.</li>
+          <li>The anonymous type is an enum state machine: one variant per
+            await point, live locals as fields, the stage as the
+            discriminant.</li>
+          <li><code>.await</code> compiles to polling the child future:
+            <code>Ready</code> advances the machine, <code>Pending</code>
+            returns <code>Pending</code> and resumes at the same arm on the
+            next poll.</li>
+          <li>The generated struct's size is the maximum over its variants,
+            which is what makes futures cheap to store and occasionally
+            necessary to box.</li>
+          <li>A reference held across an await makes the future point into
+            itself; moving such a value dangles the pointer. That hazard, and
+            <code>Pin</code>, the type that defuses it, are the next
+            page.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

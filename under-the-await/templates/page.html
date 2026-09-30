@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<!--
+  ==========================================================================
+  UNDER THE AWAIT — CONTENT PAGE TEMPLATE
+  ==========================================================================
+  WRITER CONTRACT — copy this file into the right part directory and fill in
+  exactly FOUR things:
+
+    1. <title>PLACEHOLDER</title>            → "Page title — Under the Await"
+    2. <meta name="description" ...>         → one-sentence summary
+    3. <body data-page="PLACEHOLDER-ID">     → the page's manifest id
+                                              (e.g. "p01-03" — see assets/main.js)
+    4. Everything between the CONTENT markers in <main id="content">
+
+  Do NOT touch: the <head> links and scripts, the empty
+  <aside id="site-nav">, or the empty <nav id="page-nav">. main.js renders
+  the sidebar, the prev/next footer, code highlighting and the ← / → keys.
+  Paths are already correct for pages one level below the site root
+  (../assets/...). No external URLs, no webfonts, no inline event handlers.
+
+  CONTENT CLASSES (full list + tokens documented at the top of
+  assets/style.css):
+    .note / .warning / .pitfall     callouts (labels auto-generated)
+    aside.takeaways                 end-of-page summary box (supply a heading)
+    figure.diagram + figcaption     inline SVG figures; style shapes with
+                                    svg classes .box .arrow .arrow-head
+                                    .lane .label (+ .accent, .label.muted/mono)
+    table                           book-style, scrolls horizontally if wide
+    pre > code                      code block; add class="language-rust"
+                                    (also c, javascript, python, bash, …)
+    <code> inline · <kbd>           tinted mono · keycap
+  ==========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PLACEHOLDER</title>
+  <meta name="description" content="PLACEHOLDER">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="PLACEHOLDER-ID">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>Page title</h1>
+      <p>Opening paragraph — the promise of the page and where it sits in
+        the arc.</p>
+
+      <!-- A commented quick-reference of the content vocabulary:
+
+      <div class="note"><p>Something worth knowing.</p></div>
+      <div class="warning"><p>Something to be careful about.</p></div>
+      <div class="pitfall"><p>How readers actually get this wrong.</p></div>
+
+      <pre><code class="language-rust">async fn main() { /* … */ }</code></pre>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 600 160" role="img" aria-label="…">
+          <rect class="box" x="10" y="30" width="120" height="48" rx="8"/>
+          <text class="label" x="70" y="58" text-anchor="middle">a box</text>
+          <line class="arrow" x1="130" y1="54" x2="180" y2="54"/>
+          <polygon class="arrow-head" points="180,49 190,54 180,59"/>
+          <line class="lane" x1="10" y1="120" x2="590" y2="120"/>
+        </svg>
+        <figcaption>Figure N — what this shows.</figcaption>
+      </figure>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul><li>Point one</li><li>Point two</li></ul>
+      </aside>
+      -->
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

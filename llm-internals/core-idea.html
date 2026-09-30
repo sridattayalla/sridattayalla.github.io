@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Core Idea: Predict the Next Token — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="core-idea">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Machine</p>
+    <h1>The Core Idea: Predict the Next Token</h1>
+    <p class="lede">After this page you can state, in one sentence and without
+    hand-waving, exactly what a language model computes — and run the last
+    step of that computation by hand.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-job">One job, no exceptions</a></li>
+        <li><a href="#sec-numbers">The model is a pile of numbers</a></li>
+        <li><a href="#sec-forward">One run: the forward pass</a></li>
+        <li><a href="#sec-loop">The loop that writes</a></li>
+        <li><a href="#sec-why">Why a guessing game looks intelligent</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-job">
+      <h2>One job, no exceptions</h2>
+      <p>The previous page ended on a promise: the model scores every possible
+      next chunk. Take that seriously, because it is not a simplification — it
+      is the specification. At every moment of its existence, a trained model
+      does exactly one thing: it looks at the pieces of text it has been given
+      and produces a score for every piece in its fixed list. Not a plan for
+      the sentence. Not an opinion. Scores — one per candidate — and then
+      something outside the model picks one and asks again.</p>
+      <p>One subtlety before going further: the list of candidate pieces is
+      the same list the input was cut into. The model reads pieces and writes
+      pieces, drawing from one shared menu. A consequence you can predict
+      already: a language model can never emit a word that its list cannot
+      represent — not "cannot think of it", but structurally cannot print it.
+      Everything you have ever seen one of these models output was assembled
+      from that menu, one entry at a time.</p>
+      <p>There is no other goal in the box. When the output looks like
+      reasoning, that is the score list doing the reasoning's job; when it
+      looks confident, the scores were lopsided. Hold onto that austerity.
+      Everything in the next seven pages exists to make this one scoring
+      operation good enough to be mistaken for thought.</p>
+    </section>
+
+    <section id="sec-numbers">
+      <h2>The model is a pile of numbers</h2>
+      <p>But what <em>is</em> the scorer? Strip the mystique: a model is
+      numbers. A <dfn><a href="glossary.html#t-parameter">parameter</a></dfn>
+      is one learned number — a single entry in one of the model's many grids
+      of them. The <dfn><a href="glossary.html#t-weights">weights</a></dfn>
+      are the pile as a whole: every grid, every entry. Models are named by
+      how many they carry: GPT-3 holds 175 billion parameters, arranged among
+      other things into 96 identical
+      floors <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>.</p>
+      <p>Each floor is called a
+      <dfn><a href="glossary.html#t-layer">layer</a></dfn>: the same small
+      computation, repeated, each pass refining what the previous one wrote.
+      The overall design — repeated floors plus the machinery for reading text
+      in and scores out — is called a
+      <dfn><a href="glossary.html#t-transformer">transformer</a></dfn>. The
+      name is historical; the page that assembles the floors tells that
+      story.</p>
+      <p>These numbers are not written by hand and stored in no one's
+      spreadsheet. They start random and are nudged, over months of compute,
+      until the scoring gets good. That nudging process is Part Two of this
+      manual. Until then, treat the weights as a given: a huge, fixed pile of
+      numbers you are allowed to multiply with.</p>
+    </section>
+
+    <section id="sec-forward">
+      <h2>One run: the forward pass</h2>
+      <p>Now the operation itself. A
+      <dfn><a href="glossary.html#t-forward-pass">forward pass</a></dfn> is one
+      complete run: the pieces so far go in, and the score list comes out.
+      Inside, it is only multiplication and addition — trillions of
+      multiply-adds in a large model, but nothing more exotic. The scores
+      arrive in a raw form called
+      <dfn><a href="glossary.html#t-logits">logits</a></dfn>: one number per
+      candidate piece, unbounded, meaningless alone. A logit is not a
+      percentage and has no units; only the comparison between logits carries
+      information — one candidate beating another by a wide margin means the
+      model strongly prefers the first.</p>
+      <p>The final step turns logits into shares.
+      <dfn><a href="glossary.html#t-softmax">Softmax</a></dfn> is the function
+      that does it: raise <em>e</em> (the calculus constant) to each logit,
+      then divide each result by their total. Watch it happen on three
+      candidates for the blank:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — softmax by hand</p>
+        <div class="worked-body">
+<pre><code class="language-text">context: "the cat sat on the ___"
+
+candidate       mat      sofa     moon
+logit           2.0      1.0      0.5
+e^logit         7.39     2.72     1.65     (e = 2.71828...; e^0.5 = 1.64872...)
+total                    11.76
+share           0.63     0.23     0.14     (each e^logit divided by the total)</code></pre>
+        </div>
+      </div>
+
+      <p>The output list — one share per candidate, every share between zero
+      and one, all shares adding to exactly one — is a
+      <dfn><a href="glossary.html#t-probability-distribution">probability
+      distribution</a></dfn>. It is the model's full opinion, hedged: shares
+      almost never reach zero, so every nonsense candidate keeps a sliver.
+      Softmax is monotone: the bigger logit always gets the bigger share, so
+      the ranking survives the conversion. What changes is the spacing —
+      near-equal logits come out near-equal, and a large gap becomes a
+      landslide.</p>
+      <p>Here is a prediction you can make right now: what does the
+      distribution look like with random weights? Near-uniform. Every
+      candidate gets almost the same share, because nothing in the pile of
+      numbers has learned to prefer anything. Training is the process that
+      turns that flat hedging into lopsided opinion — the entire art of Part
+      Two is measuring and shaping the tilt. The tilt is all that separates a
+      random number generator in a transformer's clothes from a system that
+      finishes your sentence.</p>
+
+      <div class="warn"><span class="cap">Watch out</span>
+        <p>The classic misread is treating logits as probabilities. They are
+        not: they can be negative, they can be huge, and their differences are
+        not odds. The distribution — after softmax — is the only place
+        percentages live.</p>
+      </div>
+
+      <p>The score list is long — one entry per candidate, 50,257 for
+      GPT-3 <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>
+      — but every entry is produced by the same arithmetic.</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the softmax helper, verbatim</figcaption>
+<pre><code class="language-python">def softmax(z, axis=-1):
+    """Overflow-safe softmax: subtract the row max before exponentiating."""
+    z = z - np.max(z, axis=axis, keepdims=True)
+    e = np.exp(z)
+    return e / np.sum(e, axis=axis, keepdims=True)</code></pre>
+      </figure>
+      <p>The max subtraction is numerical hygiene: <em>e</em> raised to a
+      large logit overflows, and shifting every logit by the same amount
+      leaves the shares unchanged.</p>
+    </section>
+
+    <section id="sec-loop">
+      <h2>The loop that writes</h2>
+      <p>One forward pass produces a distribution. To write more than one
+      piece, the machinery outside the model does something almost comically
+      simple: it picks a piece from the distribution, appends it to the text,
+      and runs another forward pass on the whole thing. Self-feeding — the
+      model consuming its own output — is what
+      <dfn><a href="glossary.html#t-autoregressive">autoregressive</a></dfn>
+      means. There is no draft, no plan, no lookahead: piece forty-one is
+      chosen with zero knowledge of what piece forty-two will be.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 200"><title>The generation loop: pieces so far enter a forward pass, which produces shares for every candidate piece; one piece is picked and appended, and the loop repeats</title>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="16" y="36" width="132" height="56" rx="8"/>
+          <text x="82" y="68" text-anchor="middle" font-size="13">pieces so far</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="176" y="36" width="132" height="56" rx="8"/>
+          <text x="242" y="68" text-anchor="middle" font-size="13">forward pass</text>
+          <rect class="f-green s-ink" stroke-width="1.5" x="336" y="36" width="132" height="56" rx="8"/>
+          <text x="402" y="68" text-anchor="middle" font-size="13">shares per piece</text>
+          <rect class="f-red s-ink" stroke-width="1.5" x="496" y="36" width="132" height="56" rx="8"/>
+          <text x="562" y="68" text-anchor="middle" font-size="13">pick one</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M148 64h20"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M160 58l8 6-8 6"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M308 64h20"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M320 58l8 6-8 6"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M468 64h20"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M480 58l8 6-8 6"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M562 92v40H82v-26"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M76 115l6 -9 6 9"/>
+          <text class="t-dim" x="322" y="146" text-anchor="middle" font-size="12">append the pick</text>
+        </svg>
+        <figcaption>One forward pass per produced piece. The pick rejoins the
+        input — that feedback is what makes writing self-feeding.</figcaption>
+      </figure>
+
+      <p>Running this loop against a finished model is called
+      <dfn><a href="glossary.html#t-inference">inference</a></dfn>. The word
+      contrasts with training — the process that tuned the weights — and the
+      two regimes could not feel more different: training is months of
+      offline arithmetic; inference is you, waiting. Part Two covers the
+      first; Part Four covers the second at industrial scale.</p>
+      <p>The loop ends when the pick is a designated stop piece — a reserved
+      entry in the fixed list whose entire job is "done". GPT-2 reserves
+      exactly one such entry, printed like
+      <code>&lt;|endoftext|&gt;</code>
+      <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>.</p>
+
+      <div class="note"><span class="cap">Note</span>
+        <p>Each cycle recomputes the whole text from scratch — every piece,
+        every floor. That sounds wasteful, and it is; Part Four's caching
+        pages exist because of it.</p>
+      </div>
+    </section>
+
+    <section id="sec-why">
+      <h2>Why a guessing game looks intelligent</h2>
+      <p>None of this explains why the output is any good. The explanation
+      fits in a paragraph. To predict the next piece well on hard text, you
+      must have absorbed whatever produced that text. After "the capital of
+      France is", honest continuation requires knowing that Paris sits in
+      France — stored not as a sentence but as a tilt in the scores. Multiply
+      that by an internet's worth of evidence, and the pile of numbers ends up
+      encoding grammar, facts in aggregate, styles, even shapes of argument —
+      because every one of those things leaves fingerprints on which piece
+      comes next.</p>
+      <p>The mystery is not that this works; it is how far it scales. The next
+      seven pages build the machinery that makes a single guess this good: how
+      text is cut (next page), how the pieces become numbers worth
+      multiplying, and how the numbers reach back through the sentence to find
+      each other.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The model computes one thing: a score for every possible next
+        piece, every time, with no other goal.</li>
+        <li>Logits are raw ranking strengths; softmax converts them to shares
+        that sum to one — the model's full, hedged opinion.</li>
+        <li>A forward pass is deterministic arithmetic — multiplication and
+        addition, at scale — nothing more exotic.</li>
+        <li>Autoregressive means self-feeding: each pick rejoins the input for
+        the next pass; there is no plan beyond the next piece.</li>
+        <li>Inference (running the loop) and training (tuning the numbers) are
+        the two regimes. Next: the pieces themselves — the real answer is
+        messier than "words".</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="index.html"><span class="cap">Previous</span><span class="pg-title">How LLMs Actually Work</span></a>
+    <a class="pager-card" rel="next" href="tokens.html"><span class="cap">Next</span><span class="pg-title">Tokens: The Model's Alphabet</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

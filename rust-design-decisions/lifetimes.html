@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lifetimes: Constraints, Not Timers — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="lifetimes">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Three — Borrowing</p>
+    <h1>Lifetimes: Constraints, Not Timers</h1>
+    <p class="lede">The borrow checker answered every question on the
+    last page by itself, because it could read the whole function body.
+    Hand a reference to another function and the checker goes blind: it
+    will not re-derive, at every call site, which value must outlive
+    which borrow. So the answer travels in the signature, written in
+    apostrophes. Lifetimes are the most misnamed feature in the language
+    — not timers, not runtime state, but inequalities the compiler
+    solves and then throws away.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#why-annotations-exist">Why the annotations exist</a></li>
+        <li><a href="#the-classic-refusal">The classic refusal</a></li>
+        <li><a href="#the-sugar">The sugar: elision</a></li>
+        <li><a href="#no-sugar-in-structs">Structs get no sugar</a></li>
+        <li><a href="#reading-the-family">Reading the family</a></li>
+      </ol>
+    </nav>
+
+    <section id="why-annotations-exist">
+      <h2>Why the annotations exist</h2>
+      <p>Every refusal on the borrowing page turned on one question:
+      does the owner outlive every borrow aimed at its value? Inside one
+      function the checker answers that by reading the body — every line
+      is visible, every last use findable. A function, though, is
+      checked once, as a unit, and its callers never see the body. They
+      see the signature. If the signature does not state which value the
+      returned borrow is tied to, the checker must refuse the call,
+      because no body is available to prove it safe.</p>
+      <p>The book states the scale of the mechanism in one line —
+      <em>"Every reference in Rust has a lifetime"</em> — and then shows
+      that almost all of them are inferred: the annotations surface only
+      where the signature alone cannot settle the relationship, where,
+      in the book's words, <em>"Rust can't
+      tell"</em><a class="prov" data-src="research/lifetimes.md" href="links.html#s-lifetimes" title="lifetimes — research/lifetimes.md">[lifetimes]</a></p>
+      <p>Settling it requires a word for the thing being constrained. A
+      <dfn><a href="glossary.html#t-region">region</a></dfn> is a span
+      of the program — a stretch of the control flow — during which a
+      reference is guaranteed to stay valid. The notation
+      <code>&amp;'a T</code> decodes as: this reference is usable
+      within region <code>'a</code>, because the value it points to is
+      known to outlive <code>'a</code>. One region
+      <dfn><a href="glossary.html#t-outlives">outlives</a></dfn> another
+      when it lasts at least as long; the checker writes the claim as
+      <code>'owner: 'a</code> and treats it as an inequality to
+      satisfy.</p>
+      <p>What a lifetime is not, then, matters as much as what it is. It
+      is not a timer — nothing counts down. It is not runtime state —
+      you cannot print one, measure one, or shrink one while the program
+      runs. It is not a property of the value: the same value can be
+      borrowed under many regions in one program. A lifetime annotation
+      is a region variable the checker solves for, and the solution is
+      erased before the program runs. Two spans make the whole game
+      visible:</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 300"><title>In the accepted case the borrow's region fits inside the owner's region; in the rejected case the borrow's region extends past the owner's death and no solution exists</title>
+          <text class="t-dim" x="40" y="32" font-size="12">accepted — constraint solved</text>
+          <text class="t-dim" x="40" y="54" font-size="12">owner</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="40" y="60" width="560" height="22" rx="4"/>
+          <text class="t-dim" x="40" y="98" font-size="12">borrow</text>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="40" y="104" width="340" height="22" rx="4"/>
+          <text class="t-dim" x="40" y="170" font-size="12">rejected — no solution</text>
+          <text class="t-dim" x="40" y="192" font-size="12">owner</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="40" y="198" width="300" height="22" rx="4"/>
+          <text class="t-dim" x="40" y="230" font-size="12">borrow</text>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="40" y="236" width="340" height="22" rx="4"/>
+          <rect class="f-red s-ink" stroke-width="1.5" x="380" y="236" width="220" height="22" rx="4"/>
+          <text class="t-dim" x="40" y="282" font-size="12">the borrow's span sticks out past the owner's death</text>
+        </svg>
+        <figcaption>A region is a span of the program; the borrow's
+        span must fit inside the owner's.</figcaption>
+      </figure>
+      <p>In the accepted shape, the borrow's region fits inside the
+      owner's — the inequality has a solution, and the borrow is
+      granted. In the rejected shape, the borrow's region sticks out
+      past the owner's death, and no assignment of regions makes the
+      program true. That is all a lifetime error is: an unsolved system,
+      reported at the line where the contradiction was found.</p>
+    </section>
+
+    <section id="the-classic-refusal">
+      <h2>The classic refusal</h2>
+      <p>The error every Rust programmer meets first is <em>does not
+      live long enough</em>. The program is small and the refusal is
+      dense:</p>
+      <figure class="codeblock reject">
+        <figcaption>e0597.rs — a borrow that outlives its owner</figcaption>
+<pre data-verify="fail" data-error="E0597"><code class="language-rust">fn main() {
+    let r;
+    {
+        let s = String::from("hello");
+        r = &amp;s;
+    }
+    println!("{r}");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>rustc's refusal, captured</figcaption>
+<pre><code class="language-text">error[E0597]: `s` does not live long enough
+ --&gt; e0597.rs:5:13
+  |
+4 |         let s = String::from("hello");
+  |             - binding `s` declared here
+5 |         r = &amp;s;
+  |             ^^ borrowed value does not live long enough
+6 |     }
+  |     - `s` dropped here while still borrowed
+7 |     println!("{r}");
+  |                - borrow later used here
+...</code></pre>
+      </figure>
+      <p>Read the anatomy in this order, not top to bottom: the binding
+      is declared at line four; it is borrowed at line five; it is
+      dropped at line six while still borrowed; and the borrow is used
+      later, at line seven. The last annotation is the killer. If
+      <code>r</code> were never used after the closing brace, the
+      flow-sensitivity from the last page would shrink the borrow to
+      nothing past line five and the program would compile. It is the
+      use at line seven that stretches the borrow past the drop — the
+      drop is only where the contradiction is detected, not what causes
+      it.<a class="prov" data-src="research/lifetimes.md" href="links.html#s-lifetimes" title="lifetimes — research/lifetimes.md">[lifetimes]</a></p>
+      <p>The misreading this breeds is predictable: <em>does not live
+      long enough</em> gets read as <em>the declaration is in the wrong
+      place</em>, and the learner starts moving braces. The fix is never
+      the declaration. It is the later use: delete it, move it before
+      the value dies, or give the borrow an owner that lasts as long as
+      the use does. The remaining sections are about the notation that
+      says which of those you chose.</p>
+    </section>
+
+    <section id="the-sugar">
+      <h2>The sugar: elision</h2>
+      <p>If every reference needed its region spelled out, every
+      signature in every program would drown in apostrophes. Most do
+      not, because of <dfn><a href="glossary.html#t-lifetime-elision">lifetime
+      elision</a></dfn>: the rules that let common signature patterns
+      leave the annotations out entirely. The rules are
+      three.<a class="prov" data-src="research/lifetimes.md" href="links.html#s-lifetimes" title="lifetimes — research/lifetimes.md">[lifetimes]</a>
+      Each reference in an input position gets its own fresh region when
+      none is written. If exactly one region appears across the inputs,
+      every elided output position receives it. And in a method, the
+      region of the <code>&amp;self</code> or <code>&amp;mut self</code>
+      receiver flows to elided outputs.</p>
+      <p>The middle rule erases the apostrophes from most of the
+      language. The first line of the program two sections below —
+      <code>fn first_word(s: &amp;str) -&gt; &amp;str</code> — has one
+      input reference, so the output inherits its region, and the
+      checker reads the signature as if the region had been written on
+      both. Nothing was guessed: the pattern is unambiguous, so the
+      sugar is safe.</p>
+      <p>Two inputs break the sugar, because no rule can pick for the
+      checker:</p>
+      <figure class="codeblock reject">
+        <figcaption>longest_ambiguous.rs — two inputs, one output, no stated relationship</figcaption>
+<pre data-verify="fail" data-error="E0106"><code class="language-rust">fn longest(a: &amp;str, b: &amp;str) -&gt; &amp;str {
+    if a.len() &gt; b.len() { a } else { b }
+}
+fn main() {
+    let w = longest("alpha", "beta");
+    println!("{w}");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>rustc's refusal, captured</figcaption>
+<pre><code class="language-text">error[E0106]: missing lifetime specifier
+ --&gt; longest_ambiguous.rs:1:33
+  |
+1 | fn longest(a: &amp;str, b: &amp;str) -&gt; &amp;str {
+  |               ----     ----     ^ expected named lifetime parameter
+  |
+  = help: this function's return type contains a borrowed value, but the signature does not say whether it is borrowed from `a` or `b`
+help: consider introducing a named lifetime parameter
+  |
+1 | fn longest&lt;'a&gt;(a: &amp;'a str, b: &amp;'a str) -&gt; &amp;'a str {
+  |           ++++     ++          ++          ++
+
+error: aborting due to 1 previous error
+...</code></pre>
+      </figure>
+      <p>The help line states the ambiguity in plain words: <em>the
+      signature does not say whether it is borrowed from <code>a</code>
+      or <code>b</code></em>. The body might return either — the checker
+      refuses to read bodies, by design, so the signature must carry the
+      answer. Writing <code>&amp;'a</code> on both inputs and the
+      output says: the result is usable only while both inputs are
+      alive.</p>
+    </section>
+
+    <section id="no-sugar-in-structs">
+      <h2>Structs get no sugar</h2>
+      <p>Functions get the sugar because they have a fixed shape —
+      references flow in at known positions, one result flows out — and
+      three rules can cover that shape. A struct has no shape anyone can
+      read at a use site. A struct value is stored in locals, returned
+      from functions, nested inside other values, held exactly as long
+      as whatever holds it. There is no signature to consult at each of
+      those places, so the constraint must be stated once, in the type
+      itself.</p>
+      <p>Omit it and the checker names the omission:</p>
+      <figure class="codeblock reject">
+        <figcaption>e0106_missing.rs — a struct holding a borrow</figcaption>
+<pre data-verify="fail" data-error="E0106"><code class="language-rust">struct Parser {
+    text: &amp;str,
+}
+fn main() {
+    let p = Parser { text: "hi there" };
+    println!("{}", p.text);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>rustc's refusal, captured</figcaption>
+<pre><code class="language-text">error[E0106]: missing lifetime specifier
+ --&gt; e0106_missing.rs:2:11
+  |
+2 |     text: &amp;str,
+  |           ^ expected named lifetime parameter
+  |
+help: consider introducing a named lifetime parameter
+  |
+1 ~ struct Parser&lt;'a&gt; {
+2 ~     text: &amp;'a str,
+  |
+...</code></pre>
+      </figure>
+      <p>The help writes the fix out in full: <code>Parser&lt;'a&gt;</code>
+      with <code>text: &amp;'a str</code>. The annotation says: this
+      value holds a borrow, and <code>'a</code> names the region in
+      which that borrow must remain valid. Every place a
+      <code>Parser</code> value can live inherits the constraint — you
+      cannot store one somewhere its borrow has already died. Stated and
+      run:</p>
+      <figure class="codeblock accept">
+        <figcaption>parser_ok.rs — the constraint stated in the type</figcaption>
+<pre data-verify="run" data-expect="hello alpha"><code class="language-rust">struct Parser&lt;'a&gt; {
+    text: &amp;'a str,
+}
+
+fn longest_word&lt;'a&gt;(a: &amp;'a str, b: &amp;'a str) -&gt; &amp;'a str {
+    if a.len() &gt;= b.len() { a } else { b }
+}
+
+fn main() {
+    let p = Parser { text: "hello alpha" };
+    let other = String::from("beta");
+    let w = longest_word(p.text, &amp;other);
+    println!("{} {}", p.text, w);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">hello alpha hello alpha</code></pre>
+      </figure>
+      <p>The run confirms the annotated program compiles and prints its
+      line. Note what the single shared region on
+      <code>longest_word</code> buys: the result is usable only while
+      both inputs are alive — the conservative reading. When the logic
+      proves more — the result always comes from one input, say — two
+      named regions with a constraint between them can state that. What
+      the compiler will not do is pick a meaning for you; that refusal
+      is why it demanded the annotation.</p>
+    </section>
+
+    <section id="reading-the-family">
+      <h2>Reading the family</h2>
+      <p>The last two refusals are a matched pair — two ways for a
+      value to die while a borrow aimed at it is still live:</p>
+      <figure class="codeblock reject">
+        <figcaption>e0515.rs — two ways to lose a value under a live borrow</figcaption>
+<pre data-verify="fail" data-error="E0515"><code class="language-rust">fn first_word(s: &amp;str) -&gt; &amp;str {
+    let bytes = s.as_bytes();
+    for (i, &amp;item) in bytes.iter().enumerate() {
+        if item == b' ' {
+            return &amp;s[..i];
+        }
+    }
+    s
+}
+
+fn make(name: &amp;str) -&gt; &amp;str {
+    let s = String::from(name);
+    &amp;s
+}
+
+fn main() {
+    let w = first_word(&amp;String::from("hello world"));
+    println!("{w}");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>rustc's refusal, captured</figcaption>
+<pre><code class="language-text">error[E0515]: cannot return reference to local variable `s`
+  --&gt; e0515.rs:13:5
+   |
+13 |     &amp;s
+   |     ^^ returns a reference to data owned by the current function
+
+error[E0716]: temporary value dropped while borrowed
+  --&gt; e0515.rs:17:25
+   |
+17 |     let w = first_word(&amp;String::from("hello world"));
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ - temporary value is freed at the end of this statement
+   |                         |
+   |                         creates a temporary value which is freed while still in use
+18 |     println!("{w}");
+   |                - borrow later used here
+   |
+help: consider using a `let` binding to create a longer lived value
+   |
+17 ~     let binding = String::from("hello world");
+18 ~     let w = first_word(&amp;binding);
+   |
+...</code></pre>
+      </figure>
+      <p>The first refusal, <code>E0515</code>, is the owner inside the
+      function: <code>make</code> owns its <code>s</code>,
+      <code>s</code> dies when <code>make</code> returns, and no
+      caller's region can contain a value that is already gone — the
+      refusal says exactly that: <em>returns a reference to data owned
+      by the current function</em>. The second, <code>E0716</code>, is
+      the temporary: a value created inside a statement lives only to
+      the end of that statement, and the borrow it fed is still live at
+      the next line, kept alive by <code>w</code>'s use. It is the most
+      common lifetime error in practice, and rustc's help writes the
+      fix out: bind the value to a <code>let</code> first, then borrow
+      the binding.<a class="prov" data-src="research/lifetimes.md" href="links.html#s-lifetimes" title="lifetimes — research/lifetimes.md">[lifetimes]</a></p>
+      <p>Three misreadings account for most of the remaining flailing.
+      Reaching for <code>&amp;'static</code> everywhere: the
+      <dfn><a href="glossary.html#t-static-lifetime">static
+      lifetime</a></dfn> is the region that spans the entire program,
+      and only two kinds of data can honestly claim it — values baked
+      into the binary, and values deliberately kept for the whole run.
+      Most attempts to stamp <code>'static</code> onto an ordinary
+      borrow are refusals, not acceptances. Reading <code>'a</code> on
+      an output as if it created a region: it names a relationship among
+      the inputs and nothing more. And expecting the sugar in structs or
+      in trait methods: elision covers function signatures, and that is
+      all it covers.</p>
+      <p>Annotations constrain time — which spans must contain which.
+      Where a value lives in space is a separate decision, made from a
+      small menu of placements, and it is the subject of the next part
+      of this book: the menu itself, and the pointer types that walk
+      between its entries.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A lifetime is a region constraint — a span of control flow
+        in which a reference must stay valid — solved at compile time
+        and erased before the program runs.</li>
+        <li>Annotations exist because signatures hide bodies: the
+        outlives relationship must travel in the type when the checker
+        can no longer read the code that proves it.</li>
+        <li>Elision is sugar with three rules; a lone input region
+        flows to the outputs, which is why most functions never spell an
+        apostrophe.</li>
+        <li>Two input references into one output leave the relationship
+        ambiguous — the refusal asks you to name it — and structs get no
+        sugar: the constraint lives in the type.</li>
+        <li>Read does-not-live-long-enough backward: the later use
+        keeping the borrow alive is the fact to change, not the place
+        where the value dies.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="borrowing.html"><span class="cap">Previous</span><span class="pg-title">Borrowing: Aliasing XOR Mutability</span></a>
+    <a class="pager-card" rel="next" href="stack-and-heap.html"><span class="cap">Next</span><span class="pg-title">Stack and Heap: Owners and Views</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

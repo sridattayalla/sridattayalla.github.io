@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backpropagation and the Training Step — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="backprop">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Two — Training</p>
+    <h1>Backpropagation and the Training Step</h1>
+    <p class="lede">After this page you can say how the charge at the
+    top reaches every entry below — what a gradient is, why one
+    backward walk prices all of them, and what the update rule does
+    with the answer.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-slope">One number, eight billion knobs</a></li>
+        <li><a href="#sec-chain">The chain rule, run backward</a></li>
+        <li><a href="#sec-sweep">Why one walk suffices</a></li>
+        <li><a href="#sec-update">The move: slopes to new entries</a></li>
+        <li><a href="#sec-verify">The sweep, verified</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-slope">
+      <h2>One number, eight billion knobs</h2>
+      <p>The previous page ended with a question: one charge comes out
+      of the top of the machine, and eight billion entries sit below
+      it. Make the question precise. The charge is a function of every
+      entry — nudge any entry and the charge shifts, a little or a
+      lot, up or down. Training wants, for every single entry, the
+      answer to one local question: if this entry rises by a hair,
+      which way does the charge move, and how steeply?</p>
+      <p>That per-entry slope is this page's whole target, and no
+      calculus ceremony is needed to hold it — the nursery definition
+      is the working one: nudge the entry up by a hair, measure the
+      charge's response, divide response by hair. The
+      <dfn><a href="glossary.html#t-gradient">gradient</a></dfn> is
+      that slope computed for every entry at once: for each learned
+      table, a table of the same shape whose every cell holds that
+      cell's slope. A positive cell — raising that entry raises the
+      charge. A negative cell — raising it lowers the charge. And the
+      cell's size says how strongly.</p>
+      <p>Why slopes, and not something cleverer? Because a slope is a
+      direction and a step size in one number per knob, and the
+      cheapest improvement rule imaginable is then available: move
+      every knob a small step against its slope. Everything on this
+      page exists to make that one rule computable.</p>
+    </section>
+
+    <section id="sec-chain">
+      <h2>The chain rule, run backward</h2>
+      <p>The obstacle: the charge is not written in terms of the
+      entries. It is written as a long chain — entries feed tables,
+      tables feed the stream, the stream feeds scores, scores pass
+      through a softmax into probabilities, the probability on the
+      right piece sets the charge, and positions average. To price an
+      entry three floors down, a slope must pass through every link
+      between it and the charge. So name the chain: the
+      <dfn><a href="glossary.html#t-computational-graph">computational
+      graph</a></dfn> is the forward pass written as elementary steps
+      — lookups, multiplies, adds, the softmax — each step consuming
+      the previous steps' outputs. Part One built this graph floor by
+      floor; it was always a graph, and from here on that is how it
+      must be seen.</p>
+      <p>Slopes travel through chains by an old rule. The
+      <dfn><a href="glossary.html#t-chain-rule">chain rule</a></dfn>:
+      if a depends on b, and the charge depends on a, then the
+      charge's slope with respect to b is the charge's slope with
+      respect to a, times a's slope with respect to b —
+      <code>dL/db = dL/da * da/db</code>. One multiplication per link.
+      A slope that enters a link from above leaves below, multiplied
+      by that link's own local slope.</p>
+      <p>Start where the charge is. The topmost links — the softmax
+      and the charge together — have a combined local slope with a
+      famous name: probability minus truth. Take the machine's
+      probability for each piece of the vocabulary and subtract one at
+      the piece that actually came next. If the machine put forty
+      percent on the right piece, its top slope there is minus sixty
+      percent — too low, push it up — while small positive leftovers
+      sit on the wrong pieces and push them down. A right answer the
+      machine was already certain of gets a slope of nearly zero:
+      nothing left to say. The toy's backward walk begins with
+      exactly this subtraction:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the top of the backward walk:
+        probabilities, minus one at the right piece, averaged over
+        positions</figcaption>
+<pre><code class="language-python">    dlogits = np.zeros_like(cache['logits'])
+    dlogits[:-1] = softmax(cache['logits'][:-1])
+    dlogits[:-1][np.arange(n - 1), ids[1:]] -= 1.0
+    dlogits[:-1] /= (n - 1)</code></pre>
+      </figure>
+
+      <p>Below the top, two local shapes repeat all the way down the
+      tower. A learned table computes <code>y = xW</code>. Its slope
+      with respect to the table itself is the stored input,
+      transposed, times the incoming slope — a gradient the same
+      shape as the table, ready to move that table. Its slope with
+      respect to the input — the part that continues downward — is
+      the incoming slope times the table, transposed. The toy, at the
+      output table:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the local rule at a learned table:
+        stored input times incoming slope prices the table; incoming
+        slope times the table continues down</figcaption>
+<pre><code class="language-python">    grads['unemb'] = cache['hf'].T @ dlogits
+    dhf = dlogits @ P['unemb'].T</code></pre>
+      </figure>
+
+      <p>And at the add-backs, the skip lines from two pages back pay
+      off. An addition passes slope through unchanged to both of its
+      inputs: the slope reaching a join splits, one copy rides the
+      edit path backward through the half, the other rides the
+      identity path straight down, and the two are summed where the
+      stream's slope is needed. Part One promised that the learning
+      signal would take the skip road through every floor — here is
+      the road:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the backward side of an add-back:
+        the incoming slope rides both branches and sums at the
+        join</figcaption>
+<pre><code class="language-python">    dx1_branch, grads['ln2'] = rmsnorm_backward(cache['x1'], P['ln2'], dh2)
+    dx1 = dx2 + dx1_branch</code></pre>
+      </figure>
+    </section>
+
+    <section id="sec-sweep">
+      <h2>Why one walk suffices</h2>
+      <p>Assemble the procedure and give it its name.
+      <dfn><a href="glossary.html#t-backpropagation">Backpropagation</a></dfn>:
+      run the forward pass and keep every intermediate value; then,
+      starting from the charge, walk the computational graph in
+      reverse — apply the chain rule at each link, pass the result
+      down, and whenever a learned table is passed, record that
+      table's gradient. One walk, and every entry in the machine has
+      its slope — at a cost of roughly two to three times a single
+      forward pass
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>Why walk backward? A counting argument. Walking from the
+      charge downward, each intermediate slope is computed once and
+      then reused by every link that consumes it — the work of
+      pricing one intermediate is shared by all the entries below.
+      Walking the other way, from entries upward, prices one entry
+      per walk: eight billion walks. Backward is one walk. The
+      machinery that does this automatically has a name:
+      <dfn><a href="glossary.html#t-autograd">autograd</a></dfn> —
+      the system every modern framework ships, which records the
+      forward pass's steps as they run and generates the backward
+      walk from the recording. The toy hand-writes what autograd
+      would generate, which is the point of writing it by hand: the
+      magic turns out to be two lines per link, repeated.</p>
+      <p>The walk's price is memory. Every multiplier in the chain
+      rule is a value from the forward pass — the stored input in the
+      table rule, the probabilities in the top rule — so every
+      intermediate value must be kept until its link is passed. The
+      stored intermediates have a name:
+      <dfn><a href="glossary.html#t-activations">activations</a></dfn>
+      — the values a forward pass produces on its way to the charge.
+      Training must hold them all for the whole backward walk, which
+      is why training a model is memory-hungry in a way that
+      generating text is not: generation needs no backward walk and
+      throws the intermediates away as it goes
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+    </section>
+
+    <section id="sec-update">
+      <h2>The move: slopes to new entries</h2>
+      <p>Slopes in hand, the move itself is tiny.
+      <dfn><a href="glossary.html#t-gradient-descent">Gradient
+      descent</a></dfn>: every entry steps against its slope — new
+      value = old value minus step size times slope — because the
+      slope points uphill and the charge must come down. The step
+      size has a name of its own, the
+      <dfn><a href="glossary.html#t-learning-rate">learning
+      rate</a></dfn>. The toy's whole update is two lines:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the whole move: every entry,
+        against its slope, at the step size</figcaption>
+<pre><code class="language-python">    for name in params:
+        params[name] = params[name] - lr * grads[name]</code></pre>
+      </figure>
+
+      <p>Plain descent is stable only at step sizes so small that
+      learning crawls, and the reason is shape: some entries live on
+      persistently tiny slopes, others on huge ones, and one shared
+      step size mistreats both — too large for the twitchy entries,
+      too small for the quiet ones. The standard fix,
+      <dfn><a href="glossary.html#t-adamw">AdamW</a></dfn>, gives each
+      entry its own effective step: keep a running average of the
+      entry's slope, and a running average of its squared size; move
+      by the first divided by the square root of the second, times
+      the learning rate. The division cancels each entry's local
+      scale, so the effective step is roughly uniform across the
+      whole machine — which is what makes deep towers trainable at
+      all. A small per-update shrink of every entry toward zero,
+      decoupled weight decay, completes the recipe
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>The learning rate itself is a schedule, not one number. Runs
+      begin with a short warmup — a ramp from near zero over the
+      first fraction of a percent of steps — then decay along a slow
+      cosine curve to roughly a tenth of the peak
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.
+      The magnitudes tell the story: GPT-3, the largest of its era,
+      peaked at 0.00006; the 8B model peaks at 0.0003 and finishes at
+      0.00003
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.
+      The toy moved at 0.2 — a single small floor forgives what a
+      thirty-two-floor tower does not, so real towers take steps
+      hundreds to thousands of times smaller.</p>
+      <p>One full step, then, is three phases: a forward pass over a
+      batch for the charge, the backward walk for every slope, the
+      update for every entry. Training is that step repeated —
+      millions of times, for months
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+    </section>
+
+    <section id="sec-verify">
+      <h2>The sweep, verified</h2>
+      <p>How can the backward walk be trusted? Measure it against its
+      own definition. The nursery slope — nudge an entry, watch the
+      charge — can be computed directly for any single entry: nudge
+      up, nudge down, take the difference of the two charges, divide
+      by the distance between the nudges. The toy's fourth stage does
+      exactly this for random entries in every learned table and
+      compares the measured slope against the swept slope:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the definition, measured: nudge one
+        entry up and down, divide the charge's response by the
+        distance</figcaption>
+<pre><code class="language-python">            orig = flat[idx]
+            flat[idx] = orig + h
+            lp = loss_of(params, cfg, ids)
+            flat[idx] = orig - h
+            lm = loss_of(params, cfg, ids)
+            flat[idx] = orig
+            num = (lp - lm) / (2 * h)</code></pre>
+      </figure>
+
+      <p>The result, across every entry checked
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — trusting the
+        sweep</p>
+        <div class="worked-body">
+<pre><code class="language-text">the check, and the move it licenses
+(tiny_llm.py, stage 4):
+
+  method:  for each of the 13 learned
+           tables, 3 random entries; each
+           nudged up and down by 0.00001
+
+  measured slope vs swept slope:
+    worst relative error  4.79e-08
+    (less than five parts in a hundred
+     million, across every entry checked)
+
+  then the move, size 0.2:
+    charge  5.198491  -&gt;  1.629123</code></pre>
+        </div>
+      </div>
+
+      <p>The swept slopes are the measured slopes, to less than five
+      parts in a hundred million — the hand-written backward pass is
+      not an approximation of the rule; it is the rule. And the move
+      at the bottom of the panel is the previous page's step seen
+      from inside: every entry in the toy moved once against its
+      measured slope, and the charge fell accordingly.</p>
+      <p>The rule is now complete — a charge, a walk, a move — and
+      the remaining problem is matter. The toy's verified step runs
+      in milliseconds on a laptop. The same rule, run on the 8B
+      model's sixteen-million-piece batches, is hundreds of
+      quadrillions of multiply-adds per step, repeated millions of
+      times — arithmetic at a scale only one kind of machine does
+      well, and that machine's shape feeds back into every choice
+      that follows, from batch size to model size. Where the math
+      lives is the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The gradient is the charge's slope per entry: for every
+        learned table, a same-shaped table of slopes, each cell saying
+        which way to move that entry and how steeply.</li>
+        <li>The chain rule runs slopes backward link by link: at the
+        top it is probability minus truth; at a learned table,
+        stored input times incoming slope; at an add-back, the slope
+        splits over both branches and sums.</li>
+        <li>Backpropagation is one backward walk that prices every
+        entry at roughly two to three times a forward pass — and its
+        price is memory: every intermediate value (the activations)
+        must be kept for the walk.</li>
+        <li>The move is gradient descent — entries step against
+        their slopes at the learning rate. AdamW rescales each entry's
+        step by its own recent history, which is what makes deep
+        towers trainable.</li>
+        <li>The toy's hand-written sweep matched measured slopes to
+        less than one part in a hundred million, then moved its
+        charge from 5.198 to 1.629 in one step.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="training-objective.html"><span class="cap">Previous</span><span class="pg-title">What Training Actually Optimizes</span></a>
+    <a class="pager-card" rel="next" href="gpus.html"><span class="cap">Next</span><span class="pg-title">GPUs: Where the Math Lives</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

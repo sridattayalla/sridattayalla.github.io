@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Processes, threads, and context switches — Under the Await</title>
+  <meta name="description" content="What a process really contains, what a thread adds, how a context switch works, what it costs, and why shared memory creates data races.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-02">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Processes, threads, and context switches</h1>
+
+      <p>The previous chapter left you with a single running program:
+        registers plus a call stack, sealed inside user space. Real machines
+        do not run one program at a time. They run your browser, your
+        editor, your music, and a hundred background helpers at once, often
+        on a handful of cores. This chapter is about the juggling act: what
+        the kernel actually switches when it shares a core, what that swap
+        costs, and what happens when one program wants several streams of
+        execution at once. Every tradeoff later in this book traces back to
+        numbers introduced here.</p>
+
+      <h2>The process: a program in motion</h2>
+
+      <p>Run the same program twice and you have two processes. A process is
+        a program in motion: a private address space (the memory map from
+        the last chapter: code, globals, heap), a table of open files and
+        network connections, and at least one thread, the thing that
+        actually executes instructions. The process is the container; the
+        thread is the spark inside it.</p>
+
+      <p>The kernel guards the walls between processes with hardware help.
+        One process cannot read another's memory, cannot use another's open
+        files, and cannot even see that they exist. When your laptop feels
+        like a room full of cooperating programs, that illusion is
+        manufactured: it is one machine rapidly swapping between
+        well-separated boxes.</p>
+
+      <h2>The thread: a stream of execution</h2>
+
+      <p>Nothing forces a process to contain exactly one stream of
+        execution. A thread is an independent stream inside a process: its
+        own call stack, its own registers and instruction pointer, and its
+        own turn on the CPU. Everything else is shared with sibling
+        threads: the heap, the globals, the open files. Two threads in one
+        process are two different answers to "where am I and what am I
+        working on", walking through the same memory.</p>
+
+      <p>Looked at from chapter 1, a thread is precisely the frozen-stack
+        image we ended on: <a href="01-how-programs-run.html">registers
+        plus a call stack</a>, the minimum state a computation needs. A
+        process is that state plus a private world to walk through. That is
+        the whole anatomy, and it explains both the power and the danger of
+        threads, as the diagram shows.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 220" role="img">
+          <title>One process containing two threads with separate stacks and registers, sharing code, globals and heap</title>
+          <rect class="box" x="30" y="24" width="440" height="176" rx="10"/>
+          <text class="label" x="50" y="48" text-anchor="start">one process: one address space</text>
+          <rect class="box" x="50" y="66" width="120" height="36" rx="6"/>
+          <text class="label" x="110" y="89" text-anchor="middle">code</text>
+          <rect class="box" x="185" y="66" width="120" height="36" rx="6"/>
+          <text class="label" x="245" y="89" text-anchor="middle">heap</text>
+          <rect class="box" x="320" y="66" width="120" height="36" rx="6"/>
+          <text class="label" x="380" y="89" text-anchor="middle">globals</text>
+          <rect class="box" x="70" y="126" width="170" height="52" rx="6"/>
+          <text class="label" x="155" y="156" text-anchor="middle">thread A's stack</text>
+          <rect class="box" x="265" y="126" width="170" height="52" rx="6"/>
+          <text class="label" x="350" y="156" text-anchor="middle">thread B's stack</text>
+          <line class="lane" x1="240" y1="152" x2="492" y2="122"/>
+          <line class="lane" x1="435" y1="152" x2="492" y2="176"/>
+          <rect class="box accent" x="496" y="102" width="118" height="40" rx="6"/>
+          <text class="label" x="555" y="126" text-anchor="middle">A's registers</text>
+          <rect class="box accent" x="496" y="156" width="118" height="40" rx="6"/>
+          <text class="label" x="555" y="180" text-anchor="middle">B's registers</text>
+        </svg>
+        <figcaption>Figure 1: a process with two threads. Stacks and
+          registers belong to each thread; everything to their left is
+          shared.</figcaption>
+      </figure>
+
+      <p>The payoff is real parallelism: on a machine with several cores,
+        two threads of one process can compute at the same instant, because
+        they are independent streams that happen to share a world. The
+        hazard comes packaged with the payoff: those streams share the heap
+        and run on independent clocks. We will get to the resulting bug in
+        a moment, because first you need the machine's juggling act.</p>
+
+      <h2>The context switch: how one core fakes many</h2>
+
+      <p>A core executes one thread at a time, full stop. The impression of
+        simultaneity comes from rapid swapping. Each swap is what we call a
+        context switch: the kernel saves every register of the outgoing
+        thread into a small save area near its stack, points the stack
+        pointer at the incoming thread's stack, restores its registers,
+        and jumps to its saved instruction pointer. From the threads'
+        points of view nothing happened; each simply experienced a gap in
+        time, like a daydream you don't remember starting.</p>
+
+      <p>Two things trigger a switch. The first is the timer interrupt. The
+        hardware clock pokes the CPU at a fixed cadence, and on each poke
+        the kernel's scheduling code may decide that the current thread has
+        had its turn. This arrangement is called preemptive scheduling:
+        the kernel can take the CPU away from a thread at any instant,
+        without asking, which is what stops one busy loop from hogging a
+        core forever. The second trigger is a thread asking the kernel for
+        something that is not ready yet, such as data from a socket where
+        no data has arrived. Rather than burn the core staring at an empty
+        buffer, the kernel puts the asking thread to sleep on the spot and
+        switches to someone runnable. Chapter 4 lives entirely inside that
+        second trigger.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 150" role="img">
+          <title>A timeline of one core: thread A runs, a switch, thread B runs, another switch</title>
+          <line class="lane" x1="40" y1="76" x2="600" y2="76"/>
+          <rect class="box" x="50" y="58" width="120" height="36" rx="6"/>
+          <text class="label" x="110" y="81" text-anchor="middle">A runs</text>
+          <rect class="box accent" x="185" y="58" width="120" height="36" rx="6"/>
+          <text class="label" x="245" y="81" text-anchor="middle">switch</text>
+          <rect class="box" x="320" y="58" width="120" height="36" rx="6"/>
+          <text class="label" x="380" y="81" text-anchor="middle">B runs</text>
+          <rect class="box accent" x="455" y="58" width="120" height="36" rx="6"/>
+          <text class="label" x="515" y="81" text-anchor="middle">switch</text>
+          <text class="label muted" x="245" y="40" text-anchor="middle">timer interrupt</text>
+          <text class="label muted" x="110" y="122" text-anchor="middle">save A's registers</text>
+          <text class="label muted" x="515" y="122" text-anchor="middle">load B's registers</text>
+        </svg>
+        <figcaption>Figure 2: one core, time-sliced. Each switch costs
+          about a microsecond; the cache aftermath costs more.</figcaption>
+      </figure>
+
+      <p>What does a switch cost? Measured on modern Linux, swapping
+        between two threads locked to the same core takes roughly 1.2 to
+        1.6 µs, and about 2.2 to 2.3 µs when the kernel is free to move
+        threads between cores. Those are the direct costs, the bookkeeping
+        alone. The indirect cost is usually larger and hides in the caches:
+        each thread warms the CPU's caches with its own data, and a switch
+        hands the next thread a cache still smelling of the last one. A
+        thread that migrates between cores arrives with cold caches and a
+        cold address-translation cache, and pays for the privilege.
+        Switching between threads of the same process is cheaper than
+        switching between processes, because the memory map stays put and
+        the translation hardware stays warm.</p>
+      <!-- fs: fact sheet §1 — Bendersky 2018: ~1.2–1.5 µs per switch pinned, ~2.2 µs unpinned; Orlov 2023 replication: 1.3–1.6 µs pinned, ~2.3 µs unpinned -->
+
+      <p>Threads also cost memory before they cost time. Each one reserves
+        its own stack: 8 MiB by default on Linux, about 1 MiB on Windows.
+        Like the process stack from chapter 1, that reservation is virtual
+        and only becomes real RAM as the stack grows. Creating a thread is
+        measured at roughly 5 to 20 µs, and the kernel has hard ceilings on
+        how many it will give one process. These are small numbers that
+        turn into big ones through multiplication, which is exactly the
+        arithmetic of chapter 4.</p>
+      <!-- fs: fact sheet §1 — Linux default per-thread stack 8 MiB virtual (2 MiB on 32-bit); Windows ~1 MiB (MSDN CreateThread) -->
+      <!-- fs: fact sheet §1 and §6 — thread creation measured ~5–20 µs on modern Linux; practical ceiling a few thousand to tens of thousands of threads -->
+
+      <h2>Shared memory, shared trouble</h2>
+
+      <p>Now the promised bug. Threads share the heap, and the machine
+        offers no "do these three instructions as one" guarantee.
+        <code>counter += 1</code> is three instructions: load the value,
+        add one, store it back. Run two threads through that loop a hundred
+        thousand times each and some load-add-store sequences interleave:
+        both threads load 41, both store 42, and one increment is lost
+        forever. A data race is exactly this situation: two threads
+        touching the same memory at the same moment with at least one
+        writing, so the outcome depends on interleaving luck. The program
+        below demonstrates it in pure Python.</p>
+
+      <pre><code class="language-python">import threading
+
+counter = 0
+
+def bump(times):
+    global counter
+    for _ in range(times):
+        counter += 1      # load, add, store: three separate steps
+
+threads = [threading.Thread(target=bump, args=(100_000,))
+           for _ in range(2)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+
+print(counter)            # 200000 in theory, often less in practice</code></pre>
+
+      <p>Run it a few times and see the number wander below the expected
+        total. Python's global interpreter lock, a big lock inside the
+        interpreter itself, narrows the window but does not close it; in C
+        or Java the same demonstration loses more updates, more often.</p>
+
+      <p>The classic fix is a mutex, short for mutual exclusion: a lock
+        that admits one thread at a time. A thread that reaches a locked
+        mutex waits (the kernel puts it to sleep and switches, as above)
+        until the holder releases it. Wrap the update and the race is
+        gone:</p>
+
+      <pre><code class="language-python">lock = threading.Lock()
+
+def bump(times):
+    global counter
+    for _ in range(times):
+        with lock:        # one thread at a time past this line
+            counter += 1
+
+# result: exactly 200000, every run</code></pre>
+
+      <p>Mutexes bring their own bill. Each lock and unlock is a possible
+        sleep and a possible context switch, and threads that lock in
+        different orders can deadlock, each forever waiting for the other.
+        The discipline works, but it means the cheapest thing about
+        threads, shared memory, is guarded by one of the most expensive
+        habits in computing. Keep that tension in mind; it returns in
+        force when we compare threads with event-driven designs in chapter
+        8.</p>
+
+      <p>Here is where we stand. A thread is a real, kernel-visible stream
+        of execution with its own stack, and the kernel will happily put it
+        to sleep inside a call that must wait for data. That is a genuinely
+        pleasant programming model: your code reads like the story it tells.
+        The question this book eventually answers is what happens when you
+        need not two threads but twenty thousand waiters. Before that
+        question can even be asked, you need to see the doorway every
+        waiting thread is sleeping in front of, which is the next
+        chapter.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A process is a program in motion: a private address space, a
+            table of open files, and at least one thread.</li>
+          <li>A thread is an independent stream of execution: its own stack
+            and registers, sharing the address space with its siblings.</li>
+          <li>A context switch saves one thread's registers, swaps the
+            stack pointer, and restores another's; preemptive scheduling
+            means the kernel can do this to you at any instant.</li>
+          <li>Switches cost microseconds directly and more in cache damage;
+            each thread reserves megabytes of stack before it does any
+            work.</li>
+          <li>Shared memory plus independent timing gives data races; a
+            mutex admits one thread at a time, at the price of sleeps,
+            switches, and deadlock discipline.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

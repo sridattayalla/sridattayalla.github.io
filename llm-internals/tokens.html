@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tokens: The Model's Alphabet — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="tokens">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Machine</p>
+    <h1>Tokens: The Model's Alphabet</h1>
+    <p class="lede">After this page you can say exactly what a language model
+    sees when you send it text — and why that explains its most famous
+    blunders.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-menu">Why not letters? Why not words?</a></li>
+        <li><a href="#sec-bpe">Building the list: merge what is frequent</a></li>
+        <li><a href="#sec-ids">What the model actually sees</a></li>
+        <li><a href="#sec-reserved">The reserved entries</a></li>
+        <li><a href="#sec-back">Turning pieces back into text</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-menu">
+      <h2>Why not letters? Why not words?</h2>
+      <p>The previous page left a debt: "pieces of text" is doing a lot of
+      work in that sentence. Time to pay it. The model's reach is finite — it
+      can only process so many pieces at once, and everything downstream
+      scales with the piece count. Cut text into letters and a page becomes
+      thousands of pieces of the dullest kind. Cut it into whole words and
+      the list of possible pieces explodes: every name, every typo, every
+      conjugation needs its own entry, and the list still meets words it has
+      never seen, with no way to spell them.</p>
+      <p>The compromise every modern system uses: cut text into frequent
+      fragments, somewhere between letters and words. Common words become
+      single pieces; rare words shatter into reusable shards. The
+      <dfn><a href="glossary.html#t-vocabulary">vocabulary</a></dfn> is the
+      fixed list of pieces the model reads and writes — set before training,
+      frozen after. The sizes vary by family: the list GPT-3 reads holds
+      50,257
+      entries <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>;
+      Llama 2 used 32,000 and Llama 3 uses 128,000, packing more of each rare
+      word into a single
+      piece <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>.</p>
+      <p>Both budgets explain the strange middle size of the pieces. Whole
+      words would waste the menu on the rare — every surname, typo, and
+      conjugation demanding its own entry. Single characters would waste the
+      reach on the common — every short, frequent word re-spelled from
+      scratch, slot after slot. Fragments split the difference: the frequent
+      words of a language are few, so they fuse into single pieces, while
+      everything rare shatters into shards the menu already owns. The menu
+      stays modest, the reach stays long, and the same fragments serve both
+      jobs.</p>
+    </section>
+
+    <section id="sec-bpe">
+      <h2>Building the list: merge what is frequent</h2>
+      <p>Where does the list come from?
+      <dfn><a href="glossary.html#t-bpe">BPE</a></dfn> — byte pair encoding —
+      is the standard recipe, and it is delightfully dumb. Start from single
+      characters. Count every pair of adjacent characters across a large body
+      of training text. Glue the most frequent pair into one new entry — that
+      rule is called a <dfn><a href="glossary.html#t-merge">merge</a></dfn> —
+      apply it everywhere, recount, and repeat until the list reaches its
+      budget. Frequent patterns fuse early ("th", "the"), rare ones never
+      fuse at all.</p>
+      <p>The companion script trains one on a toy body of text so you can
+      watch every
+      step <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — twelve merges, start to
+        finish</p>
+        <div class="worked-body">
+<pre><code class="language-text">training text: "the cat sat on the mat. the cat ate the rat.
+                the rat ate the cat."     (16 words, 11 distinct letters)
+
+merge  1: 'a'  + 't'   -> 'at'
+merge  2: 'e'  + '&lt;/w&gt;' -> 'e&lt;/w&gt;'        ('&lt;/w&gt;' marks a word end)
+merge  3: 't'  + 'h'   -> 'th'
+merge  4: 'th' + 'e&lt;/w&gt;' -> 'the&lt;/w&gt;'
+merge  5: 'at' + '&lt;/w&gt;' -> 'at&lt;/w&gt;'
+merge  6: 'at' + '.'   -> 'at.'
+merge  7: 'at.'+ '&lt;/w&gt;' -> 'at.&lt;/w&gt;'
+merge  8: 'c'  + 'at&lt;/w&gt;' -> 'cat&lt;/w&gt;'
+merge  9: 'at' + 'e&lt;/w&gt;' -> 'ate&lt;/w&gt;'
+merge 10: 's'  + 'at&lt;/w&gt;' -> 'sat&lt;/w&gt;'
+merge 11: 'o'  + 'n'   -> 'on'
+merge 12: 'on' + '&lt;/w&gt;' -> 'on&lt;/w&gt;'
+
+final vocabulary: 24 entries = 12 starting symbols + 12 merges</code></pre>
+        </div>
+      </div>
+
+      <p>Encoding a sentence means replaying the merges in learned order and
+      printing row numbers:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — encoding</p>
+        <div class="worked-body">
+<pre><code class="language-text">text:    "the cat ate the rat."
+pieces   the&lt;/w&gt;   cat&lt;/w&gt;   ate&lt;/w&gt;   the&lt;/w&gt;   r   at.&lt;/w&gt;
+ids      15        19        20        15        9   18</code></pre>
+        </div>
+      </div>
+
+      <p>Notice the last word. "the" is one piece, but "rat." shatters into
+      "r" plus "at." — because merge six glued "at" to the period before
+      "rat" ever had a chance to form. The gluing is greedy and local, and
+      its accidents are permanent: this vocabulary can never print "rat" as
+      one piece <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>.</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — one merge, applied to one word</figcaption>
+<pre><code class="language-python">def merge_word(word, pair, merged):
+    """Replace every adjacent occurrence of `pair` inside `word`."""
+    parts, i, out = list(word), 0, []
+    while i < len(parts) - 1:
+        if (parts[i], parts[i + 1]) == pair:
+            out.append(merged)
+            i += 2
+        else:
+            out.append(parts[i])
+            i += 1
+    if i < len(parts):
+        out.append(parts[i])
+    return tuple(out)</code></pre>
+      </figure>
+
+      <p>Real systems refine the recipe in one big way.
+      <dfn><a href="glossary.html#t-byte-level-bpe">Byte-level BPE</a></dfn>
+      starts from the 256 raw bytes instead of characters, so any input is
+      representable — any language, any emoji, any mangled typo — and there
+      is no unknown symbol, ever. GPT-2 learned roughly 50,000 merges this
+      way over web
+      text <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>.</p>
+      <p>One consequence deserves emphasis before moving on: the list is part
+      of the model, not an industry convention. Train on different text, or
+      set a different budget of entries, and the merges come out different —
+      the same sentence then shatters at different joints. That is why
+      switching between model families moves the seams, and why a system
+      built around one model cannot hand its piece lists to another:
+      everything must be re-cut from the raw text.</p>
+    </section>
+
+    <section id="sec-ids">
+      <h2>What the model actually sees</h2>
+      <p>After cutting, the input is a list of integers. A
+      <dfn><a href="glossary.html#t-token-id">token id</a></dfn> is simply the
+      piece's row number in the vocabulary — no more, no less. The model
+      never sees letters, words, or punctuation; it sees these numbers, and
+      only these numbers.</p>
+      <p>That single fact explains the most viral failure in the field.
+      Ask a model how many times the letter r appears in "strawberry" and it
+      will happily get it wrong. Look at what it actually
+      received <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the strawberry input</p>
+        <div class="worked-body">
+<pre><code class="language-text">text:      "strawberry"
+pieces     st        raw       berry
+ids        301       1831      8396
+r count    0         1         2      (total 3 — but no letter is in the input)</code></pre>
+        </div>
+      </div>
+
+      <p>The question "how many r's" is a question about letters. The letters
+      were destroyed at the door. What the model holds are three row numbers
+      whose pieces happen to contain zero, one, and two r's — and to answer
+      correctly it would have to have memorized, during training, the letter
+      count of every vocabulary entry. Sometimes it has; often it has not.
+      This is a boundary problem, not a reasoning problem — like asking
+      someone to count a building's windows from a photograph of its
+      door.</p>
+      <p>The same boundary cuts in surprising places. A leading space
+      typically travels with the word that follows it, so " cat" and "cat"
+      are different pieces — and "The cat sat on the" is five pieces, four of
+      which start with a
+      space <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>.
+      Numbers split at unpredictable joints: "15,000" arrives as three
+      pieces — "15", ",", "000" — which is why arithmetic on large numbers
+      goes
+      wrong <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>.
+      English averages about four characters per piece on modern lists
+      <a class="prov" data-src="research/tokenization.md" href="links.html#s-tokenization" title="tokenization — research/tokenization.md">[tokenization]</a>,
+      so a thousand-word essay is roughly thirteen hundred pieces of input.</p>
+    </section>
+
+    <section id="sec-reserved">
+      <h2>The reserved entries</h2>
+      <p>Some entries in the list are not text at all. A
+      <dfn><a href="glossary.html#t-special-token">special token</a></dfn> is
+      a reserved piece that acts as a control signal. You have already met
+      one: the stop piece from two pages back, the one that ends the writing
+      loop. GPT-2's vocabulary is 256 byte entries, plus 50,000 merged
+      entries, plus exactly one reserved stop piece — 50,257 in
+      all <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>.
+      Later systems reserve more: markers that separate the user's text from
+      the system's instructions, markers for tools and documents. Part Three
+      shows what those buy.</p>
+      <div class="warn"><span class="cap">Watch out</span>
+        <p>Because reserved pieces look like ordinary text positions, a
+        malicious input containing something that resembles one can shift
+        what the model believes about the conversation. Production systems
+        filter for this at the boundary; the vulnerability exists precisely
+        because text and control share one list.</p>
+      </div>
+    </section>
+
+    <section id="sec-back">
+      <h2>Turning pieces back into text</h2>
+      <p>Output runs the mirror operation.
+      <dfn><a href="glossary.html#t-detokenization">Detokenization</a></dfn>
+      is concatenating the pieces' text together — the model emits a row
+      number, the system prints its piece, done. There is one wrinkle worth
+      knowing: pieces are byte strings, and a single character can straddle
+      two pieces, so a system that streams text as pieces arrive must hold
+      back a partial character until its tail shows
+      up <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      That is why streamed replies occasionally pause for a beat mid-word:
+      the machinery is waiting for the rest of a character, not thinking
+      harder.</p>
+      <p>So the full picture of the boundary: text in, integers out; integers
+      in, text out. Everything between is the model. But an integer is a
+      label, not a meaning — row 15 and row 16 are as unrelated as jersey
+      numbers. The next page gives every row its meaning, as numbers the
+      model can actually multiply.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The vocabulary is a fixed menu of fragments; the model reads and
+        writes from the same list, and can never print what the list cannot
+        spell.</li>
+        <li>BPE builds the menu by gluing the most frequent adjacent pairs —
+        greedy, local, and permanent in its accidents.</li>
+        <li>A token id is a row number; letters are destroyed at the door and
+        never reach the model.</li>
+        <li>Strawberry-style blunders are boundary artifacts — the model was
+        never shown the letters it is asked to count.</li>
+        <li>Next: a row number carries no meaning, so the model keeps a table
+        that gives each row one — as numbers it can multiply.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="core-idea.html"><span class="cap">Previous</span><span class="pg-title">The Core Idea: Predict the Next Token</span></a>
+    <a class="pager-card" rel="next" href="embeddings.html"><span class="cap">Next</span><span class="pg-title">Embeddings: Tokens Become Vectors</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

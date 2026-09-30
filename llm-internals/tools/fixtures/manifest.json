@@ -1,0 +1,12 @@
+{
+  "site": "Fixture contract",
+  "external_links_page": "links.html",
+  "glossary_page": "glossary.html",
+  "allowed_code_languages": ["python", "text"],
+  "default_word_window": [1200, 2200],
+  "pages": [
+    { "file": "broken.html", "id": "broken", "title": "Broken Fixture", "word_window": [50, 400] },
+    { "file": "valid.html", "id": "valid", "title": "Valid Fixture", "word_window": [50, 400] },
+    { "file": "glossary.html", "id": "glossary", "title": "Glossary", "word_window": [20, 200] }
+  ]
+}

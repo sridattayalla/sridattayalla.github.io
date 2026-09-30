@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tokio's sync primitives — Under the Await</title>
+  <meta name="description" content="Why tokio's Mutex parks a task instead of a worker: waiter queues of wakers, semaphores, mpsc and the channel family, backpressure, and Notify.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p04-08">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>Tokio's sync primitives</h1>
+
+      <p>The last three chapters were about tasks waiting on the world: a
+        socket, a clock. Most waiting in a real program is much closer to
+        home. Task A cannot proceed until task B releases a lock, fills a
+        queue, finishes a computation, or simply rings a bell. This chapter
+        is about that waiting, and it begins with a rule you already know:
+        never <a href="01-runtime-overview.html">park a worker</a>. Every
+        primitive below is the same trick applied to a different shape of
+        waiting: park the <a href="02-task-anatomy.html">task</a>, never the
+        thread.</p>
+
+      <h2>The wrong park</h2>
+
+      <p>Reach for <code>std::sync::Mutex</code> inside async code and the
+        trouble is not the mutex; it is what the mutex does on contention.
+        <code>lock()</code> on a held lock blocks the calling OS thread. If
+        the caller is a worker, you have just seized a scheduler asset: the
+        worker's entire <a href="03-scheduler.html">local queue</a> of
+        runnable tasks now sits behind one lock, and if the lock's current
+        owner is itself waiting for a task stranded on that worker, you have
+        a deadlock. The official guidance is blunt: do not hold a std mutex
+        guard across an <code>.await</code>; use the async mutex or move the
+        work to <a href="04-blocking-pool.html">the blocking pool</a>.
+        <!-- fs: research/tokio-internals.md §7 — std Mutex guard not Send; holding across await can deadlock; docs recommend tokio::sync::Mutex or spawn_blocking --></p>
+
+      <h2>Park the task, not the thread</h2>
+
+      <p><code>tokio::sync::Mutex</code> makes one change to the contract,
+        and it changes everything: <code>lock()</code> is async. On
+        contention, the losing task does not block anybody. It links a node
+        holding its <a href="../03-rust-async/03-waker-and-context.html">waker</a>
+        into the lock's waiter queue and returns <code>Pending</code>. The
+        worker immediately moves on to other work. When the guard is
+        dropped, the lock hands the permit to the head of the queue, that
+        task's waker fires, the scheduler queues it, and its next poll
+        resumes holding the lock. Underneath, tokio's mutex is a thin
+        wrapper over a semaphore with a fair, first-in-first-out permit
+        queue. <!-- fs: research/tokio-internals.md §7 — tokio::sync::Mutex is backed by semaphore::Semaphore, FIFO/fair permit queue; waiting tasks yield instead of blocking the OS thread --></p>
+
+      <pre><code class="language-rust">use tokio::sync::Mutex;
+
+let lock = Mutex::new(ledger);
+
+// the guard may cross .await points: the worker stays free
+let mut guard = lock.lock().await;
+let entry = fetch_row().await;   // awaiting while holding: legal
+guard.push(entry);
+drop(guard);                     // permit goes to the next waiter</code></pre>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 235" role="img">
+          <title>Two mutexes compared: std parks the worker thread, tokio parks only the task's waker</title>
+          <text class="label muted" x="150" y="20" text-anchor="middle">std Mutex: the THREAD parks</text>
+          <rect class="box" x="30" y="40" width="120" height="46" rx="8"/>
+          <text class="label" x="90" y="59" text-anchor="middle">worker</text>
+          <text class="label muted" x="90" y="77" text-anchor="middle">asleep in kernel</text>
+          <line class="arrow" x1="150" y1="63" x2="188" y2="63"/>
+          <polygon class="arrow-head" points="188,58 198,63 188,68"/>
+          <rect class="box" x="200" y="40" width="110" height="46" rx="8"/>
+          <text class="label" x="255" y="59" text-anchor="middle">lock owner</text>
+          <text class="label muted" x="255" y="77" text-anchor="middle">elsewhere</text>
+          <rect class="box" x="30" y="150" width="60" height="32" rx="4"/>
+          <text class="label muted" x="60" y="170" text-anchor="middle">task</text>
+          <rect class="box" x="100" y="150" width="60" height="32" rx="4"/>
+          <text class="label muted" x="130" y="170" text-anchor="middle">task</text>
+          <rect class="box" x="170" y="150" width="60" height="32" rx="4"/>
+          <text class="label muted" x="200" y="170" text-anchor="middle">task</text>
+          <text class="label muted" x="140" y="212" text-anchor="middle">local queue: nobody polls them</text>
+          <text class="label muted" x="480" y="20" text-anchor="middle">tokio Mutex: the TASK parks</text>
+          <rect class="box accent" x="350" y="40" width="120" height="46" rx="8"/>
+          <text class="label" x="410" y="59" text-anchor="middle">worker</text>
+          <text class="label muted" x="410" y="77" text-anchor="middle">runs other tasks</text>
+          <rect class="box" x="500" y="40" width="110" height="46" rx="8"/>
+          <text class="label" x="555" y="59" text-anchor="middle">the lock</text>
+          <text class="label muted" x="555" y="77" text-anchor="middle">waiter queue</text>
+          <rect class="box" x="500" y="150" width="52" height="32" rx="4"/>
+          <text class="label mono" x="526" y="170" text-anchor="middle">waker</text>
+          <rect class="box" x="560" y="150" width="52" height="32" rx="4"/>
+          <text class="label mono" x="586" y="170" text-anchor="middle">waker</text>
+          <line class="arrow" x1="555" y1="86" x2="555" y2="146"/>
+          <polygon class="arrow-head" points="550,146 555,156 560,146"/>
+          <text class="label muted" x="450" y="212" text-anchor="middle">tasks yield; the worker stays busy</text>
+        </svg>
+        <figcaption>Figure 1: the same contention, two parking policies. On
+          the right, the waiter queue is a list of wakers, and dropping the
+          guard hands the permit to the head of the line.</figcaption>
+      </figure>
+
+      <p>Cost honesty, since the docs insist on it: the async mutex is more
+        expensive than the std one. For a tiny critical section that never
+        crosses an <code>.await</code>, std's mutex is the better tool. The
+        async one earns its keep exactly when the guard must survive across
+        suspension. <!-- fs: research/tokio-internals.md §7 — cost tradeoff: async mutex more expensive; use std for short critical sections that don't cross await --></p>
+
+      <h2>The semaphore</h2>
+
+      <p>A <strong>semaphore</strong> is a counter of permits.
+        <code>acquire().await</code> takes one if any exist, or parks the
+        caller in the same fair, first-in-first-out waiter queue as the
+        mutex; the guard returned by <code>acquire</code> puts the permit
+        back on drop. Because the queue is fair, permits are handed out in
+        the order tasks asked for them, which makes the semaphore
+        predictable under contention in a way lock-free counters are not.
+        The mutex, the bounded queue below, and half the ecosystem's rate
+        limiters are all semaphores in costume: a connection limiter is a
+        semaphore of size N, a mutex is a semaphore of size one.</p>
+
+      <pre><code class="language-rust">use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+let sem = Arc::new(Semaphore::new(3)); // three permits
+
+let permit = sem.clone().acquire_owned().await?;
+do_scoped_work().await;   // at most three tasks ever pass the gate
+drop(permit);             // permit returns; the queue head wakes</code></pre>
+
+      <h2>Channels</h2>
+
+      <p>A <strong>channel</strong> is a pipe for handing values between
+        tasks: one side sends, the other receives, and both sides may
+        legitimately have to wait. Waiting is where the chapter's rule
+        bites, so every tokio channel parks tasks, never workers: a blocked
+        sender or receiver is a waker on a bench, and the worker walks away
+        to other work. Tokio ships five shapes, and choosing among them is
+        mostly answering two questions: how many producers and consumers
+        must share the pipe, and must consumers see every value, or only
+        the newest, or only the ones they can keep up with?</p>
+
+      <h3>mpsc: the workhorse</h3>
+
+      <p><strong>mpsc</strong> means multi-producer, single-consumer, and it
+        is the default pipe of async Rust. The bounded version has a
+        capacity you choose, and its superpower is what happens when the
+        buffer is full:</p>
+
+      <pre><code class="language-rust">let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+tokio::spawn(async move {
+    for i in 0..100 {
+        // when 8 values sit unread, this await parks the producer:
+        // its waker joins the queue's waiter list, worker stays free
+        if tx.send(i).await.is_err() { break; } // receiver gone
+    }
+});
+
+while let Some(i) = rx.recv().await {
+    println!("got {i}");
+}</code></pre>
+
+      <p>That parking is <strong>backpressure</strong>, made mechanical.
+        The producer cannot outrun the consumer by more than the buffer:
+        every send past the eighth waits for a receive. No polling, no
+        dropping of values, no explicit coordination; the producer's waker
+        simply sits on a bench until the consumer makes room. Internally
+        the queue is a linked list of blocks, each holding up to 32 values
+        for the bounded flavor, and the capacity limit itself is policed by
+        an internal semaphore. <!-- fs: research/tokio-internals.md §7 — mpsc: linked list of blocks; BLOCK_CAP = 32 bounded, 16 unbounded (2 on 32-bit); bounded capacity enforced by an internal semaphore --></p>
+
+      <p>The unbounded flavor removes the brake: <code>send</code> never
+        parks, because the list of blocks grows as long as it must. That is
+        a feature when bursts must be absorbed and a hazard when the
+        producer is chronically faster than the consumer: memory grows with
+        the backlog, and nothing in the pipe will tell you.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 200" role="img">
+          <title>A bounded mpsc channel with a full buffer parks the sending task until the consumer frees a slot</title>
+          <rect class="box" x="8" y="70" width="120" height="52" rx="8"/>
+          <text class="label" x="68" y="89" text-anchor="middle">producer</text>
+          <text class="label muted" x="68" y="107" text-anchor="middle" style="font-size:11px">send().await parks</text>
+          <line class="arrow" x1="128" y1="96" x2="196" y2="96"/>
+          <polygon class="arrow-head" points="196,91 206,96 196,101"/>
+          <text class="label muted" x="320" y="52" text-anchor="middle">bounded buffer: 8 of 8 slots full</text>
+          <rect class="box" x="208" y="62" width="224" height="52" rx="8"/>
+          <rect class="box accent" x="216" y="70" width="24" height="36" rx="3"/>
+          <rect class="box accent" x="244" y="70" width="24" height="36" rx="3"/>
+          <rect class="box accent" x="272" y="70" width="24" height="36" rx="3"/>
+          <rect class="box accent" x="300" y="70" width="24" height="36" rx="3"/>
+          <rect class="box accent" x="328" y="70" width="24" height="36" rx="3"/>
+          <rect class="box accent" x="356" y="70" width="24" height="36" rx="3"/>
+          <rect class="box accent" x="384" y="70" width="24" height="36" rx="3"/>
+          <rect class="box accent" x="412" y="70" width="8" height="36" rx="3"/>
+          <line class="arrow" x1="432" y1="96" x2="486" y2="96"/>
+          <polygon class="arrow-head" points="486,91 496,96 486,101"/>
+          <rect class="box" x="498" y="70" width="120" height="52" rx="8"/>
+          <text class="label" x="558" y="89" text-anchor="middle">consumer</text>
+          <text class="label muted" x="558" y="107" text-anchor="middle">recv() drains one</text>
+          <line class="arrow accent" x1="558" y1="122" x2="68" y2="160"/>
+          <polygon class="arrow-head accent" points="70,150 60,160 73,164"/>
+          <text class="label accent" x="320" y="182" text-anchor="middle">each receive frees a slot and wakes the sender's waker</text>
+        </svg>
+        <figcaption>Figure 2: backpressure, mechanically. The full buffer
+          turns the producer's <code>send</code> into a parked waker; the
+          consumer's pace becomes the producer's pace.</figcaption>
+      </figure>
+
+      <h3>oneshot: the single shot</h3>
+
+      <p>A <strong>oneshot</strong> channel carries exactly one value, once,
+        from one sender to one receiver. The receiving side is itself a
+        future. This is the shape of a reply that will eventually exist:
+        spawn a task, hand it the sender, await the receiver.</p>
+
+      <pre><code class="language-rust">let (tx, rx) = tokio::sync::oneshot::channel();
+
+tokio::spawn(async move {
+    let answer = expensive_lookup().await;
+    tx.send(answer).ok(); // Err only if nobody waits anymore
+});
+
+match rx.await {
+    Ok(answer) => println!("got {answer}"),
+    Err(_sender_gone) => println!("the task died first"),
+}</code></pre>
+
+      <h3>watch: the latest value</h3>
+
+      <p>A <strong>watch</strong> channel keeps only the most recent value.
+        It is not a queue: slow consumers do not fall behind, they just see
+        the current state on the next <code>changed()</code>. Configuration,
+        leadership state, shutdown flags: anything where only the newest
+        value matters. Internally it is built on <code>Notify</code>, the
+        primitive at the bottom of this page. <!-- fs: research/tokio-internals.md §7 — watch retains only the most recent value; built on Notify --></p>
+
+      <pre><code class="language-rust">let (tx, rx) = tokio::sync::watch::channel("idle");
+
+tokio::spawn(async move {
+    let mut rx = rx;
+    while rx.changed().await.is_ok() {
+        println!("state is now {}", *rx.borrow());
+    }
+});
+
+tx.send("busy").ok(); // replaces, never queues
+tx.send("idle").ok(); // a slow reader sees only "idle"</code></pre>
+
+      <h3>broadcast: the megaphone</h3>
+
+      <p>A <strong>broadcast</strong> channel is multi-producer and
+        multi-consumer: every value sent is seen by every live receiver,
+        each keeping its own cursor into a shared ring buffer. The ring has
+        a fixed size, so a receiver that dawdles past it does not stall the
+        sender; it learns how far behind it fell. <!-- fs: research/tokio-internals.md §7 — broadcast: shared ring buffer; per-receiver cursor; lagging receiver gets RecvError::Lagged(skipped); send errors with no receivers --></p>
+
+      <pre><code class="language-rust">use tokio::sync::broadcast;
+
+let (tx, _) = broadcast::channel(16); // ring of 16 values
+let mut fast = tx.subscribe();
+let mut slow = tx.subscribe();
+
+tx.send("event-1").ok();
+tx.send("event-2").ok();
+
+// fast.recv().await -> Ok("event-1"), then Ok("event-2")
+// if 17 more sends happen before slow calls recv(),
+// slow.recv().await -> Err(Lagged(1)): one value was overwritten</code></pre>
+
+      <p>The failure mode to internalize: broadcast never slows the
+        producer. Lag is the receiver's problem, reported as a count. That
+        is the opposite trade from bounded mpsc, where the producer waits
+        and nothing is ever lost.</p>
+
+      <h2>Notify: the doorbell</h2>
+
+      <p>Strip everything above to its skeleton and one primitive remains:
+        <strong>Notify</strong>, a bare &ldquo;ring the bell&rdquo; and
+        &ldquo;wait for the bell.&rdquo; Its whole state is a single stored
+        permit plus a queue of waiters.</p>
+
+      <p><code>notify_one()</code> either stores one permit, if none is
+        stored, or wakes one waiting task. Storing rather than dropping is
+        what makes it safe to ring before anyone listens: the next
+        <code>notified().await</code> consumes the stored permit and returns
+        immediately. <code>notify_waiters()</code> wakes every current
+        waiter and stores nothing, for broadcast-style shutdowns. And one
+        quirk to burn in: repeated <code>notify_one()</code> calls coalesce
+        into a single permit. Notify is a doorbell, not a counter; if you
+        need counting, you wanted the semaphore. <!-- fs: research/tokio-internals.md §7 — notify_one stores a single permit if none stored; notified().await consumes it; notify_waiters wakes all current waiters, stores no permit; multiple notify_one coalesce to one permit --></p>
+
+      <pre><code class="language-rust">use std::sync::Arc;
+use tokio::sync::Notify;
+
+let notify = Arc::new(Notify::new());
+let bell = notify.clone();
+
+tokio::spawn(async move {
+    prep_work().await;
+    bell.notify_one(); // permit stored even if nobody waits yet
+});
+
+notify.notified().await; // consumes the permit, then continues</code></pre>
+
+      <p>Look back over the chapter and the family resemblance is total.
+        The mutex's queue, the semaphore's waiters, the bounded channel's
+        parked senders, watch's change signal: each is a list of wakers plus
+        a policy for who gets woken when, and the policy is the only thing
+        that differs. Once you have seen the pattern, no primitive in this
+        toolbox can surprise you. What can still surprise you is what
+        happens to a task that never gets woken at all, because someone
+        dropped the future it was living in while it waited. Dropping a
+        future has consequences, and sorting the safe ones from the
+        dangerous ones is the last page of this part.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>std locks park the worker thread; tokio's park the task: a
+            waker joins a waiter queue and the worker moves on.</li>
+          <li>The async mutex is a semaphore wrapper with a fair,
+            first-in-first-out queue; use it only when the guard must cross
+            an <code>.await</code>.</li>
+          <li>Bounded mpsc turns a full buffer into a parked sender:
+            backpressure for free. Unbounded has no brake; broadcast never
+            slows the sender and reports receiver lag instead.</li>
+          <li>oneshot moves one value once; watch keeps only the latest
+            value and is built on Notify.</li>
+          <li>Notify is the bare doorbell underneath: one stored permit,
+            coalescing rings, waiters woken one or all.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

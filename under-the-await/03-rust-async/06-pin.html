@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pin and self-referential futures — Under the Await</title>
+  <meta name="description" content="Suspended futures can hold pointers into their own fields. Pin is the type-system promise that keeps those pointers valid, and Unpin is the opt-out most types take.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p03-06">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Pin and self-referential futures</h1>
+
+      <p>Four pages ago, <code>poll</code>'s receiver showed up wearing a
+        strange wrapper: <code>self: Pin&lt;&amp;mut Self&gt;</code>. We
+        deferred it, then deferred it again. No more. This page is about the
+        one problem in Rust async that has no equivalent in the languages you
+        met in Part 2, and the two types, <code>Pin</code> and
+        <code>Unpin</code>, that exist to solve it. The machinery is small;
+        the reasoning is subtle; and once you have it, the last line of
+        mystery in <code>poll</code>'s signature is gone.</p>
+
+      <h2>The hazard, reconstructed</h2>
+
+      <p>Page 5 ended with the wrinkle: an async function that borrows its
+        own inline local across an await. After the transform, the generated
+        struct holds both the data and the reference, and the reference
+        points into the data. Such a value is <strong>self-referential</strong>:
+        it contains, inside itself, a pointer whose target is also inside
+        itself. Here is the shape again, in full:</p>
+
+      <pre><code class="language-rust">struct Blob {
+    bytes: [u8; 6],               // six bytes, no heap involved
+}
+
+async fn borrowing(blob: Blob) -&gt; usize {
+    let head = &amp;blob.bytes[0..3]; // a reference INTO the blob itself
+    something().await;            // head must survive this
+    head.len()
+}</code></pre>
+
+      <!-- fs: research/rust-async.md §4 — generated futures can hold self-referential pointers; a local held across an await can be stored by address inside the future struct -->
+      <p>The generated future for <code>borrowing</code> has (conceptually)
+        two fields: <code>blob</code>, the six bytes, and <code>head</code>,
+        a fat reference whose address is <em>the address of the
+        <code>blob</code> field</em>. Not a copy of the bytes. An address
+        into the future's own body. And futures, as page 1 promised and
+        every page since has assumed, get <em>moved</em>: returned from
+        functions, pushed into queues, handed across threads. So ask the
+        ugly question: what does moving do to that address?</p>
+
+      <p>Try to write the by-hand version in safe Rust and find out. Safe
+        Rust is way ahead of you:</p>
+
+      <pre><code class="language-rust">struct Bad&lt;'a&gt; {
+    blob: Blob,
+    head: &amp;'a [u8],     // meant to point into blob.bytes
+}
+
+fn main() {
+    let blob = Blob { bytes: [1, 2, 3, 4, 5, 6] };
+    let head = &amp;blob.bytes[0..3];
+    let bad = Bad { blob, head };   // <-- try to assemble it here
+    println!("{}", bad.head.len());
+}</code></pre>
+
+      <pre><code class="language-plaintext">error[E0505]: cannot move out of `blob` because it is borrowed
+  --> src/main.rs:12:21
+   |
+10 |     let blob = Blob { bytes: [1, 2, 3, 4, 5, 6] };
+   |         ---- binding `blob` declared here
+11 |     let head = &blob.bytes[0..3];
+   |                 ---------- borrow of `blob.bytes` occurs here
+12 |     let bad = Bad { blob, head };
+   |                     ^^^^  ---- borrow later used here
+   |                     |
+   |                     move out of `blob` occurs here</code></pre>
+
+      <p>The borrow checker refuses the whole idea. You cannot move a value
+        into a struct while a reference into that value is still live,
+        because moving might relocate the bytes, and a relocated target
+        leaves the reference aimed at the old address. That is E0505, and it
+        is the borrow checker doing exactly its job.</p>
+
+      <p>And yet the async transform builds precisely this shape, quietly,
+        every time you hold a borrow across an await. It can, because the
+        transform is exempt from its own rules: the compiler knows where
+        every field lands, and it takes responsibility for the internal
+        reference being consistent <em>as long as the struct never
+        moves</em>. Which leaves exactly one question, and it is the
+        question the entire rest of this page answers: how do you let
+        ordinary user code pass such a struct around, without ever letting
+        it move?</p>
+
+      <h2>What a move actually breaks</h2>
+
+      <p>Draw it. Before the move, the future sits at some address, call it
+        <code>0x1000</code>. Its <code>blob</code> field occupies the first
+        bytes; its <code>head</code> field stores the address of those
+        bytes, <code>0x1000</code>, everything consistent. Now the engine
+        moves the future to <code>0x2000</code>: memcpy, the six bytes of
+        <code>blob</code> travel, the <em>stored number</em>
+        <code>0x1000</code> in <code>head</code> travels too, unchanged.
+        Numbers do not know they are addresses. The moved
+        <code>head</code> still says <code>0x1000</code>, which now holds
+        whatever came after the move: stale bytes, someone else's value,
+        anything. Reading through it is the textbook use-after-move, and in
+        a language with this little undefined behavior, that is simply not
+        allowed to be reachable.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 220" role="img" aria-label="Before the move, the future at 0x1000 contains blob bytes and a head reference pointing at its own blob field. After moving to 0x2000, the copied head still points at 0x1000, now stale.">
+          <title>Before and after a move of a self-referential struct</title>
+          <text class="label" x="160" y="24" text-anchor="middle">before the move</text>
+          <rect class="box" x="60" y="35" width="200" height="90" rx="8"/>
+          <text class="label mono" x="160" y="53" text-anchor="middle">future @ 0x1000</text>
+          <rect class="box accent" x="80" y="62" width="160" height="26" rx="5"/>
+          <text class="label mono" x="160" y="80" text-anchor="middle">blob: [1,2,3,4,5,6]</text>
+          <rect class="box" x="80" y="92" width="160" height="26" rx="5"/>
+          <text class="label mono" x="160" y="110" text-anchor="middle">head: 0x1000</text>
+          <line class="arrow accent" x1="245" y1="105" x2="315" y2="105"/>
+          <polygon class="arrow-head accent" points="315,100 325,105 315,110"/>
+          <text class="label muted" x="290" y="95" text-anchor="middle">aims at</text>
+          <text class="label" x="490" y="24" text-anchor="middle">after the move</text>
+          <rect class="box" x="390" y="35" width="200" height="90" rx="8"/>
+          <text class="label mono" x="490" y="53" text-anchor="middle">future @ 0x2000</text>
+          <rect class="box accent" x="410" y="62" width="160" height="26" rx="5"/>
+          <text class="label mono" x="490" y="80" text-anchor="middle">blob: [1,2,3,4,5,6]</text>
+          <rect class="box" x="410" y="92" width="160" height="26" rx="5"/>
+          <text class="label mono" x="490" y="110" text-anchor="middle">head: 0x1000</text>
+          <line class="arrow" x1="575" y1="105" x2="630" y2="105" stroke-dasharray="4 4"/>
+          <rect class="box" x="60" y="160" width="200" height="45" rx="8"/>
+          <text class="label mono" x="160" y="178" text-anchor="middle">0x1000 now holds</text>
+          <text class="label mono" x="160" y="196" text-anchor="middle">stale bytes</text>
+          <line class="arrow" x1="410" y1="105" x2="268" y2="150"/>
+          <polygon class="arrow-head" points="272,144 262,152 274,156"/>
+          <text class="label" x="620" y="146" text-anchor="end" style="font-size:12px">the copied pointer still aims at the old address</text>
+        </svg>
+        <figcaption>Figure 1: a move copies the stored address along with the
+          data. The pointer does not follow the data it points to; it keeps
+          aiming at the abandoned location.</figcaption>
+      </figure>
+
+      <h2>Pin: a promise, expressed as a type</h2>
+
+      <!-- fs: research/rust-async.md §4 — Pin is a pointer which pins its pointee in place; same layout/ABI as the wrapped pointer (zero-cost); the most common pinned types are compiler-generated futures -->
+      <p>The fix is almost embarrassingly direct once stated: if moving is
+        the hazard, stop the moving. <strong>Pin</strong> is a wrapper around
+        a pointer, <code>Pin&lt;P&gt;</code>, that carries one promise: the
+        value the pointer points to, the <em>pointee</em>, will not be moved
+        before it is dropped, and nobody else gets a pointer through which
+        they could move it. <code>Pin&lt;&amp;mut T&gt;</code> is "a mutable
+        reference to T, minus the ability to relocate T". The wrapper pins
+        the pointee, not the pointer: you can move the <code>Pin</code>
+        itself all you like, copy it, pass it on; what is frozen is the thing
+        at the far end. And it is free: <code>Pin&lt;P&gt;</code> has exactly
+        the same memory layout as <code>P</code>, no tag, no flag, nothing.
+        The promise lives in the type system, not in the bytes.</p>
+
+      <p>How does a type enforce "you may not move what I point to" in a
+        language where moving is a memcpy anyone can do? By starving you of
+        the means. From a <code>Pin&lt;&amp;mut T&gt;</code> you can call
+        <code>poll</code>, you can read, you can do everything
+        <code>&amp;mut T</code> does, <em>except</em> obtain the raw
+        <code>&amp;mut T</code> itself, the handle you would need to assign
+        it elsewhere, pass it by value, or otherwise relocate it. The one
+        door that leads to moving is simply not on this wall. (The escape
+        hatches exist, <code>unsafe</code> ones like
+        <code>Pin::new_unchecked</code> and
+        <code>get_unchecked_mut</code>, and they exist so the engine's
+        authors, who are taking responsibility for the promise manually, can
+        get work done. User code never touches them in this book.)</p>
+
+      <h2>Unpin: the opt-out almost everyone takes</h2>
+
+      <!-- fs: research/rust-async.md §4 — Unpin is a marker auto trait; Pin<&mut T> acts like &mut T for Unpin types; PhantomPinned makes a struct !Unpin in safe code -->
+      <p>If every value behind a <code>Pin</code> were frozen forever, all of
+        Rust would grind to a halt: sometimes you have a
+        <code>Pin&lt;&amp;mut String&gt;</code> and just want your
+        <code>&amp;mut String</code> back. Enter
+        <strong>Unpin</strong>: an auto trait, derived by the compiler,
+        meaning "this type is safe to move <em>even while pinned</em>",
+        because it contains nothing that could dangle. <code>String</code>
+        is <code>Unpin</code>. <code>Vec</code> is <code>Unpin</code>. Your
+        struct of plain fields is <code>Unpin</code>. The <code>Delay</code>
+        from page 4 and the <code>PipelineFut</code> twin from page 5 are
+        <code>Unpin</code>, which is why their code could call
+        <code>self.get_mut()</code> and <code>Pin::new</code> freely. For an
+        <code>Unpin</code> type, <code>Pin&lt;&amp;mut T&gt;</code> behaves
+        exactly like <code>&amp;mut T</code>, and that is why almost all
+        Rust code never notices Pin exists.</p>
+
+      <p>The types that are <em>not</em> <code>Unpin</code> are the ones that
+        might hold pointers into themselves, and the compiler-generated
+        futures from <code>async fn</code> are the canonical example: the
+        compiler cannot promise that no await borrows a local, so it must
+        conservatively mark the whole generated type as not safe to move
+        once started. If you ever need to build a deliberately immovable
+        type by hand, std provides the marker: add a
+        <code>PhantomPinned</code> field, and your struct becomes
+        <code>!Unpin</code> without a line of <code>unsafe</code>.</p>
+
+      <table>
+        <thead>
+          <tr><th>Type</th><th>Unpin?</th><th>What it means in practice</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>String</code>, <code>Vec</code>, integers, most
+            structs</td><td>yes</td><td>Pinned or not, movable; Pin adds
+            nothing</td></tr>
+          <tr><td><code>Delay</code> (page 4), <code>PipelineFut</code>
+            (page 5)</td><td>yes</td><td>Plain data; that is why their
+            demos could use <code>Pin::new</code> freely</td></tr>
+          <tr><td>futures generated from <code>async fn</code></td>
+            <td>no</td><td>Might self-reference; once pinned, they stay put
+            until dropped</td></tr>
+          <tr><td>struct with a <code>PhantomPinned</code> field</td>
+            <td>no</td><td>Deliberate opt-out for hand-built immovable
+            types</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Why poll takes Pin&lt;&amp;mut Self&gt;</h2>
+
+      <p>Now the signature from page 2 finishes resolving itself. The
+        <code>Future</code> trait must work for <em>every</em> future,
+        including the compiler-generated <code>!Unpin</code> ones. If
+        <code>poll</code> took a plain <code>&amp;mut self</code>, the
+        engine would hold a handle through which the future could be moved,
+        and the self-references inside generated futures would be one
+        careless assignment away from dangling. So the trait demands the
+        pinned reference: hand me the future <em>with a promise attached</em>
+        that it will not relocate. If the concrete future happens to be
+        <code>Unpin</code>, the promise is vacuous and costs nothing, which
+        is exactly the experience your page 4 code had. One trait, both
+        worlds.</p>
+
+      <h2>Pinning in practice</h2>
+
+      <p>You will rarely write the word <code>Pin</code> yourself, but you
+        will use two tools that produce it. <code>Box::pin(value)</code>
+        moves the value to the heap and hands back a
+        <code>Pin&lt;Box&lt;T&gt;&gt;</code>: the value now lives at a stable
+        heap address forever, and the smart pointer can be moved, stored in
+        queues, sent across threads, all while the pointee stays fixed. It
+        costs one allocation, and it is how heterogeneous collections of
+        futures are built: a <code>Vec</code> of
+        <code>Pin&lt;Box&lt;dyn Future&gt;&gt;</code> can hold a hundred
+        different generated types, each frozen at its own heap address.
+        Std's <code>pin!</code> macro does the stack version: it shadows a
+        local so that the value is pinned in place for the rest of the
+        scope, no allocation at all. You used both forms already: page 5's
+        demo needed <code>pin!</code> for the compiler-generated future, and
+        page 7's engine will box its futures to store them uniformly.</p>
+
+      <!-- fs: research/rust-async.md §4 — moving before the first pin/poll is fine; the pinning contract binds once the Pin is created -->
+      <p>One last nuance, and it is a mercy: the promise starts when the
+        pinning starts. A freshly created async future can be returned from
+        a function, stored in a variable, moved into a struct, because
+        before it is pinned and first polled it cannot yet hold live
+        internal references; the borrows only materialize as the body runs.
+        The rule you actually live by is short: create it, move it wherever
+        it needs to live, pin it once, and from then on it does not move
+        until it is dropped. Engines do exactly that: Tokio, for instance,
+        keeps every piece of handed-over work as a pinned heap allocation for
+        its entire life; Part 4's second page takes that allocation apart
+        field by field.</p>
+
+      <p>That is the whole iceberg. <code>Pin</code> is not extra
+        machinery; it is a promise about addresses, enforced by removing the
+        handles you would need to break it, so that the one struct the
+        compiler builds with a pointer into itself can be passed around
+        like any other value without anyone being able to wreck it. The
+        price of the design is real: a strange receiver in every
+        <code>poll</code> signature, and the occasional
+        <code>Box::pin</code> tax. The payoff is that Rust gets stackless
+        futures with internal borrows, and no other mainstream language
+        had to solve this because none of them let borrows cross suspension
+        points at all.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>An async fn that borrows an inline local across an await
+            compiles to a <em>self-referential</em> struct; safe Rust refuses
+            to let you build such a struct by hand (E0505), but the
+            transform is exempt.</li>
+          <li>Moving such a struct copies the stored address without
+            updating it, leaving the pointer aimed at the abandoned
+            location.</li>
+          <li><code>Pin&lt;P&gt;</code> is a zero-cost wrapper promising the
+            pointee never moves before drop; it removes the raw
+            <code>&amp;mut T</code> through which you could relocate
+            it.</li>
+          <li><code>Unpin</code> is the auto trait for types where the
+            promise is vacuous; nearly everything qualifies, and generated
+            futures are the famous exception.</li>
+          <li><code>Box::pin</code> (heap) and <code>pin!</code> (stack) are
+            the practical tools; Tokio stores every handed-over piece of work
+            as a pinned heap allocation.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

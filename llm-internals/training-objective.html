@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What Training Actually Optimizes — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="training-objective">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Two — Training</p>
+    <h1>What Training Actually Optimizes</h1>
+    <p class="lede">After this page you can say exactly what number
+    training pushes down — what a loss of two means, what perplexity
+    counts, and what one verified update step did to the toy model.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-run">The machine runs — is it right?</a></li>
+        <li><a href="#sec-guess">One number per guess</a></li>
+        <li><a href="#sec-every">Every position, averaged</a></li>
+        <li><a href="#sec-read">Reading the number</a></li>
+        <li><a href="#sec-step">One step, watched</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-run">
+      <h2>The machine runs — is it right?</h2>
+      <p>Part One ended with a tower and a count: eight billion entries
+      of multiply-and-add, thirty-two floors tall, and nothing anywhere
+      in it that knows right from wrong. Run the tower on any text and
+      it produces, at every position, a score for every piece of the
+      vocabulary. The machine is equally content whether those scores
+      point at what actually came next or at rubbish.</p>
+      <p>Training is the outside process that fixes this, and it needs
+      a verdict first: one number, computed after a pass, that says how
+      wrong the machine was. This page pins that number down exactly —
+      what it charges, what it averages over, and how to read its
+      value. The rule that pushes it down is the next page's subject;
+      the number comes first, because without a definition of wrong,
+      no rule for reducing it can be derived.</p>
+    </section>
+
+    <section id="sec-guess">
+      <h2>One number per guess</h2>
+      <p>Every position of every pass ends the same way: a score for
+      each piece of the vocabulary, squeezed through a softmax into a
+      probability distribution — the machine's guess about what comes
+      next. The training text already knows the answer: the piece that
+      actually followed. The guess is graded on a single fact, the
+      probability it put on that piece.</p>
+      <p>The grading rule is
+      <dfn><a href="glossary.html#t-cross-entropy">cross-entropy</a></dfn>:
+      the charge is minus the natural logarithm of the probability the
+      machine placed on the piece that actually came next. Put
+      probability one on the right answer and the charge is zero —
+      certain and right costs nothing. A coin flip on the right answer
+      costs about 0.69. A one-in-twenty guess costs about 3.0. And an
+      even shrug over every piece of a fifty-thousand-piece vocabulary
+      costs about 10.8 — the price of knowing nothing
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>The same quantity with its sign flipped has a name of its own:
+      the <dfn><a href="glossary.html#t-log-probability">log
+      probability</a></dfn> of the right piece, written ln p. Pushing
+      the charge down and pushing the log probability up are the same
+      act — one number, read in opposite directions.</p>
+      <p>Why a logarithm and not the raw probability? Two mechanical
+      reasons. Being right across many positions is a product of
+      probabilities — the chance of the whole sequence multiplies — and
+      logarithms turn products into sums, which is what makes an
+      average possible. And the shape of the charge punishes confident
+      wrongness: every halving of the probability adds the same
+      constant, about 0.69, to the charge, and as the probability
+      falls toward zero the charge climbs without bound. A machine
+      that rules out the right answer outright pays without limit
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+    </section>
+
+    <section id="sec-every">
+      <h2>Every position, averaged</h2>
+      <p>One guess per position, one charge per guess — now aggregate.
+      The <dfn><a href="glossary.html#t-loss">loss</a></dfn> is the
+      average charge over every position of the text the machine was
+      run on: one number per pass that says, on average, how wrong the
+      machine was. Recall the causal mask from Part One — each
+      position only ever sees the pieces before it, so every position
+      makes a legitimate guess at the same time, and every position's
+      charge lands in the same average. One forward pass, one loss,
+      every position graded.</p>
+      <p>Averaged over what text? The
+      <dfn><a href="glossary.html#t-corpus">corpus</a></dfn>: the
+      training set, assembled before training starts — web crawl,
+      code, books — then filtered for quality. Llama 3 read roughly
+      fifteen trillion pieces; GPT-3 read roughly three hundred
+      billion after filtering
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>The full run over this text is
+      <dfn><a href="glossary.html#t-pretraining">pretraining</a></dfn>:
+      the first and by far the largest stage of training, the one that
+      consumes the corpus and produces the raw text-predicting machine
+      that every later stage refines
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>Training does not read the corpus one sequence at a time. One
+      update works on a <dfn><a href="glossary.html#t-batch">batch</a></dfn>:
+      a slab of sequences pulled from the corpus, run together, their
+      charges averaged into one loss. The largest runs of GPT-3 moved
+      3.2 million pieces per step; Llama 3 in its later phases moved
+      16 million
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+      <p>One consequence to carry forward, because it explains much of
+      what these machines later do. The corpus is the model's only
+      contact with the world: whatever patterns the text contained,
+      statistically, are what the entries encode. Nothing is retrieved
+      at run time — the machine is a compressed statistical memory of
+      its training text, not a database it consults. That is why a
+      model has a knowledge cutoff, and why it can produce fluent,
+      confident statements about things the corpus never covered. What
+      to do about that is Part Three's problem
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+    </section>
+
+    <section id="sec-read">
+      <h2>Reading the number</h2>
+      <p>A charge of 2.0 is hard to feel. The standard translation is
+      <dfn><a href="glossary.html#t-perplexity">perplexity</a></dfn>:
+      raise e to the loss. The result reads as the effective number of
+      choices the machine was deciding among — a machine at loss 3.0
+      has a perplexity of about twenty, meaning it is on average as
+      unsure as someone choosing among twenty options. A certain
+      prediction is a perplexity of one, a coin flip two, and the even
+      shrug over GPT-3's vocabulary fifty thousand
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — reading a loss in both
+        directions</p>
+        <div class="worked-body">
+<pre><code class="language-text">reading the loss in both directions
+(GPT-3's vocabulary: 50,257 pieces)
+
+  p on right piece   charge   perplexity   reads as
+  1.000              0.000    1.0          certain
+  0.500              0.693    2.0          a coin flip
+  0.050              2.996    20.0         a twenty-way guess
+  1 / 50,257         10.824   50,257       the even shrug
+
+  reverse: a loss of 2.0 means e^-2 = 13.5%
+           on the right piece, on average</code></pre>
+        </div>
+      </div>
+
+      <p>Both directions are worth holding. Reading down the table:
+      each row is a tenfold worse guess, and the charge climbs by a
+      constant step each time while the perplexity multiplies by ten —
+      the charge is additive, the perplexity multiplicative. Reading
+      the last line the other way: a machine reporting a loss of 2.0
+      is putting about thirteen and a half percent on the right piece
+      at every position, on average
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>.</p>
+    </section>
+
+    <section id="sec-step">
+      <h2>One step, watched</h2>
+      <p>The objective, whole, is five lines of code in the companion
+      script — the same toy, the same pieces, graded:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the whole objective (softmax, pick
+        the right piece, average the charge)</figcaption>
+<pre><code class="language-python">def ce_loss(logits, targets):
+    """Mean cross-entropy; targets[i] is the token that follows position i."""
+    probs = softmax(logits)
+    picked = probs[np.arange(len(targets)), targets]
+    return float(-np.mean(np.log(picked + 1e-300)))</code></pre>
+      </figure>
+
+      <p>Read it top to bottom. The softmax turns the final scores
+      into a probability distribution at every position. The next line
+      picks out, for each position, the probability the machine
+      assigned to the piece that actually followed. Then the logarithm,
+      the sign flip, and the mean: the average charge, the loss. The
+      tiny constant added inside the log is a guard — a machine that
+      put exactly zero on the right answer would make the raw
+      logarithm minus infinity; the guard turns certain wrongness into
+      a very large but finite charge.</p>
+      <p>Now watch one update happen. The toy's fourth stage computes
+      the loss, applies one improvement step — how the move is chosen
+      is the next page's subject; here, watch only the effect — and
+      reports the result
+      <a class="prov" data-src="research/training.md" href="links.html#s-training" title="training — research/training.md">[training]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one update step,
+        watched</p>
+        <div class="worked-body">
+<pre><code class="language-text">one update step on the toy (tiny_llm.py, stage 4):
+
+  loss before the step:   5.198491
+  loss after one step:    1.629123
+  move size used:         0.2
+
+  the same step as probability on the right piece:
+    before   e^-5.198  =  0.55%
+    after    e^-1.629  =  19.6%</code></pre>
+        </div>
+      </div>
+
+      <p>From roughly half a percent to roughly twenty percent on the
+      right piece, after one move. Training works, and this is the
+      entire sense in which it works: the same tower, the same
+      arithmetic, entries nudged until the charge falls. What remains
+      is the rule. One number comes out of the top of the machine;
+      eight billion entries sit inside it. How a single charge at the
+      top reaches every entry below — which entry to move, which way,
+      and how far — is a solved problem with a name, and it is the
+      next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The unit of wrong is cross-entropy: minus the logarithm of
+        the probability placed on the piece that actually came next.
+        Certain right costs zero, a coin flip about 0.69, knowing
+        nothing about 10.8 on a fifty-thousand-piece vocabulary.</li>
+        <li>The loss is the average of that charge over every position
+        — and the causal mask means every position makes a legitimate
+        guess at once, so one pass grades them all.</li>
+        <li>Pretraining reads a filtered corpus — roughly fifteen
+        trillion pieces for Llama 3 — in batches of millions of pieces
+        per step.</li>
+        <li>Perplexity is e to the loss: the effective number of
+        choices. Loss 3.0 is a twenty-way uncertainty; the even shrug
+        over GPT-3's vocabulary is 50,257.</li>
+        <li>One verified step took the toy's loss from 5.198 to 1.629 —
+        half a percent to twenty percent on the right piece. The rule
+        that chose the move is next.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="block.html"><span class="cap">Previous</span><span class="pg-title">The Transformer Block</span></a>
+    <a class="pager-card" rel="next" href="backprop.html"><span class="cap">Next</span><span class="pg-title">Backpropagation and the Training Step</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

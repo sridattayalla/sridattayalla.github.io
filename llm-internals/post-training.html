@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Post-Training: From Autocompleter to Assistant — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="post-training">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Three — The Assistant</p>
+    <h1>Post-Training: From Autocompleter to Assistant</h1>
+    <p class="lede">After this page you can say what a base model is
+    and why it is not an assistant, what the stages of post-training
+    do to it, why hallucination is structural rather than a bug, and
+    what the wrapper around the model looks like at the piece
+    level.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-raw">The raw predictor's problem</a></li>
+        <li><a href="#sec-sft">Show it what you want</a></li>
+        <li><a href="#sec-rlhf">Judge it, then optimize the judgment</a></li>
+        <li><a href="#sec-limits">What tuning cannot do</a></li>
+        <li><a href="#sec-template">The wrapper you never see</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-raw">
+      <h2>The raw predictor's problem</h2>
+      <p>Part Two ended honestly: what pretraining produces is a
+      brilliant text-predictor and nothing more. Give that thing its
+      name before fixing it. The
+      <dfn><a href="glossary.html#t-base-model">base model</a></dfn>
+      is the raw output of pretraining — the text-predictor as trained,
+      before any stage that shapes it toward being useful
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+      <p>Its problem is not stupidity; it is job description. Ask
+      "What is the capital of France?" and the base model continues
+      in the voice of the corpus: on the web, a question is often
+      followed by another question, or a list of questions, or a page
+      header — and so it continues, plausibly and uselessly
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      It completes documents; it does not hold conversations, because
+      nothing in the objective ever asked it to.</p>
+    </section>
+
+    <section id="sec-sft">
+      <h2>Show it what you want</h2>
+      <p>The first fix is the oldest one in learning: examples.
+      <dfn><a href="glossary.html#t-instruction-tuning">Instruction
+      tuning</a></dfn> — usually called
+      <dfn><a href="glossary.html#t-sft">SFT</a></dfn>, supervised
+      fine-tuning — continues training the base model on a small set
+      of written demonstrations: a
+      <dfn><a href="glossary.html#t-prompt">prompt</a></dfn> (the
+      text on the user's side, given to the model) followed by the
+      reply that should have come
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      The recipe that named the genre used about thirteen thousand
+      such pairs, written by hired humans, to turn GPT-3 the
+      predictor into something assistant-shaped
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+      <p>Notice what this stage can teach: shape, not knowledge. The
+      demonstrations number in the thousands; the corpus numbered in
+      the trillions. Tuning at this scale moves behavior — format,
+      tone, refusal habits, question-meets-answer — because behavior
+      is shallow and learnable from few examples. Knowledge is not: a
+      2024 study found that fine-tuning on facts the model does not
+      already hold mostly teaches it to produce those facts fluently
+      whether or not they are true — known facts get absorbed in
+      about fifty steps, while unknown ones keep their charge high
+      and push the model toward fabrication
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      The edge of that lesson: post-training steers what the model
+      already knows; it is close to useless for adding to it
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+      <p>Where new knowledge must come from: retrieval — put the
+      needed text into the model's input — or continued pretraining
+      at corpus scale. The context window is the only memory the
+      model actually reads
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+    </section>
+
+    <section id="sec-rlhf">
+      <h2>Judge it, then optimize the judgment</h2>
+      <p>The second fix goes past examples, because examples of what
+      is good are thin evidence of what is better. The recipe: build
+      a judge, then optimize against it. A
+      <dfn><a href="glossary.html#t-reward-model">reward model</a></dfn>
+      is a learned scoring function — a copy of the model, tuned on
+      human preference comparisons, that outputs one number: how much
+      a human would like a given reply
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      Then <dfn><a href="glossary.html#t-rlhf">RLHF</a></dfn> —
+      reinforcement learning from human feedback — runs a loop: the
+      model answers, the judge scores the answer, and the model's
+      entries move to raise the expected score
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 240"><title>A training loop: the model being tuned writes a reply to a question, the judge scores how much a human would like the reply, and the score travels back to steer the next update of the model, with the return path labeled as leashed to the stage-one model</title>
+          <rect class="f-accent s-ink" stroke-width="1" x="40" y="110" width="170" height="60"/>
+          <text x="125" y="135" text-anchor="middle" font-size="13">the model</text>
+          <text x="125" y="155" text-anchor="middle" font-size="12" class="t-dim">being tuned</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="255" y="110" width="170" height="60"/>
+          <text x="340" y="135" text-anchor="middle" font-size="13">a reply</text>
+          <text x="340" y="155" text-anchor="middle" font-size="12" class="t-dim">to a question</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="470" y="110" width="130" height="60"/>
+          <text x="535" y="128" text-anchor="middle" font-size="13">the judge</text>
+          <text x="535" y="145" text-anchor="middle" font-size="12" class="t-dim">would a human</text>
+          <text x="535" y="160" text-anchor="middle" font-size="12" class="t-dim">like this reply?</text>
+          <line class="s-ink" stroke-width="1.5" x1="210" y1="140" x2="255" y2="140"/>
+          <line class="s-ink" stroke-width="1.5" x1="425" y1="140" x2="470" y2="140"/>
+          <path fill="none" class="s-accent" stroke-width="2" d="M 535 110 L 535 65 L 125 65 L 125 110"/>
+          <text x="330" y="50" text-anchor="middle" font-size="12">the score steers the next update</text>
+          <text x="330" y="90" text-anchor="middle" font-size="12" class="t-dim">on a leash: never far from the stage-one model</text>
+        </svg>
+        <figcaption>The RLHF loop: tune the model against a learned
+        judge, on a leash that keeps it near the stage-one shape. The
+        judge is a guess at human taste; the leash is what stops the
+        optimizer from exploiting the guess.</figcaption>
+      </figure>
+
+      <p>One detail keeps the loop safe: the score is not the only
+      pressure. Each update is leashed — penalized for drifting far
+      from the stage-one version of the model — because a learned
+      judge is itself a guess at taste, and an unconstrained optimizer
+      will find its blind spots: replies engineered to score high
+      while saying nothing, the exploits of any judge. The leash keeps
+      the pursuit of the score from wrecking the machine being tuned
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the three-stage
+        recipe</p>
+        <div class="worked-body">
+<pre><code class="language-text">the recipe that named the genre
+(InstructGPT, on GPT-3):
+
+  stage 1 — supervised tuning:
+    ~13,000 written question-and-answer
+    pairs teach the shape of a reply
+
+  stage 2 — build the judge:
+    ~33,000 questions; humans compare
+    pairs of replies; train a scalar
+    "how much would a human like this"
+
+  stage 3 — optimize against the judge:
+    ~31,000 questions; reinforcement
+    learning toward the judge's score,
+    leashed to stay near stage 1's model
+
+  headline: the 1.3B tuned assistant was
+  preferred by humans over the 175B raw
+  predictor — a hundred times smaller</code></pre>
+        </div>
+      </div>
+
+      <p>The result that pivoted the field: the small assistant tuned
+      this way was preferred by human raters over the raw predictor a
+      hundred times its size, and the full-size tuned model's replies
+      were preferred about eighty-five percent of the time against
+      its own base
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      Behavior turned out to be cheap; scale was not the only
+      lever.</p>
+      <p>The modern simplification:
+      <dfn><a href="glossary.html#t-dpo">DPO</a></dfn> — direct
+      preference optimization — skips the judge and the loop. It
+      derives, from the same preference pairs, a direct update rule
+      with the same mathematical target as the leashed loop: no
+      separate scoring model, no rollouts, simpler and more stable.
+      The 8B model's published recipe is supervised tuning plus DPO,
+      with variants
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      A newer branch of the same idea swaps the learned judge for
+      checkable rewards — tests that pass, answers that match — and
+      powers the reasoning models; that story belongs to Part
+      Five.</p>
+    </section>
+
+    <section id="sec-limits">
+      <h2>What tuning cannot do</h2>
+      <p>Set the limits plainly, because the product experience
+      depends on them.
+      <dfn><a href="glossary.html#t-hallucination">Hallucination</a></dfn>
+      is the model producing fluent, confident statements that are not
+      true
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      It is structural, not a bug in the tuning: every objective so
+      far rewards plausible continuations, and the machine has no
+      mechanism for telling a pattern remembered from the corpus
+      apart from a pattern merely likely
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      Tuning for helpfulness adds pressure of its own — human raters
+      reward confident answers, which can raise the rate on questions
+      the model cannot answer
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the rates,
+        measured</p>
+        <div class="worked-body">
+<pre><code class="language-text">hallucination rates on questions
+(tuned assistant vs raw GPT-3):
+
+  closed-domain (answer documented):
+    raw GPT-3:     41%
+    tuned:         21%   (roughly halved)
+
+  open-domain (no fixed answer):
+    raw GPT-3:     17%
+    tuned:         22%   (slightly worse)</code></pre>
+        </div>
+      </div>
+
+      <p>The numbers bear the structure out. On questions about a
+      fixed, documented domain, tuning cut the raw predictor's rate
+      roughly in half. On open-ended questions the tuned model was
+      slightly worse — and no amount of tuning removed the class of
+      failure
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      What works is grounding: retrieval that puts true text into the
+      input. Training the model to say "I don't know" helps where the
+      domain is closed, and is the honest habit anyway, but it does
+      not fix the open domain
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+      <p>The other limit is loss, not gain.
+      <dfn><a href="glossary.html#t-catastrophic-forgetting">Catastrophic
+      forgetting</a></dfn>: tune the model hard on a narrow domain
+      and its general behavior degrades — the new material displacing
+      the old. The standard mitigation is mixing general data back
+      into the tuning set, which the 8B model's recipe does
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+    </section>
+
+    <section id="sec-template">
+      <h2>The wrapper you never see</h2>
+      <p>One mechanical fact remains, and it explains half of what an
+      assistant product is. At run time, the assistant is the tuned
+      model wrapped in a fixed format string: the
+      <dfn><a href="glossary.html#t-chat-template">chat template</a></dfn>,
+      a piece-level protocol — invisible in the product's interface —
+      that marks where each turn begins, who spoke, and where each
+      reply ends
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      The model was tuned on this exact format; speaking to it
+      outside the format is addressing it in a language it was never
+      taught
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one conversation,
+        serialized</p>
+        <div class="worked-body">
+<pre><code class="language-text">what the model actually reads
+(Llama 3 style markers):
+
+  &lt;|start_header_id|&gt;user&lt;|end_header_id|&gt;
+  What is the capital of France?&lt;|eot_id|&gt;
+  &lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;
+  The capital of France is Paris.&lt;|eot_id|&gt;
+  &lt;|start_header_id|&gt;user&lt;|end_header_id|&gt;
+  And its oldest bridge?&lt;|eot_id|&gt;
+  &lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;
+  ...
+
+  one flat sequence of pieces — every turn,
+  re-read from the first piece, every time</code></pre>
+        </div>
+      </div>
+
+      <p>A <dfn><a href="glossary.html#t-system-prompt">system
+      prompt</a></dfn> is the same mechanism used for standing
+      instructions: a fixed first turn, present before any user
+      speaks, that sets persona, tools, and constraints
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      And the serialization implies something easy to miss: the model
+      is stateless between requests. At every turn it reads the whole
+      conversation — every previous turn plus the markers — as one
+      flat sequence of pieces, from the first piece onward
+      <a class="prov" data-src="research/post-training.md" href="links.html#s-post-training" title="post-training — research/post-training.md">[post-training]</a>.
+      Whatever memory an assistant product appears to have is either
+      text re-sent with the request, or retrieval injecting text into
+      it; nothing else survives between turns.</p>
+      <p>With the assistant shaped, one question remains before it
+      can speak at all. At every position of every reply, the machine
+      still ends in a probability distribution over the vocabulary —
+      and tuning has shaped the distribution, not chosen from it.
+      Which piece actually comes out — the certain choice, the
+      weighted gamble, or something between — is a decision with its
+      own engineering, and it is the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The base model is pretraining's raw output: a
+        document-completer, not a converser — a question meets a
+        plausible continuation of a question-shaped page.</li>
+        <li>Instruction tuning (SFT) teaches shape from thousands of
+        examples, not knowledge from trillions; facts the model lacks
+        cannot be tutored in — retrieval is the memory that
+        works.</li>
+        <li>RLHF builds a learned judge and optimizes against it on a
+        leash; the tuned 1.3B model beat the raw 175B model with human
+        raters — behavior is cheap, and scale is not the only
+        lever.</li>
+        <li>DPO collapses judge and loop into one direct rule with the
+        same target — the standard modern recipe (the 8B model: SFT
+        plus DPO).</li>
+        <li>Hallucination is structural — the objective rewards
+        plausibility, not truth — and the chat template is the
+        piece-level protocol the product speaks; the model is
+        stateless between turns.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="scaling.html"><span class="cap">Previous</span><span class="pg-title">Scaling Laws and Chinchilla</span></a>
+    <a class="pager-card" rel="next" href="sampling.html"><span class="cap">Next</span><span class="pg-title">Sampling: Choosing the Next Token</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

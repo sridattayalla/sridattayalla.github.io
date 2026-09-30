@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<!--
+  WRITER TEMPLATE — copy to PAGENAME.html in the site root, then replace every
+  UPPERCASE placeholder and delete the guidance examples. Two gates must pass
+  after every edit, in this order:
+      python3 tools/verify.py --pages PAGENAME.html
+      python3 tools/check.py PAGENAME.html
+  A file argument implies --partial: links to not-yet-written manifest pages
+  are allowed while the book is under construction. verify.py compiles and
+  runs every marked code block (rustc 1.98.1 for Rust, gcc/clang + sanitizers
+  for C) and merges results into tools/verify-report.json; check.py then
+  refuses missing or stale results (E_VERIFY). No snippet may claim a
+  compile, a run, or a failure the toolchain did not produce.
+
+  What the checker enforces (full list in tools/check.py docstring):
+  - title contains the exact manifest title; body data-page equals manifest id
+  - exactly one h1; main id="main"; rel=prev/next match manifest neighbors
+  - every number in prose carries a prov mark within ten lines, e.g.
+    <a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs"
+       title="gc-costs — research/gc-costs.md">[gc-costs]</a>
+  - intentional exceptions use comment escapes: a comment whose text starts
+    with "term-ok:" covers the three lines below it; "prov-ok:" covers ten
+    lines around it; each carries a reason; never leave an escape in silently
+  - never use a ledger term before its defining page (terms.json); the nav,
+    the pager, code, svg, and prov marks are exempt
+  - every pre block needs a code child with class language-rust,
+    language-c, or language-text, and at most 30 lines
+  - every < inside a code block MUST be written &lt; (and > as &gt;):
+    written literally, the turbofish ::<i32>() makes the extractor see a tag
+    and the snippet silently loses its tail
+  - machine verification on pre blocks (language-text excluded):
+      rust  ok | fail (needs data-error, e.g. "E0382") |
+            run (needs data-expect, a substring of stdout) |
+            panic (needs data-expect, a substring of the panic message) |
+            cont (joins the previous rust chain: same program, next step) |
+            skip (needs data-reason)
+      c     c-ok | c-asan (needs data-expect, e.g. "heap-use-after-free") |
+            c-tsan (needs data-expect, "data race") | skip (needs data-reason)
+  - svg needs role="img" plus a title child and a viewBox, or aria-hidden
+    "true"; style fills/strokes with the f-blue f-green f-red f-yellow f-accent
+    and s-ink s-ink3 s-accent helper classes, t-dim for dim labels
+  - takeaways: 3 to 5 list items, no uncited numbers
+  - prose word window from manifest.json, default 1200 to 2200
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PAGE TITLE — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="PAGE-ID">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">PART KICKER — PART NAME</p>
+    <h1>PAGE H1</h1>
+    <p class="lede">One-sentence promise: what the reader will be able to
+    predict after finishing this page.</p>
+
+    <!-- Optional mini table of contents for pages with five or more sections;
+         the toc class is exempt from term checks. Section ids are yours. -->
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-first">First section title</a></li>
+        <li><a href="#sec-second">Second section title</a></li>
+      </ol>
+    </nav>
+
+    <!-- Delete everything from here to the takeaways aside; it is guidance. -->
+
+    <section id="sec-first">
+      <h2>First section</h2>
+      <p>Ordinary prose. Every number carries a prov mark. A ledger term
+      gets a dotted underline on first use:
+      <dfn><a href="glossary.html#t-move">move</a></dfn> keeps its plain
+      meaning everywhere after. Inline code looks like
+      <code>String::from</code>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 220"><title>Short diagram description for screen readers</title>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="24" y="24" width="150" height="64" rx="8"/>
+          <text x="99" y="61" text-anchor="middle" font-size="13">stack</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M174 56h120"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M288 50l8 6-8 6"/>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="296" y="24" width="150" height="64" rx="8"/>
+          <text x="371" y="61" text-anchor="middle" font-size="13">heap</text>
+          <text class="t-dim" x="320" y="110" font-size="12">labels stay inside the viewBox</text>
+        </svg>
+        <figcaption>One sentence saying what to notice in the diagram.</figcaption>
+      </figure>
+    </section>
+
+    <section id="sec-second">
+      <h2>Second section</h2>
+
+      <p>The book's core move: the snippet the compiler refuses, next to
+      the fix, both machine-verified.</p>
+
+      <figure class="codeblock reject">
+        <figcaption>move_violation.rs — the compiler refuses this</figcaption>
+<pre data-verify="fail" data-error="E0382"><code class="language-rust">fn main() {
+    let s = String::from("hi");
+    let t = s;
+    println!("{s}");
+}</code></pre>
+      </figure>
+
+      <figure class="codeblock accept">
+        <figcaption>move_ok.rs — this compiles and runs</figcaption>
+<pre data-verify="run" data-expect="hi"><code class="language-rust">fn main() {
+    let s = String::from("hi");
+    let t = s;
+    println!("{t}");
+}</code></pre>
+      </figure>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — drop order, hand-checked</p>
+        <div class="worked-body">
+<pre><code class="language-text">let a = first();   // declared first  -> dropped last
+let b = second();  // declared second -> dropped first
+// end of scope: b drops, then a</code></pre>
+        </div>
+      </div>
+
+      <div class="note"><span class="cap">Note</span>
+        <p>Notes are blue and hold context that helps but can be skipped.</p>
+      </div>
+
+      <div class="warn"><span class="cap">Watch out</span>
+        <p>Warnings are red and flag the mistake readers actually make.</p>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Type</th><th>Stack size</th></tr></thead>
+          <tbody>
+            <tr><td>String</td><td class="num">24 bytes<a class="prov" data-src="research/stack-and-heap.md" href="links.html#s-stack-and-heap" title="stack-and-heap — research/stack-and-heap.md">[stack-and-heap]</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Guidance ends. Replace with real sections, then takeaways. -->
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Three to five predictions the reader can now make.</li>
+        <li>Each one concrete, no uncited numbers.</li>
+        <li>The last one hands off to the next page.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="PREV.html"><span class="cap">Previous</span><span class="pg-title">PREVIOUS PAGE TITLE</span></a>
+    <a class="pager-card" rel="next" href="NEXT.html"><span class="cap">Next</span><span class="pg-title">NEXT PAGE TITLE</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Why Rust chose stackless — Under the Await</title>
+  <meta name="description" content="The decision ledger: green threads versus compiler-generated state machines, the costs Rust paid for stackless futures, and the payoff that justified them.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p03-08">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Why Rust chose stackless</h1>
+
+      <p>You have now built the entire machinery by hand: a future, a waker,
+        a desugaring, a memory rule, an engine. This last page of Part 3
+        steps back from the workbench and asks the design question: of all
+        the shapes Part 2 surveyed, why did Rust bet its language on this
+        one, the <a href="../02-concurrency-models/04-stackless-coroutines.html">stackless</a>
+        coroutine compiled into a state machine? The honest answer is a
+        ledger, not a slogan: a column of costs, a column of payoffs, and a
+        philosophical wager about what a standard library is for. Read the
+        ledger and you will also understand why every cost you paid in the
+        last seven pages, the <a href="06-pin.html">pinning</a> rules, the
+        colored functions, the hand-built engine, was accepted with eyes
+        open.</p>
+
+      <h2>The two candidates, one last time</h2>
+
+      <p>On the green side: <a href="../02-concurrency-models/03-green-threads.html">green
+        threads</a>, the Go and Java answer. Each concurrent thing gets its
+        own real stack, managed by the engine, and suspension can happen
+        anywhere, because the engine just saves the whole stack and switches
+        to another one. On the Rust side: the thing you just built. Each
+        concurrent thing is a compiler-generated state machine, suspension
+        happens only at the marked points you wrote yourself
+        (<code>.await</code>), and there is no per-thing stack at all: the
+        "stack" degenerates into the struct's live fields, the locals that
+        straddle an await.</p>
+
+      <!-- fs: research/page-outlines.md p03-08 + p02-03 — stackful costs kilobytes to megabytes per suspended thing; stackless stores only live locals -->
+      <p>The memory difference is the heart of it. A suspended green thread
+        drags a full stack behind it, kilobytes at the very best and
+        megabytes at default settings, most of it untouched. A suspended
+        future is exactly as large as the data it is actually holding at
+        that await point, often a few dozen bytes: the connection handle,
+        the loop counter, the buffer. At ten thousand concurrent things
+        both designs work. At a million, only one of them fits in memory,
+        and it is the one where a paused computation costs about as much as
+        a small struct.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 240" role="img" aria-label="Left: three green threads, each a tall stack box, mostly unused space shaded. Right: many small future state boxes of a few dozen bytes each.">
+          <title>Stackful versus stackless memory per suspended thing</title>
+          <text class="label" x="160" y="24" text-anchor="middle">green threads: one stack each</text>
+          <rect class="box" x="60" y="40" width="70" height="170" rx="6"/>
+          <rect class="box accent" x="60" y="190" width="70" height="20" rx="4"/>
+          <text class="label muted" x="95" y="120" text-anchor="middle" transform="rotate(-90 95 120)">mostly unused</text>
+          <rect class="box" x="150" y="40" width="70" height="170" rx="6"/>
+          <rect class="box accent" x="150" y="190" width="70" height="20" rx="4"/>
+          <text class="label muted" x="185" y="120" text-anchor="middle" transform="rotate(-90 185 120)">mostly unused</text>
+          <rect class="box" x="240" y="40" width="70" height="170" rx="6"/>
+          <rect class="box accent" x="240" y="190" width="70" height="20" rx="4"/>
+          <text class="label muted" x="275" y="120" text-anchor="middle" transform="rotate(-90 275 120)">mostly unused</text>
+          <text class="label muted" x="185" y="228" text-anchor="middle">kilobytes each</text>
+          <text class="label" x="490" y="24" text-anchor="middle">futures: live fields only</text>
+          <rect class="box accent" x="370" y="40" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="422" y="40" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="474" y="40" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="526" y="40" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="578" y="40" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="370" y="70" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="422" y="70" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="474" y="70" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="526" y="70" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="578" y="70" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="370" y="100" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="422" y="100" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="474" y="100" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="526" y="100" width="44" height="22" rx="4"/>
+          <rect class="box accent" x="578" y="100" width="44" height="22" rx="4"/>
+          <text class="label muted" x="490" y="145" text-anchor="middle">each box: the live locals at one await</text>
+          <text class="label muted" x="490" y="165" text-anchor="middle">tens of bytes, thousands per connection</text>
+        </svg>
+        <figcaption>Figure 1: what a paused computation costs. Stacks carry
+          reserved space for call depth that may never happen; state
+          machines carry only what is alive right now.</figcaption>
+      </figure>
+
+      <h2>The decision ledger</h2>
+
+      <table>
+        <thead>
+          <tr><th>Axis</th><th>Green threads (stackful)</th>
+            <th>Rust futures (stackless)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Suspension points</td><td>anywhere, invisible in the
+            source</td><td>only at <code>.await</code>, visible in the
+            source</td></tr>
+          <tr><td>Memory per paused thing</td><td>a full stack, kilobytes
+            to megabytes</td><td>the live locals, typically tens of
+            bytes</td></tr>
+          <tr><td>Who switches</td><td>the engine saves and swaps
+            stacks</td><td>the future returns <code>Pending</code> like any
+            value; nothing underhanded happens</td></tr>
+          <tr><td>Fairness model</td><td>preemptive-ish, the engine can
+            cut in anywhere</td><td>cooperative, work must yield at
+            awaits</td></tr>
+          <tr><td>What the language ships</td><td>a complete engine in the
+            standard library</td><td>a trait, a waker type, a compiler
+            transform; the engine is external</td></tr>
+          <tr><td>Interop with plain C stacks</td><td>hard: a foreign call
+            cannot be suspended through</td><td>trivial: between awaits,
+            you are an ordinary stack</td></tr>
+        </tbody>
+      </table>
+
+      <p>Every row is a real argument people had, in public, for years.
+      The bottom two rows are where Rust's identity tipped the scale.</p>
+
+      <!-- fs: research/rust-async.md §7 — RFC 2592 defines only the interaction contract between futures, wakers and engines; std supplies Future/Poll/Waker/Context, no engine; the ecosystem competed and Tokio became the de facto standard -->
+      <h2>The philosophy: std ships the primitive, not the engine</h2>
+
+      <p>Rust's standard library is small by the standards of managed
+        languages, and that is a policy, not an accident. When async was
+        designed, in RFC 2592, the decision was explicit: the language and
+        std would define the <em>contract</em>, the <code>Future</code>
+        trait, <code>Poll</code>, the waker machinery, and nothing that
+        schedules or drives anything. No queues, no worker threads, no
+        readiness integration in std. The RFC draws the line in one
+        sentence: it defines the interaction between futures and engines,
+        and includes no engine. Everything you built on the previous two
+        pages, the <a href="07-mini-executor.html">executor</a>, the ready
+        queue, the park loop, is deliberately <em>not</em> the standard
+        library's job.</p>
+
+      <p>Green threads could not live by that rule. An engine that swaps
+        stacks is load-bearing machinery: it must own thread creation,
+        sizing, growth, and the points where switching happens, and every
+        program linked against the language pays for it whether it starts
+        one green thread or none. The stackless design lets Rust keep its
+        promise: a program that never writes <code>async</code> links no
+        engine at all, and a program that does picks its own. The result
+        was an ecosystem competition, several engines fighting it out in
+        the wild, and Tokio emerging as the de facto standard that Part 4
+        dissects. Fragmentation was the price of that freedom; a winning
+        engine was the outcome.</p>
+
+      <h2>The costs, paid in full</h2>
+
+      <p>Be honest about what the ledger charged Rust, because you paid
+        each line by hand in this part.</p>
+
+      <p><strong>Pin.</strong> The heaviest item. Letting a paused
+        computation be a movable value while it may hold a pointer into
+        itself forced the entire <a href="06-pin.html">pinning</a>
+        apparatus into the language: a wrapper type, an auto trait, a
+        contract in every <code>poll</code> signature. No stackless design
+        in a memory-safe language escapes this; Go escapes it only by
+        never letting you hold such a value at all.</p>
+
+      <p><strong>Function coloring.</strong> Sync cannot call async. The
+        two worlds share a type system but not a call graph, and the seam
+        shows: <code>block_on</code> at the boundary, carefully chosen
+        sync alternatives inside, and whole ecosystems split along the
+        line. This is the classic
+        <a href="../02-concurrency-models/04-stackless-coroutines.html">coloring
+        problem</a> from Part 2, and Rust chose it with open eyes because
+        the alternative, making every function suspendable, is exactly the
+        green-thread bet.</p>
+
+      <!-- fs: research/rust-async.md §6 — async fn in traits stabilized in Rust 1.75 (Dec 2023) via RPITIT; dyn-compatibility and Send-bound caveats remain; async closures stabilized in Rust 1.85 (Feb 2025) -->
+      <p><strong>Language friction.</strong> The state-machine transform
+        interacted badly with traits for a decade: async functions in
+        traits were only stabilized in Rust 1.75, released in December
+        2023, and they still carry caveats, since such traits cannot be
+        used as trait objects, and multi-threaded engines demand explicit
+        <code>Send</code> annotations the compiler cannot infer for you.
+        Async closures took until Rust 1.85, in early 2025. Each item
+        worked out; the decade of workarounds was a real cost, paid in
+        ecosystem time.</p>
+
+      <p><strong>Ecosystem churn.</strong> With the engine outside std,
+        every library that touched async had to choose which engine
+        abstractions to build on, and the early years shipped several
+        incompatible answers. The consolidation around Tokio ended the
+        churn, but the scar tissue, adapter crates, re-exports, and
+        "which engine is this for" folklore, is still part of the daily
+        experience.</p>
+
+      <h2>The payoff, banked</h2>
+
+      <p>Against the column of costs, three returns, all of which you have
+        personally verified in this part.</p>
+
+      <p><strong>Scale.</strong> A million paused computations is a
+        mundane workload, not a hero feat, because each one costs its live
+        locals and nothing more. You ran three timers on one thread with
+        zero extra stacks; Tokio runs the same shape with work
+        <a href="../02-concurrency-models/05-cooperative-scheduling.html">stealing</a>
+        across a pool the size of your cores. The
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">C10K
+        arithmetic</a> that opened this book dissolves when the unit of
+        suspension is a struct.</p>
+
+      <p><strong>Composition without tax.</strong> Awaiting a future is a
+        function call into its <code>poll</code>: no allocation, no thread
+        handoff, no lock. You stacked a hand-written future inside a
+        compiler-generated one inside your own engine, and the only
+        machinery that moved was one waker per level. Compare the cost of
+        the same composition under <a href="../02-concurrency-models/01-thread-pools.html">thread
+        pools</a>, one kernel object and one stack per unit, or under
+        <a href="../02-concurrency-models/02-callbacks-and-event-loops.html">callbacks</a>,
+        one heap-allocated continuation per step.</p>
+
+      <p><strong>Visible suspension.</strong> Every point where control
+        can leave your function is written <code>.await</code>, in the
+        source, where you can see it. When a function holds a lock across
+        a suspension point, or yields between a read and a write, the bug
+        is on the page, not buried in an engine's switching policy. The
+        cooperation contract from Part 2 is enforced by grammar: no
+        <code>.await</code>, no yield, and no hidden preemption exists to
+        save you from a long computation, which is precisely why Part 4
+        will be so strict about where blocking work goes.</p>
+
+      <h2>Through the engine-room door</h2>
+
+      <p>You now hold the complete mental model that Part 4 assumes: the
+        workhorse object there is a pinned future with scheduling metadata
+        bolted on; the
+        <a href="07-mini-executor.html">engine loop</a> you wrote is the
+        skeleton of Tokio's workers; the waker you fired from a thread is
+        the same object Tokio's epoll machinery fires from kernel
+        readiness. Every remaining mystery is a matter of scale and
+        engineering: run queues with stealing, a separate pool of ordinary
+        threads for work that must sleep in the kernel, timing machinery
+        that replaces your thread-per-timer, and the whole apparatus
+        assembled behind one attribute. Part 4 opens that door. Everything behind it is made of
+        parts you have already held in your hands.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Rust chose stackless futures over green threads on memory
+            (live locals versus a full stack per paused thing), on
+            explicitness (visible <code>.await</code> points), and on
+            standard-library philosophy (ship the contract, not the
+            engine).</li>
+          <li>The costs were real and are now familiar: the pinning
+            apparatus, function coloring, a decade of trait friction, and
+            ecosystem fragmentation before Tokio became the de facto
+            standard.</li>
+          <li>The payoff is scale and composition: a million suspended
+            computations at tens of bytes each, and awaits that compile to
+            plain calls with no hidden switching.</li>
+          <li>Std's async surface is deliberately minimal:
+            <code>Future</code>, <code>Poll</code>, the waker machinery;
+            every queue, worker, and readiness integration belongs to the
+            engine you choose.</li>
+          <li>Part 4 is the same machinery at industrial scale: every
+            piece of Tokio maps back to something built or dissected in
+            this part.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

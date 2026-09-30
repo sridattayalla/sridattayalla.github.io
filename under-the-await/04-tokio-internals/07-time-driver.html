@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The time driver — Under the Await</title>
+  <meta name="description" content="Tokio's hierarchical timing wheel: six levels of sixty-four slots, cascading deadlines, O(1) sleeps, and the bound on a parked worker's nap.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p04-07">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>The time driver</h1>
+
+      <p>Networks are slow in a way epoll cannot help with. Sometimes the
+        event a task is waiting for is not a packet but a moment: retry in
+        five seconds, give up at noon, tick once per second forever. A
+        runtime that can only sleep on sockets is a runtime without clocks.
+        So Tokio has a second driver, and this chapter is about it. The
+        <strong>time driver</strong> is the component that owns every sleep
+        in the runtime: it records each deadline, advances with the clock,
+        fires the right wakers at the right instants, and, as you saw on the
+        <a href="05-io-driver.html">I/O driver page</a>, caps how long a
+        parked worker may nap.</p>
+
+      <p>The requirements sound modest until you scale them. A busy service
+        can hold enormous numbers of armed sleeps at once: every request
+        carrying a deadline, every retry loop, every heartbeat. Inserts and
+        removals happen constantly, deadlines fire thousands of times per
+        second, and all of it must coexist with the scheduler's promise that
+        a worker either runs tasks or sleeps cheaply. The data structure
+        doing that work is the star of this page: the <strong>timing
+        wheel</strong>.</p>
+
+      <h2>Why not the obvious designs</h2>
+
+      <p>Start with the obvious: keep every deadline in one sorted
+        structure.</p>
+
+      <p>A sorted list gives you the nearest deadline in a peek, but every
+        insert walks the list, so a burst of sleeps becomes a burst of walks.
+        A binary heap fixes the walk, at the price of logarithmic work on
+        every insert, every removal, and every fire. Neither is wrong; both
+        are more expensive than what Tokio settled on. The stated goal was
+        that all timer operations, insert and remove and fire alike, cost a
+        small constant on average, where a heap pays logarithmic cost.
+        <!-- fs: research/tokio-internals.md §3 — wheel chosen over binary heap: O(1) amortized insert/cancel/fire vs O(log n) --></p>
+
+      <p>There is a second, subtler problem: the wake cadence. Whatever holds
+        deadlines must also answer &ldquo;when is the next one?&rdquo; every
+        time a worker parks. With a heap that answer is a peek at the root,
+        which is fine; the trouble is that a naive design that re-checks
+        deadlines on a fixed heartbeat burns a core and wrecks the worker's
+        nap. The real design answers &ldquo;when next?&rdquo; in constant
+        time and sleeps exactly until then.</p>
+
+      <h2>The wheel: six levels, sixty-four slots</h2>
+
+      <p>A timing wheel is a ring of slots, and time walks around the ring:
+        whatever is linked into today's slot fires today. One ring of 64
+        slots with one slot per millisecond covers only 64 milliseconds of
+        future, which is useless for &ldquo;retry in five seconds.&rdquo; A
+        single ring covering years at millisecond precision would need
+        billions of slots. The fix is hierarchy, the same trick a clock
+        face uses: a second hand, a minute hand, an hour hand, each a small
+        ring, together covering an enormous range.</p>
+
+      <p>Tokio's wheel is 6 levels of 64 slots each, and the wheel's tick is
+        1 ms. <!-- fs: research/tokio-internals.md §3 — NUM_LEVELS = 6, LEVEL_MULT = 64, 1 tick = 1 ms -->
+        Level 0 is the finest: each of its slots covers a single
+        millisecond, so the whole level covers 64 ms. Each higher level's
+        slots are 64 times wider than the level below, so the levels
+        stack up like this:</p>
+
+      <!-- fs: research/tokio-internals.md §3 — level table: L0 64×1ms (64ms), L1 64×64ms (~4s), L2 64×~4s (~4min), L3 64×~4min (~4hr), L4 64×~4hr (~12day), L5 64×~12day (~2yr) -->
+      <table>
+        <thead>
+          <tr><th>Level</th><th>Each slot covers</th><th>The level covers</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>0</td><td>1 ms</td><td>64 ms</td></tr>
+          <tr><td>1</td><td>64 ms</td><td>about 4 s</td></tr>
+          <tr><td>2</td><td>about 4 s</td><td>about 4 min</td></tr>
+          <tr><td>3</td><td>about 4 min</td><td>about 4 hr</td></tr>
+          <tr><td>4</td><td>about 4 hr</td><td>about 12 days</td></tr>
+          <tr><td>5</td><td>about 12 days</td><td>about 2 years</td></tr>
+        </tbody>
+      </table>
+      <!-- fs: research/tokio-internals.md §3 — MAX_DURATION = 1 << (6*6) = 2^36 ticks ≈ 2 years at 1 ms precision -->
+
+      <p>Six small rings of sixty-four slots each cover a maximum sleep of
+        2<sup>36</sup> milliseconds, roughly two years. No slot is ever
+        allocated for a sleep that has not been armed, and none is wasted on
+        empty future: a sleep two days out occupies exactly one link, in one
+        slot, on level 4.</p>
+
+      <h2>Insert: pick a shelf, link one node</h2>
+
+      <p>When you arm a sleep, the wheel asks which level the deadline
+        belongs to. The rule is a bit trick: find the highest level whose
+        slot width can still represent the deadline exactly enough, then
+        compute the slot index inside that level, then push the entry onto
+        that slot's intrusive linked list. <!-- fs: research/tokio-internals.md §3 — insertion picks level via level_for bit tricks, pushes onto the slot's intrusive linked list -->
+        The entry is a small node holding the deadline and the sleeper's
+        waker. No allocation of a ring, no sorting, no heap sift: a handful
+        of integer operations and one link.</p>
+
+      <p>Dropping a sleep early is symmetric. A future that gives up before
+        its deadline is simply unlinked from whatever slot holds it, which is
+        the same small constant as the insert. Timers that never fire are
+        almost free, which is what you want, because most sleeps in a real
+        program are defensive deadlines that never trigger.</p>
+
+      <h2>Tick and cascade</h2>
+
+      <p>The wheel advances with the clock, one tick per millisecond of
+        elapsed time, and two things happen as it turns.</p>
+
+      <p>First, firing. Only level 0 fires. When the wheel's pointer
+        reaches a slot on level 0, the entries linked there have reached
+        their deadlines: their wakers fire, the tasks behind them get queued
+        by the scheduler, and the slot empties. Everything above level 0 is
+        storage, not a firing mechanism.</p>
+
+      <p>Second, cascading. When the wheel's pointer wraps around to a slot
+        that is occupied at some higher level, that slot's time has come at
+        its level's granularity, but its entries are not due yet. They are
+        not fired; they are <em>cascaded</em> down exactly one level: each
+        entry is re-linked into a slot at the finer granularity below, where
+        it will sit until it either cascades again or lands in level 0 and
+        fires. A sleep armed for two days out will cascade from level 4 to
+        level 3, and much later from 3 to 2, and so on, one handoff at a
+        time, until it is close enough to live in level 0.
+        <!-- fs: research/tokio-internals.md §3 — process_expiration moves entries to the pending list (level 0: deadline reached, wakers fire) or cascades them to the next-lower level --></p>
+
+      <p>One detail makes the whole thing cheap to drive: each level keeps a
+        64-bit field with one bit per slot, set when the slot holds any
+        entries. Finding the next occupied slot is a trailing-zeros count on
+        that field, not a scan of the ring, so even a nearly empty wheel
+        answers &ldquo;anything due?&rdquo; and &ldquo;when next?&rdquo; in a
+        handful of instructions. <!-- fs: research/tokio-internals.md §3 — occupied u64 bitfield per level; next occupied slot found via trailing_zeros/rotate, not a scan --></p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 330" role="img">
+          <title>Six levels of the timing wheel; entries cascade down one level at a time toward level 0, the only level that fires</title>
+          <text class="label muted" x="8" y="37" text-anchor="start">level 5</text>
+          <text class="label muted" x="8" y="53" text-anchor="start">12-day slots</text>
+          <rect class="box" x="120" y="20" width="54" height="26" rx="4"/>
+          <rect class="box" x="182" y="20" width="54" height="26" rx="4"/>
+          <rect class="box" x="244" y="20" width="54" height="26" rx="4"/>
+          <rect class="box" x="306" y="20" width="54" height="26" rx="4"/>
+          <rect class="box" x="368" y="20" width="54" height="26" rx="4"/>
+          <text class="label muted" x="440" y="37" text-anchor="middle">… 64 slots</text>
+          <text class="label muted" x="8" y="85" text-anchor="start">level 4</text>
+          <text class="label muted" x="8" y="101" text-anchor="start">4-hour slots</text>
+          <rect class="box" x="120" y="68" width="54" height="26" rx="4"/>
+          <rect class="box" x="182" y="68" width="54" height="26" rx="4"/>
+          <rect class="box" x="244" y="68" width="54" height="26" rx="4"/>
+          <rect class="box" x="306" y="68" width="54" height="26" rx="4"/>
+          <rect class="box" x="368" y="68" width="54" height="26" rx="4"/>
+          <text class="label muted" x="440" y="85" text-anchor="middle">…</text>
+          <text class="label muted" x="8" y="133" text-anchor="start">level 3</text>
+          <text class="label muted" x="8" y="149" text-anchor="start">4-min slots</text>
+          <rect class="box" x="120" y="116" width="54" height="26" rx="4"/>
+          <rect class="box" x="182" y="116" width="54" height="26" rx="4"/>
+          <rect class="box" x="244" y="116" width="54" height="26" rx="4"/>
+          <rect class="box" x="306" y="116" width="54" height="26" rx="4"/>
+          <rect class="box" x="368" y="116" width="54" height="26" rx="4"/>
+          <text class="label muted" x="440" y="133" text-anchor="middle">…</text>
+          <text class="label muted" x="8" y="181" text-anchor="start">level 2</text>
+          <text class="label muted" x="8" y="197" text-anchor="start">4-second slots</text>
+          <rect class="box" x="120" y="164" width="54" height="26" rx="4"/>
+          <rect class="box" x="182" y="164" width="54" height="26" rx="4"/>
+          <rect class="box accent" x="244" y="164" width="54" height="26" rx="4"/>
+          <rect class="box" x="306" y="164" width="54" height="26" rx="4"/>
+          <rect class="box" x="368" y="164" width="54" height="26" rx="4"/>
+          <text class="label muted" x="440" y="181" text-anchor="middle">…</text>
+          <text class="label muted" x="8" y="229" text-anchor="start">level 1</text>
+          <text class="label muted" x="8" y="245" text-anchor="start">64-ms slots</text>
+          <rect class="box" x="120" y="212" width="54" height="26" rx="4"/>
+          <rect class="box" x="182" y="212" width="54" height="26" rx="4"/>
+          <rect class="box" x="244" y="212" width="54" height="26" rx="4"/>
+          <rect class="box" x="306" y="212" width="54" height="26" rx="4"/>
+          <rect class="box" x="368" y="212" width="54" height="26" rx="4"/>
+          <text class="label muted" x="440" y="229" text-anchor="middle">…</text>
+          <text class="label muted" x="8" y="277" text-anchor="start">level 0</text>
+          <text class="label muted" x="8" y="293" text-anchor="start">1-ms slots</text>
+          <rect class="box" x="120" y="260" width="54" height="26" rx="4"/>
+          <rect class="box accent" x="182" y="260" width="54" height="26" rx="4"/>
+          <rect class="box" x="244" y="260" width="54" height="26" rx="4"/>
+          <rect class="box" x="306" y="260" width="54" height="26" rx="4"/>
+          <rect class="box" x="368" y="260" width="54" height="26" rx="4"/>
+          <text class="label muted" x="440" y="277" text-anchor="middle">…</text>
+          <line class="arrow accent" x1="271" y1="190" x2="271" y2="210"/>
+          <polygon class="arrow-head accent" points="266,210 271,220 276,210"/>
+          <text class="label accent" x="285" y="209" text-anchor="start">cascade: one level down</text>
+          <line class="arrow accent" x1="209" y1="238" x2="209" y2="258"/>
+          <polygon class="arrow-head accent" points="204,258 209,268 214,258"/>
+          <text class="label accent" x="223" y="257" text-anchor="start">fires: wakers wake</text>
+        </svg>
+        <figcaption>Figure 1: the six levels. Highlighted slots hold armed
+          sleeps. A slot's time comes at its level's width, and its entries
+          cascade down one level; only level 0 ever fires.</figcaption>
+      </figure>
+
+      <h2>sleep, as a future</h2>
+
+      <p>Here is the user-facing half:</p>
+
+      <pre><code class="language-rust">// arm a deadline 250 ms in the future and wait for it
+tokio::time::sleep(Duration::from_millis(250)).await;</code></pre>
+
+      <p>Underneath, <code>sleep</code> builds a future holding the deadline
+        and a wheel entry wired to the task's waker, links that entry into
+        the right slot, and returns <code>Pending</code>. That is the entire
+        difference from the I/O story of the last chapter: same contract,
+        different bench. A socket parks its waker in a
+        <code>ScheduledIo</code>; a sleep parks its waker in a wheel slot.
+        When the wheel's pointer reaches the slot, the waker fires, the
+        scheduler queues the task, and the next poll sees the deadline
+        reached and returns <code>Ready</code>. The polling side never
+        re-checks the clock in a loop; it sleeps until told.</p>
+
+      <p>Interval tickers, retry delays, and every deadline wrapper in the
+        ecosystem reduce to the same arm-and-wait shape. This is also why
+        timer operations had to be cheap: each of those constructs arms and
+        re-arms wheel entries constantly, at program scale.</p>
+
+      <h2>The wheel sets the pace</h2>
+
+      <p>Now close the loop with the I/O driver. You learned that a worker
+        with nothing to do parks inside <code>epoll_wait</code>, and that the
+        nap is capped by the nearest pending deadline. Where does that cap
+        come from? The wheel. Parking asks the time driver &ldquo;when
+        next?&rdquo;, and the answer is one trailing-zeros peek per level.
+        If the nearest deadline is 30 ms out, the worker hands
+        <code>epoll_wait</code> a maximum wait of 30 ms, and either bytes or
+        the clock will collect it. If nothing is armed anywhere, nothing
+        bounds the nap.</p>
+
+      <p>Direction of control matters here, so say it precisely: the time
+        driver owns the clock. Driver turns are what advance the wheel; the
+        wheel does not run on a background thread of its own. A worker
+        parked in the I/O driver is simultaneously the runtime's alarm
+        clock, and busy workers take timer turns between tasks on the same
+        cadence they take I/O turns. <!-- fs: research/tokio-internals.md §1 — event_interval: ticks between polling the I/O and time drivers --></p>
+
+      <p>One more structural fact for honesty: the wheel is a single
+        per-runtime structure behind a lock. Timer operations are constant
+        time, but they do serialize on that lock; it is a deliberate
+        trade of simplicity for contention, and an alternative sharded
+        timer exists behind an unstable flag for the multicore-hungry.
+        <!-- fs: research/tokio-internals.md §3 — wheel behind a Mutex (InnerState { next_wake, wheel }); unstable alternative timer for multicore scalability --></p>
+
+      <p>With I/O and time both driven, one large piece of the runtime
+        remains unexamined, and it is not machinery at all but the toolbox
+        that tasks use to talk to each other: locks, counters, and pipes.
+        Those are next, and every one of them is a waiter list wearing a
+        different hat.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>The time driver owns every sleep in the runtime, and its clock
+            advances on driver turns, not on a dedicated thread.</li>
+          <!-- fs: research/tokio-internals.md §3 — NUM_LEVELS = 6, LEVEL_MULT = 64, 1 tick = 1 ms -->
+          <li>Deadlines live in a hierarchical timing wheel: 6 levels of
+            64 slots, one tick per millisecond, covering sleeps up to about
+            two years.</li>
+          <li>Insert, remove, and fire are all constant-time on average:
+            pick a level, link or unlink one node. No heap, no sorting.</li>
+          <li>Only level 0 fires; higher levels cascade entries down one
+            level at a time as their slots come due.</li>
+          <li>The wheel answers &ldquo;when next?&rdquo; with bit tricks, and
+            that answer is the cap on a parked worker's
+            <code>epoll_wait</code>.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

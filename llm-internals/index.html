@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How LLMs Actually Work — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="index">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">A field manual</p>
+    <h1>How LLMs Actually Work</h1>
+    <p class="lede">A trained language model does exactly one thing — predicts the
+    next chunk of text — and this manual takes you through every gear inside
+    that one thing, down to numbers you can check by hand.</p>
+
+    <section id="sec-trick">
+      <h2>The whole trick in one sentence</h2>
+      <p>You have watched a language model finish a sentence. Here is everything
+      that happened, minus the branding. The text you wrote was cut into
+      numbered chunks. The chunks went into the model, and out came a score for
+      every possible next chunk. The model picked one, attached it, and ran the
+      whole procedure again on the slightly longer text. Repeat until it emits
+      a designated stop piece. That loop is the entire product — the chat, the
+      essay, the code — and this manual walks through it gear by gear.</p>
+
+      <p>Those chunks are the atoms of everything that follows. A
+      <dfn><a href="glossary.html#t-token">token</a></dfn> is one entry from a
+      fixed list of text fragments: often a word, a piece of a word, or a
+      punctuation mark. Common words are usually single pieces; rare ones
+      shatter into fragments. A model's list is fixed before training begins
+      and never grows — bigger lists simply pack more of a rare word into each
+      piece, and the guessing game itself is unchanged.</p>
+
+      <p>And what is doing the scoring? A
+      <dfn><a href="glossary.html#t-model">model</a></dfn> is the finished
+      artifact: an enormous collection of numbers arranged in shapes, plus the
+      recipe for turning chunks into scores. Nothing is looked up at run time —
+      no database, no index — every fact and habit the model has lives inside
+      those numbers. GPT-3, the 2020 system that made this design famous,
+      contains 175 billion of
+      them <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>.</p>
+
+      <p>A <dfn><a href="glossary.html#t-language-model">language
+      model</a></dfn> is a model trained on human-written text to play this one
+      game well: guess the next piece. That is the entire definition. The rest
+      of this manual is about what it takes to make the guess good — and what
+      falls out of trying.</p>
+    </section>
+
+    <section id="sec-abilities">
+      <h2>What you will be able to do</h2>
+      <p>This manual is written so that, by the end, you can do the following
+      without hand-waving:</p>
+      <ul>
+        <li>Point at any part of the stack and say what it computes, and what
+        would break without it.</li>
+        <li>Explain why a model that aces professional exams still miscounts
+        the letters in <em>strawberry</em> — a boundary problem, not a
+        reasoning problem.</li>
+        <li>Check any number the text asserts: each one is either computed in
+        front of you or carries a bracketed citation.</li>
+        <li>Read deployment decisions — machine size, users per chip, caching —
+        as engineering rather than folklore.</li>
+      </ul>
+    </section>
+
+    <section id="sec-route">
+      <h2>The route</h2>
+      <p>Five parts, in dependency order — each page assumes only what came
+      before.</p>
+      <ul>
+        <li><strong>Part One — The Machine.</strong> How text becomes numbers
+        a chip can multiply, how order is marked, and how earlier pieces get
+        mixed into later ones — ending with the full assembly, floor by
+        floor.</li>
+        <li><strong>Part Two — Training.</strong> What "guessing well" means
+        as arithmetic, how billions of numbers get tuned by their own
+        mistakes, and the hardware that pays for it.</li>
+        <li><strong>Part Three — The Assistant.</strong> The extra training
+        pass that turns a text-continuer into something that takes
+        instructions.</li>
+        <li><strong>Part Four — Running at Scale.</strong> Why the first piece
+        of a reply is slow, why the rest stream, and why moving numbers — not
+        arithmetic — sets the price.</li>
+        <li><strong>Part Five — The Frontier.</strong> How the model's reach
+        gets stretched from thousands to millions of pieces, and the newest
+        trade the field is making.</li>
+      </ul>
+      <p>A companion program, <code>code/tiny_llm.py</code>, implements the
+      whole machine in miniature — cutting text into pieces, mixing, one
+      training step, and generation with and without the trick that makes it
+      fast. Every mechanism in these pages has a line number there.</p>
+    </section>
+
+    <section id="sec-reading">
+      <h2>How to read this manual</h2>
+      <p>Three conventions hold throughout. Every number is either worked in
+      front of you or carries a citation mark like the bracketed one earlier
+      on this page; the marks resolve on the Sources page. Every term is
+      defined at
+      first use — the dotted underline on <em>token</em>, <em>model</em>, and
+      <em>language model</em> marks a definition, and the Glossary collects
+      them all. And the worked examples are genuinely hand-checkable: if a
+      table says a row adds to one, you are invited to add it.</p>
+      <p>That is the contract. Turn the page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A language model cuts text into fixed pieces, scores every
+        possible next piece, picks one, and repeats — that loop is the whole
+        product.</li>
+        <li>Everything the model "knows" is baked into its numbers at training
+        time; nothing is looked up when you chat.</li>
+        <li>The rest of the field — assistant behavior, speed, price — is
+        engineering wrapped around that loop.</li>
+        <li>Next: what exactly is a "piece"? The real answer is messier than
+        words, and its quirks explain famous failures.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="next" href="core-idea.html"><span class="cap">Next</span><span class="pg-title">The Core Idea: Predict the Next Token</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

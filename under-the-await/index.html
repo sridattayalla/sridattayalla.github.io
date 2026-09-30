@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Under the Await — how Tokio really works</title>
+  <meta name="description" content="How Tokio really works — from syscalls to the scheduler, a first-principles guide.">
+  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="assets/vendor/highlight.min.js" defer></script>
+  <script src="assets/main.js" defer></script>
+</head>
+<body data-page="index">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+
+    <header class="hero">
+      <p class="hero-eyebrow">A first-principles guide to async Rust</p>
+      <h1 class="hero-title">Under the <em>Await</em></h1>
+      <p class="hero-tagline">How Tokio really works — from syscalls to the
+        scheduler, a first-principles guide.</p>
+      <p class="hero-meta">37 pages · five parts · works fully offline</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="01-foundations/01-how-programs-run.html">Start at the beginning →</a>
+        <a class="btn btn-ghost" href="#roadmap">Skim the roadmap</a>
+      </div>
+
+      <!-- decorative: the shape of an await, poll by poll -->
+      <figure class="hero-figure" aria-hidden="true">
+        <svg viewBox="0 0 630 100" focusable="false" aria-hidden="true">
+          <rect class="box" x="4" y="28" width="84" height="40" rx="8"/>
+          <text class="label" x="46" y="53" text-anchor="middle">your task</text>
+          <line class="arrow" x1="90" y1="48" x2="118" y2="48"/>
+          <polygon class="arrow-head" points="118,43 128,48 118,53"/>
+          <rect class="box accent" x="130" y="28" width="72" height="40" rx="8"/>
+          <text class="label mono" x="166" y="53" text-anchor="middle">poll()</text>
+          <line class="arrow" x1="204" y1="48" x2="232" y2="48"/>
+          <polygon class="arrow-head" points="232,43 242,48 232,53"/>
+          <rect class="box" x="244" y="28" width="84" height="40" rx="8"/>
+          <text class="label" x="286" y="53" text-anchor="middle">Pending</text>
+          <line class="lane" x1="332" y1="48" x2="428" y2="48"/>
+          <text class="label muted" x="380" y="34" text-anchor="middle" style="font-size:12px">the waker fires</text>
+          <polygon class="arrow-head accent" points="428,43 438,48 428,53"/>
+          <rect class="box accent" x="440" y="28" width="72" height="40" rx="8"/>
+          <text class="label mono" x="476" y="53" text-anchor="middle">poll()</text>
+          <line class="arrow accent" x1="514" y1="48" x2="542" y2="48"/>
+          <polygon class="arrow-head accent" points="542,43 552,48 542,53"/>
+          <rect class="box" x="554" y="28" width="72" height="40" rx="8"/>
+          <text class="label accent" x="590" y="53" text-anchor="middle">Ready</text>
+        </svg>
+      </figure>
+    </header>
+
+    <section class="section" id="who">
+      <h2 class="section-title">Who this is for</h2>
+      <p>This book is for the developer who was never taught the machine.
+        You learned to program — variables, functions, maybe a lot of Rust —
+        but nobody ever sat you down and explained what actually happens
+        while a program waits. Threads were a box you were told not to open.
+        <em>Async</em> was a keyword surrounded by rules you memorized. The
+        kernel was weather: it did things, and you worked around it.</p>
+      <p>If Tokio&rsquo;s documentation sometimes reads like a map in a language
+        you only sort of recognize, the problem is not you — it is the
+        missing prerequisites. This guide rebuilds them from scratch,
+        bottom-up, in an order where nothing arrives before you can
+        understand it.</p>
+      <p>The promise on every page: every term is defined before it is used.
+        Registers before call stacks. File descriptors before epoll.
+        <code>poll</code> before <code>Pin</code>. By the time we say the
+        word <em>runtime</em>, you will already know exactly what needs
+        runtime-ing — no hand-waving, no black boxes labeled &ldquo;scheduler&rdquo;
+        and left sealed.</p>
+      <p>The only prerequisites are fluency in some programming language and
+        patience for detail. You do not need a systems-programming
+        background, prior Rust mastery (a one-page recap covers the parts
+        async uses), or any networking knowledge. Examples lean on Rust, with
+        cameos from C, JavaScript, and Python wherever a contrast teaches
+        faster than a definition.</p>
+    </section>
+
+    <section class="section" id="roadmap">
+      <h2 class="section-title">The roadmap</h2>
+      <p>Thirty-seven pages, five parts, one continuous arc: from the moment
+        the CPU executes your first instruction to the moment Tokio&rsquo;s
+        scheduler runs your ten-thousandth task. Each part assumes only the
+        parts before it. The links below lead to each part&rsquo;s first page.</p>
+
+      <ol class="roadmap-list">
+        <li class="roadmap-item">
+          <div class="roadmap-num" aria-hidden="true">1</div>
+          <div>
+            <h3><a href="01-foundations/01-how-programs-run.html">Machine Foundations</a></h3>
+            <p>What is actually down there: CPU registers and the call stack,
+              processes and threads, syscalls and file descriptors — then
+              blocking I/O, the C10K problem, non-blocking readiness, and
+              epoll&rsquo;s ready list. The ground truth everything else in the
+              book builds on.</p>
+            <a class="roadmap-start" href="01-foundations/01-how-programs-run.html">Start with &ldquo;How a program runs&rdquo; →</a><span class="roadmap-meta">8 pages</span>
+          </div>
+        </li>
+        <li class="roadmap-item">
+          <div class="roadmap-num" aria-hidden="true">2</div>
+          <div>
+            <h3><a href="02-concurrency-models/01-thread-pools.html">Concurrency Models</a></h3>
+            <p>The answers the industry tried before Rust chose one: thread
+              pools, callbacks and event loops, green threads, stackless
+              coroutines — and the skeleton underneath them all: cooperative
+              scheduling, run queues, fairness, and work stealing.</p>
+            <a class="roadmap-start" href="02-concurrency-models/01-thread-pools.html">Start with &ldquo;Thread pools&rdquo; →</a><span class="roadmap-meta">5 pages</span>
+          </div>
+        </li>
+        <li class="roadmap-item">
+          <div class="roadmap-num" aria-hidden="true">3</div>
+          <div>
+            <h3><a href="03-rust-async/01-rust-recap.html">Rust Async Building Blocks</a></h3>
+            <p>Async Rust from the atoms up: the <code>Future</code> trait and
+              its strict <code>poll</code> rules, <code>Waker</code> and
+              <code>Context</code>, a <code>Delay</code> future written by
+              hand, what <code>async</code>/<code>await</code> really compiles
+              into, and why <code>Pin</code> exists — capped by a sixty-line
+              executor you build yourself.</p>
+            <a class="roadmap-start" href="03-rust-async/01-rust-recap.html">Start with &ldquo;The Rust you need for async&rdquo; →</a><span class="roadmap-meta">8 pages</span>
+          </div>
+        </li>
+        <li class="roadmap-item">
+          <div class="roadmap-num" aria-hidden="true">4</div>
+          <div>
+            <h3><a href="04-tokio-internals/01-runtime-overview.html">Tokio Internals</a></h3>
+            <p>The runtime, opened up: what <code>spawn</code> allocates, the
+              multi-threaded scheduler&rsquo;s run queues and LIFO slot, the
+              blocking pool, the I/O driver&rsquo;s wake path from epoll to your
+              task, the time driver&rsquo;s timing wheel, channels, and what
+              cancellation really does.</p>
+            <a class="roadmap-start" href="04-tokio-internals/01-runtime-overview.html">Start with &ldquo;The Tokio runtime: an overview&rdquo; →</a><span class="roadmap-meta">9 pages</span>
+          </div>
+        </li>
+        <li class="roadmap-item">
+          <div class="roadmap-num" aria-hidden="true">5</div>
+          <div>
+            <h3><a href="05-walkthroughs/01-boot-sequence.html">Walkthroughs</a></h3>
+            <p>Theory made runnable: trace the boot sequence before your first
+              await, walk a TCP echo server await by await, watch
+              <code>join!</code>, <code>select!</code>, and <code>timeout</code>
+              execute, build a pipeline with backpressure, and collect the
+              classic pitfalls — wrong code, what the runtime did, fixed code.</p>
+            <a class="roadmap-start" href="05-walkthroughs/01-boot-sequence.html">Start with &ldquo;Hello, Tokio: the boot sequence&rdquo; →</a><span class="roadmap-meta">6 pages</span>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="section" id="how-to-read">
+      <h2 class="section-title">How to read this</h2>
+      <p>Read it in order. The book is deliberately linear: Part 3 can build
+        a <code>Waker</code> in your head only because Part 1 made readiness
+        concrete, and Part 4 can open Tokio&rsquo;s scheduler only because Part 3
+        built a miniature one. If you already know a topic, skim it — every
+        page stands alone enough for that, and the sidebar always shows where
+        you are.</p>
+      <p>Navigation is threefold: the sidebar holds the full table of
+        contents, the footer of every page links to the previous and next
+        pages with their part context, and the ← / → arrow keys do the same
+        without a scroll.</p>
+      <p>The whole site is a folder of static files. It loads no webfonts,
+        makes no requests, and highlights its code locally — download it,
+        get on a plane, and read.</p>
+    </section>
+
+    <section class="section" id="ending">
+      <h2 class="section-title">Where you&rsquo;ll end up</h2>
+      <p>Able to trace a single <code>.await</code> from your source, through
+        the state machine the compiler built, onto Tokio&rsquo;s run queue, down
+        to an <code>epoll_wait</code> in the kernel — and back up when the
+        waker fires. The last page assembles that full-circle mental model
+        into one diagram. The bottom of the stack is the natural place to
+        start: <a href="01-foundations/01-how-programs-run.html">how a
+        program runs</a>.</p>
+    </section>
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

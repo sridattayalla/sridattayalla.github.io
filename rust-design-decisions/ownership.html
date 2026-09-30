@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ownership: One Owner Per Value — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="ownership">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Two — Ownership</p>
+    <h1>Ownership: One Owner Per Value</h1>
+    <p class="lede">The last page made a promise: one rule, checked before
+    the program ever runs, that deletes all five failures at once. This is
+    that rule — three sentences long — and this page takes it apart: what
+    a move actually copies, exactly when values die, and the one guarantee
+    Rust deliberately refuses to make.</p>
+
+    <section id="the-rule">
+      <h2>The rule</h2>
+      <p>The previous page ended with a bet: one compile-time rule that
+      deletes all five failures at once. Here is the rule. It is three
+      sentences, and not one of them mentions memory.</p>
+      <p><em>The Rust Programming Language</em> states it: <em>"Memory is
+      managed through a system of ownership with a set of rules that the
+      compiler checks. If any of the rules are violated, the program won't
+      compile."</em><a class="prov" data-src="research/ownership.md" href="links.html#s-ownership" title="ownership — research/ownership.md">[ownership]</a></p>
+      <p>Unpacked, the system is a list:</p>
+      <ul>
+        <li>Each value in Rust has an owner.</li>
+        <li>There is only one owner at a time.</li>
+        <li>When the owner goes out of
+        <dfn><a href="glossary.html#t-scope">scope</a></dfn>, the value is
+        <dfn><a href="glossary.html#t-drop">dropped</a></dfn>.</li>
+      </ul>
+      <p>A scope is the stretch of program between an opening brace and
+      its matching close — a function body, a block, a loop body. When
+      control reaches the closing brace, every value created inside that
+      stretch dies, and the code that runs at that moment is the value's
+      destructor, the cleanup word the previous page defined. Rule three
+      is where deterministic destruction comes from: the death point is
+      fixed by the shape of the code, not by a caretaker's schedule.</p>
+      <p>Rule two is the one with teeth, and it is aimed exactly at the
+      double free. In C, <code>p = q</code> copies the pointer and leaves
+      both names alive — two handles, one block, nothing to stop the
+      second hand-back. Rust closes that door by making plain assignment
+      a transfer for most types: the new name becomes the owner, and the
+      old name retires. The transfer is called a
+      <dfn><a href="glossary.html#t-move">move</a></dfn>, and the rest of
+      this page is its anatomy.</p>
+    </section>
+
+    <section id="assignment-anatomy">
+      <h2>What a move actually moves</h2>
+      <p>Watch the rule refuse a program. This is the smallest ownership
+      violation worth naming:</p>
+      <figure class="codeblock reject">
+        <figcaption>e0382.rs — reading a name after its value moved away</figcaption>
+<pre data-verify="fail" data-error="E0382"><code class="language-rust">fn main() {
+    let s = String::from("hello");
+    let t = s;
+    println!("{s}");
+}</code></pre>
+      </figure>
+      <p>The compiler's verdict, in full:</p>
+      <figure class="codeblock">
+        <figcaption>rustc's refusal, captured</figcaption>
+<pre><code class="language-text">error[E0382]: borrow of moved value: `s`
+ --> e0382.rs:4:16
+  |
+2 |     let s = String::from("hello");
+  |         - move occurs because `s` has type `String`, which does not
+  |           implement the `Copy` trait
+3 |     let t = s;
+  |             - value moved here
+4 |     println!("{s}");
+  |                ^ value borrowed here after move
+  |
+help: consider cloning the value if the performance cost is acceptable
+  |
+3 |     let t = s.clone();
+  |              ++++++++
+...</code></pre>
+      </figure>
+      <p>Five lines of program, and the error names every fact that
+      matters. The header names the offense: a read of <code>s</code>
+      after its value moved away. The note under line three,
+      <code>value moved here</code>, marks the transfer. And the
+      explanation names the type: <code>move occurs because `s` has type
+      `String`, which does not implement the `Copy` trait</code>. That
+      final clause is a promise about the next page; hold it.</p>
+      <p>What did the assignment actually do? A <code>String</code> is
+      two things: three machine words on the stack — a pointer aimed at
+      a heap buffer, the count of bytes the string holds, the count of
+      bytes the buffer claims — and the buffer
+      itself.<a class="prov" data-src="research/ownership.md" href="links.html#s-ownership" title="ownership — research/ownership.md">[ownership]</a>
+      The assignment <code>let t = s;</code> copies those three words and
+      nothing else. <code>t</code> now owns the buffer. <code>s</code>
+      retires: its words are still sitting in memory, but the compiler
+      treats the name as if it were never initialized, and any read of it
+      is the error above — a refusal at compile time, not a crash at run
+      time. The buffer is not copied, and <code>s</code> does not hand it
+      back: exactly one hand-back will ever happen, <code>t</code>'s.</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 300"><title>A String is three words on the stack — pointer, length, capacity — plus one heap buffer; the assignment copies the three words from s to t, and t's pointer owns the buffer while s's stale words are dead</title>
+          <text class="t-dim" x="60" y="36" font-size="12">s — dead after the move</text>
+          <rect class="s-ink3" fill="none" stroke-width="1.5" stroke-dasharray="5 4" x="60" y="48" width="54" height="34" rx="4"/>
+          <text class="t-dim" x="87" y="69" text-anchor="middle" font-size="12">ptr</text>
+          <rect class="s-ink3" fill="none" stroke-width="1.5" stroke-dasharray="5 4" x="114" y="48" width="54" height="34" rx="4"/>
+          <text class="t-dim" x="141" y="69" text-anchor="middle" font-size="12">len</text>
+          <rect class="s-ink3" fill="none" stroke-width="1.5" stroke-dasharray="5 4" x="168" y="48" width="54" height="34" rx="4"/>
+          <text class="t-dim" x="195" y="69" text-anchor="middle" font-size="12">cap</text>
+          <text x="420" y="36" font-size="12">t — owns the value now</text>
+          <rect class="s-ink" fill="none" stroke-width="1.5" x="420" y="48" width="54" height="34" rx="4"/>
+          <text x="447" y="69" text-anchor="middle" font-size="12">ptr</text>
+          <rect class="s-ink" fill="none" stroke-width="1.5" x="474" y="48" width="54" height="34" rx="4"/>
+          <text x="501" y="69" text-anchor="middle" font-size="12">len</text>
+          <rect class="s-ink" fill="none" stroke-width="1.5" x="528" y="48" width="54" height="34" rx="4"/>
+          <text x="555" y="69" text-anchor="middle" font-size="12">cap</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M230 65h166"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M390 59l8 6-8 6"/>
+          <text class="t-dim" x="313" y="95" text-anchor="middle" font-size="12">the assignment copies the three words</text>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="240" y="210" width="220" height="46" rx="6"/>
+          <text x="350" y="237" text-anchor="middle" font-size="12">heap buffer holding "hi"</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M447 82v112"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M441 190l6 8 6-8"/>
+          <text class="t-dim" x="460" y="150" font-size="12">t's pointer — live</text>
+          <path class="s-ink3" fill="none" stroke-width="1.5" stroke-dasharray="5 4" d="M87 82C87 140 200 180 282 204"/>
+          <text class="t-dim" x="240" y="150" font-size="12">the stale copy — unusable</text>
+        </svg>
+        <figcaption>A move copies the three header words; the buffer
+        changes hands, not copies.</figcaption>
+      </figure>
+      <p>The proof that nothing was destroyed is a one-letter edit —
+      read <code>t</code> instead of <code>s</code>:</p>
+      <figure class="codeblock accept">
+        <figcaption>move_ok.rs — compiles, runs, prints hi</figcaption>
+<pre data-verify="run" data-expect="hi"><code class="language-rust">fn main() {
+    let s = String::from("hi");
+    let t = s;
+    println!("{t}");
+}</code></pre>
+      </figure>
+      <p>It runs, prints <code>hi</code>, and hands the buffer back
+      exactly once — when <code>t</code> dies at the end of
+      <code>main</code>. The move destroyed no value; it moved the
+      authority to hand one back. What the rule forbids is not the second
+      name existing, but the second name being usable.</p>
+      <p>Making moves the default was a decision, recorded while the
+      language was still taking shape. RFC 0019 — the proposal that
+      settled the question — states it: <em>"This means that structs and
+      enums would move by default unless their type is explicitly
+      declared to be <code>Copy</code>."</em><a class="prov" data-src="research/design-history.md" href="links.html#s-design-history" title="design-history — research/design-history.md">[design-history]</a>
+      The reason is the C++ experience: there, <code>a = b</code> may run
+      a copy constructor the type's author wrote — a full duplicate of
+      everything the value reaches, an allocation, a surprise cost hiding
+      behind an equals sign. Rust inverts the deal. Plain assignment is
+      always cheap: either a move — three words, done — or the
+      byte-for-byte duplicate that certain small types earn, which is the
+      next page's subject. The expensive operation exists too, but it is
+      spelled loudly, and its name waits for the next page.</p>
+    </section>
+
+    <section id="destruction-timing">
+      <h2>When the drop happens</h2>
+      <p>Rule three said the value dies at the closing brace — in
+      outline. This section fixes the exact moment, because
+      <em>eventually</em> is what the caretaker sells, and this whole
+      design exists to sell something better.</p>
+      <p>The pattern has a name from C++:
+      <dfn><a href="glossary.html#t-raii">RAII</a></dfn> — resource
+      acquisition is initialization. The trick is to tie each resource —
+      a heap buffer, an open file, a held lock — to a value: acquire when
+      the value is built, release in its destructor. C++ made the trick
+      available; Rust made it universal and unavoidable. Every file
+      handle, lock, and socket in the standard library is a value whose
+      destructor returns what it holds, and the language fixes the moment
+      that destructor runs.</p>
+      <p>Which moment, exactly, is not left to chance. The
+      <dfn><a href="glossary.html#t-drop-order">drop order</a></dfn> is
+      rule, not schedule: local variables die in reverse order of
+      declaration, and the fields of a struct die in the order they are
+      written.<a class="prov" data-src="research/ownership.md" href="links.html#s-ownership" title="ownership — research/ownership.md">[ownership]</a>
+      A program that makes every death visible:</p>
+      <figure class="codeblock accept">
+        <figcaption>drop_order.rs — five values, every death printed</figcaption>
+<pre data-verify="run" data-expect="drop a-first"><code class="language-rust">struct PrintOnDrop(&amp;'static str);
+impl Drop for PrintOnDrop {
+    fn drop(&amp;mut self) { println!("drop {}", self.0); }
+}
+struct Pair { one: PrintOnDrop, two: PrintOnDrop }
+fn main() {
+    let a = PrintOnDrop("a-first");
+    let b = PrintOnDrop("b-second");
+    let p = Pair { one: PrintOnDrop("one"), two: PrintOnDrop("two") };
+    {
+        let c = PrintOnDrop("c-inner");
+        println!("end of inner scope");
+    }
+    println!("end of main");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">end of inner scope
+drop c-inner
+end of main
+drop one
+drop two
+drop b-second
+drop a-first</code></pre>
+      </figure>
+      <p>Check the output against the rules. <code>c</code> dies first:
+      the inner block closes before <code>main</code> ends. Then, after
+      <code>main</code>'s final print, its locals die in reverse
+      declaration order — <code>p</code> was declared last, so it dies
+      first, then <code>b</code>, then <code>a</code>. And inside
+      <code>p</code>, the fields die in written order: <code>one</code>,
+      then <code>two</code>. Locals unwind backward; fields die forward.
+      The asymmetry is deliberate: fields are laid out, and destroyed, in
+      the order they are written, while the stack unwinds from the
+      top.</p>
+      <p>One more rule, the one that surprises programmers who met this
+      pattern in C++: assignment destroys. Overwriting an initialized
+      variable drops the old value right there, at the assignment, not
+      later at the closing
+      brace.<a class="prov" data-src="research/ownership.md" href="links.html#s-ownership" title="ownership — research/ownership.md">[ownership]</a></p>
+      <figure class="codeblock accept">
+        <figcaption>assign_drop.rs — the old value dies to make room</figcaption>
+<pre data-verify="run" data-expect="drop first"><code class="language-rust">struct Field(&amp;'static str);
+impl Drop for Field {
+    fn drop(&amp;mut self) { println!("drop {}", self.0); }
+}
+fn main() {
+    let mut held = Field("first");
+    println!("holding {}", held.0);
+    held = Field("second");
+    println!("holding {}", held.0);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">holding first
+drop first
+holding second
+drop second</code></pre>
+      </figure>
+      <p>The sequence is fixed by the language: build the new value,
+      drop the old one into its place, continue. In C++ the same
+      expression would call an assignment operator the type's author
+      wrote — which might do anything. Here the death is where the syntax
+      says it is, every time. That predictability is the product. It is
+      why <code>try-with-resources</code>, <code>using</code>, and
+      <code>defer</code> exist in garbage-collected languages: each is a
+      hand-written imitation of what this page gets for every value
+      automatically.</p>
+    </section>
+
+    <section id="the-honesty-clause">
+      <h2>The honesty clause</h2>
+      <p>Everything so far has been a guarantee. Here is the one Rust
+      refuses to give — and it is written down, not implied. During
+      2015, while the language's safety story was being finished, a
+      crisis the community still calls the leakpocalypse forced a
+      decision about <code>std::mem::forget</code>, a function that takes
+      a value and simply never drops it. The resolution, RFC 1066, states
+      the resulting guarantee in one sentence: <em>"It has never been a
+      guarantee of Rust that destructors for a type will
+      run."</em><a class="prov" data-src="research/design-history.md" href="links.html#s-design-history" title="design-history — research/design-history.md">[design-history]</a></p>
+      <p>Read it carefully, because it splits safety in two. Memory
+      leaked is a bug you can survive: a program that leaks slows down
+      and wastes space, but it does not become undefined behavior. A
+      use-after-free hands attackers the machine. Rust counts the first
+      acceptable and the second not — and every rule on the previous
+      pages is that counting at work.</p>
+      <p>Two consequences. First, the ordinary one: some values are
+      shared claims — one piece of memory owned jointly by several names,
+      each holding the claim count up. Two such handles can point at each
+      other, and then the count never reaches zero, and the destructors
+      never run. When this book reaches that corner of the menu, it will
+      show the tool built for breaking such rings. Second, the rule to
+      keep: never hang a safety argument on a destructor running.
+      Destructors are for cleanup where a leak is survivable — releasing
+      memory, closing files, dropping locks. The escape hatches near the
+      end of this book exist because some code must make promises the
+      compiler cannot check, and those promises cannot rest on destructor
+      execution either.</p>
+      <p>One loose end from the second section. The refusal explained
+      itself with a clause — <code>which does not implement the `Copy`
+      trait</code> — and that clause only makes sense if some types do
+      implement it and are treated more gently. They are. Integers, for
+      one: <code>let b = a;</code> on two numbers leaves both names
+      alive, with the rule unbroken. How a type earns that exemption,
+      what the compiler checks before granting it, and what the one
+      explicit duplicate costs — that is the next page: assignment's full
+      menu.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Ownership is three rules: one owner per value, one owner at a
+        time, dropped at the end of the scope.</li>
+        <li>Plain assignment moves most types: the new name owns the
+        value, the old name retires, and reading it is a compile-time
+        refusal.</li>
+        <li>A move of a String copies three words — pointer, length,
+        capacity — and the buffer changes hands rather than being
+        copied.</li>
+        <li>Drops happen at statically known points: locals in reverse
+        declaration order, struct fields in written order, and assignment
+        drops what it overwrites.</li>
+        <li>The honesty clause: safety is guaranteed, destructor
+        execution is not — <code>std::mem::forget</code> is safe, and
+        leaks are survivable by design.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="founding-constraint.html"><span class="cap">Previous</span><span class="pg-title">The Constraint: Safe, Fast, No Runtime</span></a>
+    <a class="pager-card" rel="next" href="move-copy-clone.html"><span class="cap">Next</span><span class="pg-title">Move, Copy, Clone</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

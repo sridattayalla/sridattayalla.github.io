@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hello, Tokio: the boot sequence — Under the Await</title>
+  <meta name="description" content="From #[tokio::main] to your first completed await, in order: what the macro expands to, what Runtime::new creates, how block_on drives your future, and how it all shuts down.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p05-01">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Hello, Tokio: the boot sequence</h1>
+
+      <p>Part 4 took the runtime apart while it stood still.
+        <a href="../04-tokio-internals/01-runtime-overview.html">That first page</a>
+        was the map: workers, queues, drivers, the pool for blocking work, all
+        laid out in one picture. This part sits down in the user's chair, and
+        it starts by running the film instead of studying the photograph.
+        What actually happens, in order, between typing
+        <code>cargo run</code> and seeing your first print? Which threads
+        exist before your code runs? Where does your <code>main</code>
+        execute? What dies when the program ends? You already know every
+        part; this page is the assembly order.</p>
+
+      <h2>What the attribute really is</h2>
+
+      <p>Every Tokio program you have written so far began with one
+        attribute. Here it is once more, next to what it expands to:</p>
+
+      <pre><code class="language-rust">#[tokio::main]
+async fn main() {
+    println!("hello from inside a runtime");
+}</code></pre>
+
+      <pre><code class="language-rust">// what the macro generates (trimmed to the interesting lines)
+fn main() {
+    use tokio::runtime::Builder;
+
+    return Builder::new_multi_thread()
+        .enable_all()                 // arm the I/O driver and the time driver
+        .build()
+        .expect("Failed building the Runtime")
+        .block_on(async {
+            println!("hello from inside a runtime");
+        });
+}</code></pre>
+
+      <p>The macro is thin. Your <code>async fn main</code> becomes the
+        body of an ordinary, synchronous <code>main</code> that does three
+        things: build a <a href="../04-tokio-internals/01-runtime-overview.html">runtime</a>,
+        hand it your main future, and call
+        <a href="../03-rust-async/07-mini-executor.html">block_on</a>,
+        the parking trick you wrote by hand in Part 3. No magic survives
+        the expansion; everything interesting happens inside
+        <code>build()</code> and <code>block_on()</code>. So follow them
+        in order.</p>
+
+      <p>One word in the expansion deserves a pause:
+        <code>enable_all</code>. By default the builder ships a runtime
+        with both drivers switched off; sockets and timers simply would
+        not work, and any <code>.await</code> on one would hang forever.
+        The attribute opts you into the full machine. When you construct
+        a runtime by hand with
+        <code>Builder::new_multi_thread()</code>, forgetting
+        <code>enable_all</code> is the classic reward: a program that
+        compiles, runs, and freezes at the first network call, because
+        nobody is ever going to knock on the door.
+        <!-- fs: research/tokio-internals.md §6 — builder defaults: io off, time off; #[tokio::main] calls enable_all --></p>
+
+      <h2>The timeline</h2>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 330" role="img">
+          <title>Timeline of a Tokio program: macro expands, runtime is built with drivers and workers, block_on polls the main future, spawns are adopted by workers, and shutdown drains everything</title>
+
+          <text class="label muted" x="16" y="24">before your code runs</text>
+          <line class="lane" x1="16" y1="32" x2="624" y2="32"/>
+
+          <rect class="box" x="16" y="44" width="132" height="52" rx="8"/>
+          <text class="label" x="82" y="66" text-anchor="middle">1. macro expands</text>
+          <text class="label muted" x="82" y="84" text-anchor="middle">sync main</text>
+          <line class="arrow" x1="148" y1="70" x2="168" y2="70"/>
+          <polygon class="arrow-head" points="168,65 178,70 168,75"/>
+
+          <rect class="box" x="180" y="44" width="132" height="52" rx="8"/>
+          <text class="label" x="246" y="66" text-anchor="middle">2. drivers built</text>
+          <text class="label muted" x="246" y="84" text-anchor="middle">epoll + wheel</text>
+          <line class="arrow" x1="312" y1="70" x2="332" y2="70"/>
+          <polygon class="arrow-head" points="332,65 342,70 332,75"/>
+
+          <rect class="box" x="344" y="44" width="132" height="52" rx="8"/>
+          <text class="label" x="410" y="66" text-anchor="middle">3. workers spawn</text>
+          <text class="label muted" x="410" y="84" text-anchor="middle">tokio-rt-worker</text>
+          <line class="arrow" x1="476" y1="70" x2="496" y2="70"/>
+          <polygon class="arrow-head" points="496,65 506,70 496,75"/>
+
+          <rect class="box" x="508" y="44" width="116" height="52" rx="8"/>
+          <text class="label" x="566" y="66" text-anchor="middle">4. block_on</text>
+          <text class="label muted" x="566" y="84" text-anchor="middle">main polls</text>
+
+          <path class="arrow" d="M 566 96 V 140" fill="none"/>
+          <polygon class="arrow-head" points="566,150 560,138 572,138"/>
+          <text class="label muted" x="556" y="126" text-anchor="end">your code</text>
+
+          <text class="label muted" x="16" y="178">while your code runs</text>
+          <line class="lane" x1="16" y1="186" x2="624" y2="186"/>
+
+          <rect class="box" x="16" y="198" width="132" height="52" rx="8"/>
+          <text class="label" x="82" y="220" text-anchor="middle">5. spawn</text>
+          <text class="label muted" x="82" y="238" text-anchor="middle" style="font-size:12px">task boxed, queued</text>
+          <line class="arrow" x1="148" y1="224" x2="168" y2="224"/>
+          <polygon class="arrow-head" points="168,219 178,224 168,229"/>
+
+          <rect class="box" x="180" y="198" width="132" height="52" rx="8"/>
+          <text class="label" x="246" y="220" text-anchor="middle">6. adoption</text>
+          <text class="label muted" x="246" y="238" text-anchor="middle">worker takes it</text>
+          <line class="arrow" x1="312" y1="224" x2="332" y2="224"/>
+          <polygon class="arrow-head" points="332,219 342,224 332,229"/>
+
+          <rect class="box" x="344" y="198" width="132" height="52" rx="8"/>
+          <text class="label" x="410" y="220" text-anchor="middle">7. wake</text>
+          <text class="label muted" x="410" y="238" text-anchor="middle">re-poll on event</text>
+          <line class="arrow" x1="476" y1="224" x2="496" y2="224"/>
+          <polygon class="arrow-head" points="496,219 506,224 496,229"/>
+
+          <rect class="box" x="508" y="198" width="116" height="52" rx="8"/>
+          <text class="label" x="566" y="220" text-anchor="middle">8. Ready</text>
+          <text class="label muted" x="566" y="238" text-anchor="middle">main returns</text>
+
+          <path class="arrow" d="M 566 250 V 288" fill="none"/>
+          <polygon class="arrow-head" points="566,298 560,286 572,286"/>
+
+          <rect class="box accent" x="16" y="286" width="608" height="34" rx="8"/>
+          <text class="label" x="320" y="308" text-anchor="middle" style="font-size:12px">9. runtime drops: workers drain, tasks stop at their next yield, blocking pool joins, process exits</text>
+        </svg>
+        <figcaption>Figure 1: the life of a Tokio program. Steps one
+          through four happen before your first line runs; steps five
+          through eight repeat for every task; step nine is the only
+          ending.</figcaption>
+      </figure>
+
+      <h2>Before your first line runs</h2>
+
+      <p>The process starts the way every process does, as
+        <a href="../01-foundations/02-processes-threads-context-switches.html">one
+        thread</a> named <code>main</code> with an empty
+        <a href="../01-foundations/03-syscalls-and-file-descriptors.html">file
+        descriptor</a> table. Then <code>build()</code> goes to work, and
+        by the time it returns, four things exist that did not exist
+        before:</p>
+
+      <p><strong>The I/O driver.</strong> One
+        <a href="../04-tokio-internals/05-io-driver.html">mio</a> poller
+        wrapped around a single epoll instance, which is itself just one
+        more file descriptor. No sockets are registered with it yet;
+        registration is lazy, on first use. The driver exists, armed, and
+        empty. <!-- fs: research/tokio-internals.md §2 — registration is lazy / on first use; Driver::new builds mio::Poll at runtime build --></p>
+
+      <p><strong>The time driver.</strong> The
+        <a href="../04-tokio-internals/07-time-driver.html">timing wheel</a>,
+        all six levels of it, empty and ticking on driver turns. Building
+        it cost no thread; it is a data structure, not a sleeper.
+        <!-- fs: research/tokio-internals.md §3 — hierarchical wheel, 6 levels × 64 slots --></p>
+
+      <p><strong>The workers.</strong> One OS thread per CPU core, all
+        created at startup, each named <code>tokio-rt-worker</code>, each
+        grabbing a private <a href="../04-tokio-internals/03-scheduler.html">run
+        queue</a> with room for 256 tasks, a LIFO slot, and a tick
+        counter. <!-- fs: research/tokio-internals.md §1 — fixed worker threads, one per CPU core by default, all created at startup; LOCAL_QUEUE_CAPACITY = 256 -->
+        They enter their loops immediately, find nothing to run, and park
+        inside the driver, exactly as the map in Part 4 promised. Your
+        program has not executed one line of your code, and the machine is
+        already idling at full readiness.</p>
+
+      <p><strong>The blocking pool, on paper only.</strong> The
+        <a href="../04-tokio-internals/04-blocking-pool.html">blocking
+        pool</a> is configured but not created. Its threads are spawned on
+        demand, retire after ten idle seconds, and stop at a cap of 512.
+        <!-- fs: research/tokio-internals.md §5 — blocking threads spawned on demand; KEEP_ALIVE = 10s; max_blocking_threads default 512 -->
+        If your program never calls
+        <a href="../04-tokio-internals/04-blocking-pool.html"><code>spawn_blocking</code></a>,
+        not one of those threads is ever born.</p>
+
+      <p>Count the cast before curtain: the <code>main</code> thread plus
+        one worker per core, an epoll instance, an empty wheel, three
+        kinds of empty queues. That is the entire stage.</p>
+
+      <h2>block_on: the main thread becomes an executor</h2>
+
+      <p>Now <code>block_on</code> takes your main future, and something
+        worth noticing happens: the <code>main</code> thread runs it
+        itself. Your future is not boxed into a
+        <a href="../04-tokio-internals/02-task-anatomy.html">task</a>,
+        not pushed into any queue. The main thread becomes a
+        single-future executor of exactly the design you built in
+        <a href="../03-rust-async/07-mini-executor.html">Part 3's mini
+        executor</a>: poll the future; if it says
+        <a href="../03-rust-async/02-future-trait.html">Pending</a>, park
+        the thread; the <a href="../03-rust-async/03-waker-and-context.html">waker</a>
+        handed down through every poll is the key that unparks it. The
+        production runtime scales that pattern across workers, but for
+        the root future, the original design is used verbatim.</p>
+
+      <p>The first poll runs eagerly, as every poll does. Your
+        <code>async main</code> is a
+        <a href="../03-rust-async/05-async-await-desugaring.html">state
+        machine</a>, and the machine drives forward through your code
+        until the first await that cannot be satisfied, parks, and hands
+        the Pending upward. Only then does the main thread sleep, and
+        only until a wake arrives.</p>
+
+      <h2>Adoption: where your spawns go</h2>
+
+      <p>The moment your main future calls
+        <a href="../04-tokio-internals/02-task-anatomy.html"><code>tokio::spawn</code></a>,
+        the future is boxed into a task and pushed onto the global inject
+        queue, because the caller, the main thread, is not a worker.
+        <!-- fs: research/tokio-internals.md §1 — the inject queue exists to submit work from off-worker threads -->
+        Workers check that queue on a tuned cadence; one of them adopts
+        the task, moving it into its local run queue, and from then on
+        the task belongs to the scheduler at large: it runs on whichever
+        worker picks it up, its wakes land in the
+        <a href="../04-tokio-internals/03-scheduler.html">LIFO slot</a>
+        or the local queue of whoever woke it, and it may migrate between
+        workers mid-life. Tasks are not married to threads. You will see
+        that with your own eyes in a moment.</p>
+
+      <h2>Watch it boot</h2>
+
+      <p>Run this little instrument, and the boot sequence becomes
+        observable. It prints which thread each piece of your program ran
+        on:</p>
+
+      <pre><code class="language-rust">use std::time::Duration;
+
+fn where_am_i() -&gt; String {
+    let t = std::thread::current();
+    format!("{} {:?}", t.name().unwrap_or("?"), t.id())
+}
+
+#[tokio::main]
+async fn main() {
+    println!("[main] starts on   {}", where_am_i());
+
+    let mut kids = Vec::new();
+    for i in 0..4 {
+        kids.push(tokio::spawn(async move {
+            println!("[task {i}] first poll {}", where_am_i());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            println!("[task {i}] woke      {}", where_am_i());
+        }));
+    }
+
+    for h in kids {
+        h.await.unwrap();
+    }
+    println!("[main] ends on     {}", where_am_i());
+}</code></pre>
+
+      <p>On a four-core machine, one run printed this. Thread numbers
+        and assignment order vary from run to run; the shapes do
+        not:</p>
+
+      <pre><code class="language-plaintext">[main] starts on   main ThreadId(1)
+[task 0] first poll tokio-rt-worker ThreadId(2)
+[task 1] first poll tokio-rt-worker ThreadId(4)
+[task 2] first poll tokio-rt-worker ThreadId(3)
+[task 3] first poll tokio-rt-worker ThreadId(5)
+[task 0] woke      tokio-rt-worker ThreadId(3)
+[task 1] woke      tokio-rt-worker ThreadId(2)
+[task 3] woke      tokio-rt-worker ThreadId(5)
+[task 2] woke      tokio-rt-worker ThreadId(4)
+[main] ends on     main ThreadId(1)</code></pre>
+
+      <p>Four facts are sitting in that output, and each one is a
+        chapter of this book made visible:</p>
+
+      <ul>
+        <li>The main future ran on the thread named <code>main</code>:
+          <code>block_on</code> drove it personally, start to finish.</li>
+        <li>No spawned task ever ran on <code>main</code>. Workers
+          adopted every one of them from the inject queue before it
+          executed a single line.</li>
+        <li>Every task was polled, went to sleep, and woke on a thread
+          named <code>tokio-rt-worker</code>, because workers are the
+          only threads that poll tasks.</li>
+        <li>Task 0 started on <code>ThreadId(2)</code> and woke on
+          <code>ThreadId(3)</code>. Its timer fired in the
+          <a href="../04-tokio-internals/07-time-driver.html">time
+          driver</a> while the task sat in a queue, and a different
+          worker picked it up. The task never moved in memory, being
+          <a href="../03-rust-async/06-pin.html">pinned</a> in its
+          allocation; only the thread holding it changed.</li>
+      </ul>
+
+      <div class="note"><p>If you add a
+        <code>spawn_blocking</code> call to the instrument, its closure
+        will report a brand-new thread id and the same default name,
+        <code>tokio-rt-worker</code>. The name covers every thread the
+        runtime spawns by default; the fresh id is the pool arming
+        itself on demand. Use <code>Builder::thread_name_fn</code> when
+        you need to tell them apart in production logs.</p></div>
+
+      <h2>How it ends</h2>
+
+      <p>Your main future returns. <code>block_on</code> returns.
+        <code>main</code> returns. Then the runtime value, living in the
+        generated wrapper, drops, and shutdown runs three steps in
+        order. Workers are told to stop: tasks keep running until they
+        yield, then are dropped; nothing is guaranteed to finish.
+        <!-- fs: research/tokio-internals.md — runtime.rs docs at tokio-1.53.1: spawned tasks keep running until they yield, then are dropped -->
+        The blocking pool is joined: started blocking calls run until
+        they return, and the thread that dropped the runtime waits for
+        them, which is why <code>shutdown_timeout</code> exists for the
+        impatient. <!-- fs: research/tokio-internals.md §5 — runtime shutdown waits for started spawn_blocking tasks; shutdown_timeout -->
+        Finally the threads exit and the process dies. Between the
+        first print and the last, not one detail of that ending was
+        visible from inside your code, and none of it needed to be.</p>
+
+      <p>That is the boot sequence. The machine assembles itself in a
+        fixed order, adopts your work as you create it, and dismantles
+        itself deterministically at the end. Next, keep the machine
+        running and point it at the oldest program in networking: an
+        echo server, awaited one line at a time.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li><code>#[tokio::main]</code> expands to a synchronous main
+            that builds a multi-thread runtime and calls
+            <code>block_on</code>; nothing else survives the macro.</li>
+          <li>Before your code runs: one epoll instance, one timing
+            wheel, and one worker thread per core, all created at
+            startup; the blocking pool is configured but armed only on
+            demand.</li>
+          <li><code>block_on</code> drives your main future on the main
+            thread itself, poll-park-wake, the Part 3 mini executor used
+            verbatim; the root future is never a queued task.</li>
+          <li>Spawns from the main thread land in the inject queue and
+            are adopted by workers; tasks migrate between workers, and
+            the thread-name instrument makes all of it visible.</li>
+          <li>Shutdown drains workers (tasks stop at their next yield),
+            joins the blocking pool, and exits; dropping tasks at yield
+            points is the same cancellation you met at the end of
+            Part 4.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

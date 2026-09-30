@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Constraint: Safe, Fast, No Runtime — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="founding-constraint">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Constraint</p>
+    <h1>The Constraint: Safe, Fast, No Runtime</h1>
+    <p class="lede">Rust's rules stop looking arbitrary the moment you watch
+    what they forbid. This page shows the five memory failures the whole
+    language exists to prevent — real C programs, real checker reports — and
+    the bill the known alternative charges to avoid them.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#the-two-routes">The two routes</a></li>
+        <li><a href="#where-memory-lives">Where memory lives</a></li>
+        <li><a href="#five-failures">Five failures, five reports</a></li>
+        <li><a href="#the-collectors-bill">The caretaker's bill</a></li>
+        <li><a href="#the-numbers">Why anyone cares</a></li>
+      </ol>
+    </nav>
+
+    <section id="the-two-routes">
+      <h2>The two routes</h2>
+      <p>You know the trade from the first page: any two corners of the
+      triangle are easy to buy in an existing language, and Rust insists on
+      all three. Its rules only make sense against the two routes that came
+      before — what each one costs is the motivation for the third.</p>
+      <p>The first route hires a caretaker. A garbage collector is machinery
+      that runs alongside your program: every so often it stops everything,
+      walks its records of every live object, decides which of them nothing
+      can reach anymore, and hands the unreachable memory back. Your code
+      never returns memory; it just stops pointing at things. Safety falls
+      out of the machinery — you cannot use memory after it is gone, because
+      it is never gone while you can still point at it.</p>
+      <p>The second route hands you the keys. In C you claim memory by asking
+      for a number of bytes, and you hand it back yourself — whenever you
+      like, in any order, with nothing checking. The language trusts you
+      completely. Every program in the next section is legal, compilable
+      C.</p>
+      <p>Rust's founding question was whether the compiler itself could
+      prove, before the program ever runs, that every hand-back happens
+      exactly once and no handle aims at anything that has already died. If
+      the proof happens at compile time, the third corner comes free: no
+      caretaker, no pauses, no resident machinery. The price is that
+      programs the compiler cannot prove get refused — and learning to read
+      those refusals is what the rest of this book is for.</p>
+    </section>
+
+    <section id="where-memory-lives">
+      <h2>Where memory lives</h2>
+      <p>Both routes — and Rust's third one — manage the same two places a
+      program keeps data. They are worth naming precisely, because every
+      failure in the next section is a handle crossing between them
+      wrongly.</p>
+      <p>The <dfn><a href="glossary.html#t-stack">stack</a></dfn> is an area
+      of memory wired to function calls. Every call pushes a frame — the
+      call's parameters and its local variables — onto the top; every return
+      pops that frame off. The stack is fast precisely because the discipline
+      is rigid: a local variable lives exactly as long as the call that
+      created it, and not one moment longer.</p>
+      <p>The <dfn><a href="glossary.html#t-heap">heap</a></dfn> is a pool the
+      program can claim pieces of at any time, by asking for a number of
+      bytes, and hands each piece back when done. Heap blocks have no tie to
+      any call: they live until someone returns them.</p>
+      <p>The asymmetry between the two is where the danger lives. A frame
+      dies the instant its call returns. A heap block dies only when handed
+      back. But a pointer — an address stored in a variable — can be copied
+      anywhere: into a frame that survives longer, into a structure, into
+      another thread. When the thing it points at dies first, the C standard
+      is blunt about what remains: the stored pointer value becomes
+      indeterminate, an address aimed at memory the program no longer owns
+      (the C draft standard, N1570 §6.2.4p2).<a class="prov" data-src="research/c-failures.md" href="links.html#s-c-failures" title="c-failures — research/c-failures.md">[c-failures]</a></p>
+      <p>A picture, before the breakage:</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 300"><title>The stack holds frames that die with their calls; the heap holds blocks that die only when handed back; a pointer can reach from a frame to a block</title>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="40" y="36" width="230" height="224" rx="8"/>
+          <text x="155" y="60" text-anchor="middle" font-size="13">the stack</text>
+          <rect class="s-ink3" fill="none" stroke-width="1.5" stroke-dasharray="5 4" x="60" y="78" width="190" height="54" rx="6"/>
+          <text class="t-dim" x="155" y="100" text-anchor="middle" font-size="12">a frame that already returned</text>
+          <text class="t-dim" x="155" y="116" text-anchor="middle" font-size="12">— reusable storage</text>
+          <rect class="s-ink" fill="none" stroke-width="1.5" x="60" y="144" width="190" height="54" rx="6"/>
+          <text x="155" y="166" text-anchor="middle" font-size="12">main's frame</text>
+          <text class="t-dim" x="155" y="182" text-anchor="middle" font-size="12">alive while main runs</text>
+          <rect class="f-accent s-ink" stroke-width="1.5" x="380" y="36" width="230" height="224" rx="8"/>
+          <text x="495" y="60" text-anchor="middle" font-size="13">the heap</text>
+          <rect class="s-ink" fill="none" stroke-width="1.5" x="400" y="82" width="190" height="46" rx="6"/>
+          <text x="495" y="102" text-anchor="middle" font-size="12">a live block</text>
+          <text class="t-dim" x="495" y="118" text-anchor="middle" font-size="12">claimed, not yet handed back</text>
+          <rect class="s-ink3" fill="none" stroke-width="1.5" stroke-dasharray="5 4" x="400" y="146" width="190" height="46" rx="6"/>
+          <text class="t-dim" x="495" y="166" text-anchor="middle" font-size="12">a handed-back block</text>
+          <text class="t-dim" x="495" y="182" text-anchor="middle" font-size="12">— reusable storage</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M254 171h112"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M366 165l8 6-8 6"/>
+          <text class="t-dim" x="313" y="158" text-anchor="middle" font-size="12">a pointer crosses</text>
+        </svg>
+        <figcaption>Frames die with their calls; heap blocks die only when
+        handed back.</figcaption>
+      </figure>
+      <p>Keep the picture. Now break it, five ways.</p>
+    </section>
+
+    <section id="five-failures">
+      <h2>Five failures, five reports</h2>
+      <p>Here is the specification for everything the ownership rules do,
+      written in the language that has none of them. Each failure below is a
+      complete C program, small enough to read at a glance — and every one is
+      legal C: the compiler accepts it without a word. To make the damage
+      visible, each program runs under a <dfn><a href="glossary.html#t-sanitizer">sanitizer</a></dfn>,
+      a compiler mode that instruments the finished binary so that an illegal
+      memory operation stops the program with a report instead of corrupting
+      memory quietly. The reports quoted below are real: captured from these
+      exact programs, on this machine, with the checker switched on.<a class="prov" data-src="research/c-failures.md" href="links.html#s-c-failures" title="c-failures — research/c-failures.md">[c-failures]</a></p>
+      <div class="note"><span class="cap">Why C, in a Rust book?</span>
+        <p>Because every refusal you meet in Rust is the mirror image of one
+        of these five programs. In C, all five are <dfn><a href="glossary.html#t-undefined-behavior">undefined
+        behavior</a></dfn> — the standard's category for effects it refuses to
+        define, which voids every guarantee the moment one happens. Learn the
+        failure, and the rule that forbids it stops being arbitrary.</p>
+      </div>
+
+      <h3 id="failure-dangling">A dangling pointer</h3>
+      <p>A <dfn><a href="glossary.html#t-dangling-pointer">dangling
+      pointer</a></dfn> is a pointer to memory that has already died. The
+      classic birth: a function hands back the address of its own local
+      variable.</p>
+      <figure class="codeblock">
+        <figcaption>dangling_stack.c — the address can outlive the frame</figcaption>
+<pre data-verify="c-asan" data-expect="stack-use-after-return"><code class="language-c">#include &lt;stdio.h&gt;
+int *borrow_local(void) {
+    int local = 42;
+    return &amp;local;
+}
+int main(void) {
+    int *p = borrow_local();
+    printf("value from dead stack slot: %d\n", *p);
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the memory checker's verdict, captured</figcaption>
+<pre><code class="language-text">ERROR: AddressSanitizer: stack-use-after-return on address 0x7ffff5b00020
+READ of size 4 at 0x7ffff5b00020 thread T0
+    #0 ... in main dangling_stack.c:8:48
+...
+Address 0x7ffff5b00020 is located in stack of thread T0 at offset 32 in frame
+    #0 ... in borrow_local dangling_stack.c:2
+  This frame has 1 object(s):
+    [32, 36) 'local' (line 3) &lt;== Memory access at offset 32 is inside this variable</code></pre>
+      </figure>
+      <p>The mechanics, in order: <code>borrow_local</code>'s frame —
+      including the four bytes holding <code>local</code> — is popped the
+      instant the function returns, and the slot is immediately reusable by
+      any later call. The pointer survives; the thing it points at does not.
+      The forty-two is gone; the address remains, aimed at whatever the next
+      call stores there. The checker names the offense exactly:
+      stack-use-after-return — using a stack slot after its call
+      returned.</p>
+
+      <h3 id="failure-uaf">Use after free</h3>
+      <p>A <dfn><a href="glossary.html#t-use-after-free">use-after-free</a></dfn>
+      is a pointer to a heap block that has already been handed back. The
+      same shape as the dangling pointer; the memory just died by a different
+      verb.</p>
+      <figure class="codeblock">
+        <figcaption>use_after_free.c — the pointer survives the hand-back</figcaption>
+<pre data-verify="c-asan" data-expect="heap-use-after-free"><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+int *make_scores(void) {
+    int *scores = malloc(3 * sizeof(int));
+    scores[0] = 41; scores[1] = 42; scores[2] = 43;
+    return scores;
+}
+int main(void) {
+    int *s = make_scores();
+    free(s);
+    printf("first score: %d\n", s[0]);
+    return 0;
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the memory checker's verdict, captured</figcaption>
+<pre><code class="language-text">ERROR: AddressSanitizer: heap-use-after-free on address 0x602000000010
+READ of size 4 at 0x602000000010 thread T0
+    #0 ... in main use_after_free.c:11:33
+0x602000000010 is located 0 bytes inside of 12-byte region [0x602000000010,0x60200000001c)
+freed by thread T0 here:
+    #1 ... in main use_after_free.c:10:5
+previously allocated by thread T0 here:
+    #1 ... in make_scores use_after_free.c:4:19</code></pre>
+      </figure>
+      <p><code>free</code> does not wipe the block — it returns the twelve
+      bytes to the allocator for reuse. The read races with that reuse: it
+      may see the old scores, a freshly allocated object, or, if the pages
+      went back to the operating system, a crash. Nondeterministic by
+      construction — which is what makes this family of bugs hard to
+      reproduce and prized by attackers.</p>
+
+      <h3 id="failure-double-free">A double free</h3>
+      <p>A <dfn><a href="glossary.html#t-double-free">double free</a></dfn>
+      is handing the same heap block back twice. The program below is seven
+      lines and a security incident.</p>
+      <figure class="codeblock">
+        <figcaption>double_free.c — one block, handed back twice</figcaption>
+<pre data-verify="c-asan" data-expect="attempting double-free"><code class="language-c">#include &lt;stdlib.h&gt;
+int main(void) {
+    char *buf = malloc(16);
+    free(buf);
+    free(buf);
+    return 0;
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the memory checker's verdict, captured</figcaption>
+<pre><code class="language-text">ERROR: AddressSanitizer: attempting double-free on 0x602000000010 in thread T0:
+    #1 ... in main double_free.c:5:5
+0x602000000010 is located 0 bytes inside of 16-byte region [0x602000000010,0x602000000020)
+freed by thread T0 here:
+    #1 ... in main double_free.c:4:5</code></pre>
+      </figure>
+      <p>The allocator's free list now records the block twice, so two later
+      claims can receive the same address — two parts of the program writing
+      into one block, each believing it is alone. That is not merely a crash:
+      overlapping allocations are the classic raw material for exploiting a
+      heap.</p>
+
+      <h3 id="failure-iterator">The container that moved</h3>
+      <p>An <dfn><a href="glossary.html#t-iterator-invalidation">iterator
+      invalidation</a></dfn> is a saved pointer or index into a container
+      that no longer matches the container's storage — because the storage
+      moved or was handed back while the pointer was being kept. The most
+      common form in real code: the container grows.</p>
+      <figure class="codeblock">
+        <figcaption>iterator_invalidation.c — the block relocates under the pointer</figcaption>
+<pre data-verify="c-asan" data-expect="heap-use-after-free"><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+int main(void) {
+    int *v = malloc(4 * sizeof(int));
+    for (int i = 0; i &lt; 4; i++) v[i] = i + 1;
+    int *first = &amp;v[0];
+
+    int *bigger = realloc(v, 8 * sizeof(int));
+    if (!bigger) return 1;
+    v = bigger;
+
+    printf("v moved to %p, first still points at %p\n", (void*)v, (void*)first);
+    printf("first[0] = %d\n", first[0]);
+    free(v);
+    return 0;
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the program's last line of output, then the verdict, captured</figcaption>
+<pre><code class="language-text">v moved to 0x603000000040, first still points at 0x602000000010
+...
+ERROR: AddressSanitizer: heap-use-after-free on address 0x602000000010
+READ of size 4 at 0x602000000010 thread T0
+    #0 ... in main iterator_invalidation.c:13:31
+0x602000000010 is located 0 bytes inside of 16-byte region [0x602000000010,0x602000000020)
+freed by thread T0 here:
+    #0 ... in __interceptor_realloc ...
+    #1 ... in main iterator_invalidation.c:8:19
+previously allocated by thread T0 here:
+    #1 ... in main iterator_invalidation.c:4:14</code></pre>
+      </figure>
+      <p>Growth means relocation: <code>realloc</code> claims a bigger
+      block, copies the data across, and hands the old block back. The
+      program never called <code>free</code> itself — the container did, on
+      its behalf, the moment it grew. <code>first</code> still holds the old
+      address, which now aims into a freed block. This is use-after-free
+      wearing a container costume, and it is the most common shape the
+      failure takes in mature codebases: the saved index or pointer that
+      quietly died when the container grew.</p>
+
+      <h3 id="failure-race">A data race</h3>
+      <p>A <dfn><a href="glossary.html#t-data-race">data race</a></dfn> is
+      two threads touching the same memory at the same time — at least one of
+      them writing — with nothing forcing an order. The program below counts
+      to two hundred thousand using two threads that each add one to the same
+      counter a hundred thousand times.</p>
+      <figure class="codeblock">
+        <figcaption>data_race.c — two threads, one counter, no order</figcaption>
+<pre data-verify="c-tsan" data-expect="data race"><code class="language-c">#include &lt;pthread.h&gt;
+#include &lt;stdio.h&gt;
+static long counter;
+static void *bump(void *arg) {
+    (void)arg;
+    for (int i = 0; i &lt; 100000; i++) counter = counter + 1;
+    return NULL;
+}
+int main(void) {
+    pthread_t t1, t2;
+    pthread_create(&amp;t1, NULL, bump, NULL);
+    pthread_create(&amp;t2, NULL, bump, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    printf("expected 200000, got %ld\n", counter);
+    return 0;
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the race checker's verdict, captured</figcaption>
+<pre><code class="language-text">WARNING: ThreadSanitizer: data race (pid=...)
+  Write of size 8 at 0x5555569c7258 by thread T2:
+    #0 bump data_race.c:6 ...
+  Previous write of size 8 at 0x5555569c7258 by thread T1:
+    #0 bump data_race.c:6 ...
+  Location is global 'counter' of size 8 at 0x5555569c7258
+...
+SUMMARY: ThreadSanitizer: data race data_race.c:6 in bump</code></pre>
+      </figure>
+      <p><code>counter = counter + 1</code> is three steps — read, add,
+      write — not one. Two threads can both read the same old value, both add
+      one, and both write: one increment simply vanishes. The diagram shows
+      the cheapest losing interleaving, and the checker names the two
+      colliding writes. Run the program with no checker at all and it
+      finishes, prints, exits zero — wrong:</p>
+      <figure class="codeblock">
+        <figcaption>five plain runs, five different wrong answers</figcaption>
+<pre><code class="language-text">expected 200000, got 173431
+expected 200000, got 109329
+expected 200000, got 184752
+expected 200000, got 149975
+expected 200000, got 139591</code></pre>
+      </figure>
+      <figure>
+        <svg role="img" viewBox="0 0 640 340"><title>Thread A reads five and computes six while thread B also reads five; both write six, so one increment is lost and the counter ends at six, not seven</title>
+          <text x="40" y="42" font-size="13">thread A</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="40" y="52" width="150" height="46" rx="6"/>
+          <text x="115" y="79" text-anchor="middle" font-size="12">read counter → 5</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="230" y="52" width="150" height="46" rx="6"/>
+          <text x="305" y="79" text-anchor="middle" font-size="12">compute 5 + 1</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="420" y="52" width="150" height="46" rx="6"/>
+          <text x="495" y="79" text-anchor="middle" font-size="12">write 6</text>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M194 75h28"/>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M218 69l6 6-6 6"/>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M384 75h28"/>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M408 69l6 6-6 6"/>
+          <text x="40" y="172" font-size="13">thread B</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="110" y="182" width="150" height="46" rx="6"/>
+          <text x="185" y="209" text-anchor="middle" font-size="12">read counter → 5</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="300" y="182" width="150" height="46" rx="6"/>
+          <text x="375" y="209" text-anchor="middle" font-size="12">compute 5 + 1</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="490" y="182" width="130" height="46" rx="6"/>
+          <text x="555" y="209" text-anchor="middle" font-size="12">write 6</text>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M264 205h28"/>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M288 199l6 6-6 6"/>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M454 205h28"/>
+          <path class="s-ink3" fill="none" stroke-width="1.5" d="M478 199l6 6-6 6"/>
+          <text class="t-dim" x="40" y="272" font-size="12">time flows left to right</text>
+          <rect class="f-red s-ink" stroke-width="1.5" x="130" y="288" width="390" height="38" rx="6"/>
+          <text x="325" y="311" text-anchor="middle" font-size="12">both wrote 6 — the counter is 6, not 7</text>
+        </svg>
+        <figcaption>Both threads read the same old value; one write
+        overwrites the other.</figcaption>
+      </figure>
+      <p>Five runs, five different answers, none of them two hundred
+      thousand. On machines with weaker memory ordering it is worse than a
+      lost update: without an imposed order, one core's write may not even be
+      visible to the other. The usual C fixes — locks, or special
+      instructions that fuse the three steps into one — are discipline
+      rather than guarantees; the compiler happily builds the unfixed
+      version.<a class="prov" data-src="research/c-failures.md" href="links.html#s-c-failures" title="c-failures — research/c-failures.md">[c-failures]</a></p>
+    </section>
+
+    <section id="the-collectors-bill">
+      <h2>The caretaker's bill</h2>
+      <p>A caretaker deletes the first four failures by construction —
+      memory is never handed back while anything can reach it — and shrinks
+      the fifth to a bookkeeping problem. But the machinery is real, and it
+      charges a real bill. Three line items.</p>
+      <p><strong>Pauses.</strong> To find dead memory, a tracing caretaker
+      must stop your program and walk its records. Oracle's tuning guide for
+      its flagship virtual machine names the cheapest configuration <em>"the
+      serial, stop-the-world collector"</em>. Go's team, after years of
+      shrinking pauses, wrote the target down: <em>"We now have an objective
+      of 500 microseconds stop the world pause per GC cycle. Perhaps a
+      little sandbagging here."</em><a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a>
+      Read the second sentence twice. The state of the art is an aspiration,
+      not a guarantee — and the aspiration is measured in fractions of a
+      millisecond, every cycle, forever.</p>
+      <p><strong>Overhead.</strong> Every store of a pointer into an object
+      may need recording — the write barrier. Memory sits dead between walks,
+      unreachable but not yet handed back. And the machinery itself — the
+      runtime you met on the first page — is resident, working whether your
+      code is or not.</p>
+      <p><strong>Destruction timing.</strong> When does a value die under a
+      caretaker? When the walk gets to it — if it ever does. A
+      <dfn><a href="glossary.html#t-destructor">destructor</a></dfn> is the
+      code that runs when a value dies, releasing what it holds, and a
+      caretaker makes its timing a scheduling question. Java's deprecation of
+      finalization states the limit flatly: <em>"the GC provides no guarantee
+      that any finalizer will ever be called."</em><a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a></p>
+      <p>So every garbage-collected language re-imports by hand the
+      discipline its machinery removed: Java's <code>try-with-resources</code>,
+      C#'s <code>using</code>, Go's <code>defer</code>. Each is a way to buy
+      back <dfn><a href="glossary.html#t-deterministic-destruction">deterministic
+      destruction</a></dfn> — release at a moment fixed by the shape of the
+      code, not by the machinery's schedule.</p>
+    </section>
+
+    <section id="the-numbers">
+      <h2>Why anyone cares</h2>
+      <p>Is the danger real, or academic? Three keepers of enormous C and C++
+      codebases have counted their own wounds.</p>
+      <p>Microsoft's security response team, over a decade of its own
+      vulnerability data: <em>"~70% of the vulnerabilities Microsoft assigns
+      a CVE each year continue to be memory safety issues."</em><a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a></p>
+      <p>Chromium, on its security bug tracker: <em>"Around 70% of our high
+      severity security bugs are memory unsafety problems (that is, mistakes
+      with C/C++ pointers). Half of those are use-after-free bugs."</em> That
+      count covered 912 high or critical severity security bugs since
+      2015.<a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a></p>
+      <p>Android, where the fix is visibly working: memory-safety
+      vulnerabilities fell from 76% of Android's total to 35% between 2019
+      and 2022 as new code moved to memory-safe languages — <em>"Android 13
+      is the first Android release where a majority of new code added to the
+      release is in a memory safe language."</em><a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a>
+      In 2022 they were still 86% of critical-severity bugs — and in
+      Android's Rust code specifically: <em>"zero memory safety
+      vulnerabilities discovered."</em><a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a></p>
+      <p>C hands you no tool that prevents any of the five failures — the
+      compiler builds all five, happily. A caretaker prevents them and delivers
+      the bill above. Rust's bet is that one rule, checked before the program
+      ever runs, deletes all five at once, with no resident machinery. That
+      rule is ownership. It is the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>C keeps data in two places: the stack, whose frames die with
+        their calls, and the heap, whose blocks die only when handed
+        back.</li>
+        <li>All five classic failures share one shape: a handle aimed at
+        something already dead, or two hands claiming one thing.</li>
+        <li>Every failure on this page tripped a checker on this machine —
+        the reports are captures, not illustrations.</li>
+        <li>The caretaker route buys safety at a price: pauses, bookkeeping,
+        and destruction timing nobody can promise.</li>
+        <li>Rust's answer is one compile-time rule — ownership — and it is
+        the next page.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="index.html"><span class="cap">Previous</span><span class="pg-title">Why Rust Is Shaped the Way It Is</span></a>
+    <a class="pager-card" rel="next" href="ownership.html"><span class="cap">Next</span><span class="pg-title">Ownership: One Owner Per Value</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

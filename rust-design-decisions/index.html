@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Rust Is Shaped the Way It Is — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="index">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Start</p>
+    <h1>Why Rust Is Shaped the Way It Is</h1>
+    <p class="lede">You already write Rust — by trial and error. This book
+    replaces the rules you memorized with rules you can derive, and nearly
+    every one of them falls out of a single engineering constraint.</p>
+
+    <section id="where-you-are">
+      <h2>Where you are</h2>
+      <p>You have met <code>error[E0382]</code>. You pasted it into a
+      search engine, reshaped the code until the compiler went quiet, and
+      moved on. The fix worked; the reason did not stick. What you have
+      now is a memorized pile of rules — and memorized rules let you
+      react, but not predict. When the compiler refuses something that
+      looks reasonable, you cannot say why, so you cannot see the next
+      refusal coming.</p>
+      <p>Here is the shape of the thing you met, in miniature:</p>
+      <figure class="codeblock reject">
+        <figcaption>a refusal you have met</figcaption>
+<pre data-verify="fail" data-error="E0382"><code class="language-rust">fn main() {
+    let s = String::from("hello");
+    let t = s;
+    println!("{s}");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the compiler's verdict, captured</figcaption>
+<pre><code class="language-text">error[E0382]: borrow of moved value: `s`
+ --> e0382.rs:4:16
+  |
+2 |     let s = String::from("hello");
+  |         - move occurs because `s` has type `String`, which does not
+  |           implement the `Copy` trait
+3 |     let t = s;
+  |             - value moved here
+4 |     println!("{s}");
+  |                ^ value borrowed here after move
+  |
+help: consider cloning the value if the performance cost is acceptable
+  ...</code></pre>
+      </figure>
+      <p>Every refusal like this one is a consequence, not a preference.
+      This book derives them. By the end you will read that error the way
+      you read a type error in any other language: as a short proof,
+      written in memory terms, that one specific bug cannot happen
+      here.</p>
+    </section>
+
+    <section id="the-one-question">
+      <h2>The one question</h2>
+      <p>Rust exists to answer one engineering question: <strong>memory
+      safety, machine speed, and no resident memory machinery — all three
+      at once.</strong> Any two of those are easy to get in an existing
+      language. The third one is what makes Rust strange, and every rule
+      you have memorized is downstream of it.</p>
+      <p><dfn><a href="glossary.html#t-memory-safety">Memory safety</a></dfn>
+      means freedom from one specific family of bugs: the program touching
+      memory it is no longer entitled to touch — reading past the end of
+      its data, using memory it already handed back, handing it back
+      twice, or two threads writing the same spot at the same moment.</p>
+      <p>The two known answers each give up one corner of that
+      triangle:</p>
+      <ul>
+        <li>A <dfn><a href="glossary.html#t-garbage-collector">garbage
+        collector</a></dfn>: machinery that runs alongside your program
+        and periodically reclaims memory that nothing can reach anymore.
+        Java, Go, and C# buy safety this way, and pay with collector
+        pauses, overhead on every pointer store, and destruction timing
+        nobody can promise.</li>
+        <li>C buys speed and total control, and pays with the entire bug
+        family above, enforced by nothing.</li>
+      </ul>
+      <p>The <dfn><a href="glossary.html#t-runtime">runtime</a></dfn> is
+      the resident machinery itself — the part of a managed language that
+      is still working when your code is not. Rust's own one-sentence
+      claim, from its home page: <em>"Rust is blazingly fast and
+      memory-efficient: with no runtime or garbage collector, it can power
+      performance-critical services, run on embedded devices, and easily
+      integrate with other languages."</em><a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a></p>
+      <p>That is the deal. The rest of this book is the fine print.</p>
+    </section>
+
+    <section id="the-mechanism-named">
+      <h2>The mechanism, named</h2>
+      <p>The tool Rust uses to keep the deal has a name you already know,
+      and four words worth nailing down now — mechanically, later:</p>
+      <ul>
+        <li><dfn><a href="glossary.html#t-ownership">Ownership</a></dfn>:
+        every value has exactly one owner, and when the owner's block
+        ends, the value is destroyed — its memory goes back, at a moment
+        fixed by the shape of the code.</li>
+        <li><dfn><a href="glossary.html#t-owner">Owner</a></dfn>: the
+        binding responsible for that destruction, and the only one allowed
+        to hand the value on or end it.</li>
+        <li><dfn><a href="glossary.html#t-borrow-checker">Borrow
+        checker</a></dfn>: the compiler pass that checks every use of a
+        value against who owns it and who currently holds access.</li>
+        <li><dfn><a href="glossary.html#t-escape-hatch">Escape
+        hatch</a></dfn>: a sanctioned way out when the rules are too
+        conservative for a correct program. Rust's hatches make their
+        cost visible — that is what makes them honest.</li>
+      </ul>
+      <p>The price of admission is stated plainly in the book that
+      teaches the language: <em>"None of the features of ownership will
+      slow down your program while it's running."</em><a class="prov" data-src="research/gc-costs.md" href="links.html#s-gc-costs" title="gc-costs — research/gc-costs.md">[gc-costs]</a>
+      Safety with no running bill — that is the constraint every design
+      decision in this book answers to.</p>
+    </section>
+
+    <section id="the-method">
+      <h2>The method</h2>
+      <p>Every rule in this book gets the same five-step treatment:</p>
+      <ol>
+        <li>the rule, stated plainly;</li>
+        <li>the C failure it prevents, with the report a memory checker
+        actually produced when the broken program ran;</li>
+        <li>the Rust the compiler refuses, with the real error text;</li>
+        <li>the accepted pattern, run for real;</li>
+        <li>the cost charged, and the escape hatch that lifts it.</li>
+      </ol>
+      <p>Nothing rests on authority. Every compile verdict, every error
+      text, and every program output quoted in this book was produced by
+      running the code under one pinned compiler, rustc
+      1.98.1,<a class="prov" data-src="research/environment.md" href="links.html#s-environment" title="environment — research/environment.md">[environment]</a>
+      and a script re-checks every snippet on each build — what you see
+      is what ran.</p>
+    </section>
+
+    <section id="what-you-will-predict">
+      <h2>What you will be able to predict</h2>
+      <p>Derivable rules are predictive rules. At the end of this book,
+      given a line of Rust, you will be able to say:</p>
+      <ul>
+        <li>whether it compiles — and if not, which memory bug the
+        refusal is ruling out;</li>
+        <li>which owning type the situation wants, and what each one
+        costs;</li>
+        <li>when handing a value to many users is honest, and when it is
+        a design smell;</li>
+        <li>when the checker is being conservative, and what the honest
+        way out costs.</li>
+      </ul>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>One question organizes the whole language: memory safety,
+        machine speed, no resident memory machinery — all three at
+        once.</li>
+        <li>The mechanism now has names — ownership, owner, borrow
+        checker, escape hatch — mechanics come later, in order.</li>
+        <li>The method: rule, C failure, refused Rust, accepted Rust,
+        cost and hatch — every verdict machine-checked.</li>
+        <li>The next page shows the five failures the constraint must
+        prevent, in the language that has all of them.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="next" href="founding-constraint.html"><span class="cap">Next</span><span class="pg-title">The Constraint: Safe, Fast, No Runtime</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

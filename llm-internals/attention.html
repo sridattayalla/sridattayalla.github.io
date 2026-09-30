@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attention: Every Token Looks at Every Earlier Token — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="attention">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Machine</p>
+    <h1>Attention: Every Token Looks at Every Earlier Token</h1>
+    <p class="lede">After this page you can trace one full gathering step
+    by hand — every score, every weight, every gathered entry — and say
+    exactly how a pronoun finds its noun.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-pronoun">One pronoun, one problem</a></li>
+        <li><a href="#sec-copies">Three copies of every vector</a></li>
+        <li><a href="#sec-weights">Scores, weights, and the gather</a></li>
+        <li><a href="#sec-mask">Nobody sees the future</a></li>
+        <li><a href="#sec-hand">The whole computation, by hand</a></li>
+        <li><a href="#sec-cost">What looking costs</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-pronoun">
+      <h2>One pronoun, one problem</h2>
+      <p>The last page ended with every vector carrying its slot as
+      geometry. The pieces still cannot see each other. Each hidden
+      state is a sealed column — one per piece — and from the ground
+      floor to the top, no information has yet moved between
+      positions.</p>
+      <p>Here is a sentence that needs movement: "the cat ate it". Four
+      pieces, and the fourth is in trouble. Whatever comes next —
+      "purred", say, which is a cat thing to do — depends on what "it"
+      refers to, and the useful information sits in "cat", three slots
+      back, sealed inside another
+      vector <a class="prov" data-src="research/attention-example.md" href="links.html#s-attention-example" title="attention-example — research/attention-example.md">[attention-example]</a>.</p>
+      <p>So before the floors can predict anything, something must move
+      cat-ness into the it-position. That something is a gather: every
+      piece builds a new vector as a mixture drawn from the other
+      pieces, weighted by relevance. This page builds the gather from
+      scratch, with numbers small enough to check by hand.</p>
+    </section>
+
+    <section id="sec-copies">
+      <h2>Three copies of every vector</h2>
+      <p>The gather needs every piece to play three roles at once —
+      what it wants, what it offers, what it gives — so the machinery
+      makes three copies of every hidden state, each pushed through its
+      own learned table. The
+      <dfn><a href="glossary.html#t-query">query</a></dfn> is the asking
+      copy, what this piece is looking for in the others, produced by
+      the hidden state times a learned table <code>W_q</code>. The
+      <dfn><a href="glossary.html#t-key">key</a></dfn> is the offering
+      copy, the label a piece wears to be found by
+      (<code>W_k</code>). The
+      <dfn><a href="glossary.html#t-value">value</a></dfn> is the
+      payload, what the piece actually hands over when selected
+      (<code>W_v</code>).</p>
+      <p>Mechanically there is nothing new: three matrix multiplies,
+      three learned tables, the front-door operation from two pages
+      back in three different roles. The names come from database talk
+      — query against keys, receive values — and the tables are
+      learned, so each model decides for itself what asking and
+      offering mean. Everything that follows is plumbing.</p>
+    </section>
+
+    <section id="sec-weights">
+      <h2>Scores, weights, and the gather</h2>
+      <p>The comparison is brute force. Every piece's query is dotted
+      with every piece's key: four pieces give sixteen raw scores, a
+      square grid with rows asking and columns answering. Each score
+      is then divided by the square root of the comparison width, for
+      a reason worth a beat: with wide vectors, dot products come out
+      large, and a softmax fed large numbers goes flat — one entry
+      swallows the distribution and the rest of the comparison carries
+      no information. The division keeps the scores where the softmax
+      stays discriminating
+      <a class="prov" data-src="research/attention-example.md" href="links.html#s-attention-example" title="attention-example — research/attention-example.md">[attention-example]</a>.</p>
+      <div class="note"><span class="cap">Note</span>
+        <p>Where the last page plugs in: right before these dot
+        products, the rotation is applied to the asking and offering
+        copies, so every score automatically feels the gap between the
+        two slots. The hand-checkable numbers below skip the rotation
+        to stay small; the companion script's full model applies it
+        exactly as shipped.</p>
+      </div>
+      <p>A softmax down each row then turns the sixteen scores into
+      sixteen fractions between zero and one, each row summing to one.
+      The whole apparatus — the three copies, the comparison grid, the
+      weighting, the mixture that follows — is the mechanism the
+      architecture is named for:
+      <dfn><a href="glossary.html#t-attention">attention</a></dfn>, and
+      pieces are said to attend to each other. Its bookkeeping is the
+      grid of row fractions, the
+      <dfn><a href="glossary.html#t-attention-weights">attention
+      weights</a></dfn>: weight (i, j) is the share of piece i's gather
+      that comes from piece j.</p>
+      <p>The mixture itself — the gather — is a weighted sum: piece
+      i's new vector is every piece's value added up, each scaled by
+      its weight in row i. One grid times one stack of values:
+      multiply and add, like everything else in this machine.</p>
+    </section>
+
+    <section id="sec-mask">
+      <h2>Nobody sees the future</h2>
+      <p>One edit to the grid before the softmax: any score whose
+      column lies strictly after its row is blocked, set to a number
+      so negative that the softmax renders it exactly zero. This is
+      the
+      <dfn><a href="glossary.html#t-causal-mask">causal mask</a></dfn>,
+      and it makes the grid triangular — the upper-right half is dead,
+      always exactly zero.</p>
+      <p>The reason is training, not taste. The model learns by
+      predicting, at every slot in the same pass, the piece that comes
+      next; a slot that could gather from later slots would be
+      gathering the answer it is meant to guess. Blocking the future
+      is what makes the exercise honest at every position at
+      once.</p>
+    </section>
+
+    <section id="sec-hand">
+      <h2>The whole computation, by hand</h2>
+      <p>Now the full mechanism on "the cat ate it", width two, with
+      hand-picked numbers. Every matrix below is printed by the
+      companion script's second stage and recorded in the research
+      sheet; nothing is rounded past three decimals
+      <a class="prov" data-src="research/attention-example.md" href="links.html#s-attention-example" title="attention-example — research/attention-example.md">[attention-example]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the sentence and its
+        three copies</p>
+        <div class="worked-body">
+<pre><code class="language-text">sentence: "the cat ate it"        4 pieces, width 2
+
+hand-picked embedding rows E:          asking table:
+            dim0  dim1                 W_q = [ 2  0 ]
+   the       0     1                        [ 0  1 ]
+   cat       2     0                 (W_k = W_v = identity)
+   ate       1     1
+   it        1     0
+
+the three copies (each row = one piece's copy):
+   Q = E @ W_q           K = E                V = E
+   the [ 0  1 ]           the [ 0  1 ]          the [ 0  1 ]
+   cat [ 4  0 ]           cat [ 2  0 ]          cat [ 2  0 ]
+   ate [ 2  1 ]           ate [ 1  1 ]          ate [ 1  1 ]
+   it  [ 2  0 ]           it  [ 1  0 ]          it  [ 1  0 ]</code></pre>
+        </div>
+      </div>
+
+      <p>The asking table here simply doubles the first entry of every
+      row — chosen so that the pronoun's asking copy leans hard on the
+      first entry, which happens to be where "cat" carries its
+      weight.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — scores, before the
+        mask</p>
+        <div class="worked-body">
+<pre><code class="language-text">every query dotted with every key, divided by sqrt(2):
+
+   the pronoun's raw scores, before scaling:
+      q_it . k_the = 2*0 + 0*1 = 0
+      q_it . k_cat = 2*2 + 0*0 = 4
+      q_it . k_ate = 2*1 + 0*1 = 2
+      q_it . k_it  = 2*1 + 0*0 = 2
+
+   S = Q @ K^T / sqrt(2)   (rows ask, columns answer):
+    the [ 0.707  0.      0.707  0.   ]
+    cat [ 0.     5.657   2.828  2.828]
+    ate [ 0.707  2.828   2.121  1.414]
+    it  [ 0.     2.828   1.414  1.414]</code></pre>
+        </div>
+      </div>
+
+      <p>Read the pronoun's row before the mask: the raw agreement of
+      its asking copy is zero with "the", four with "cat", two with
+      "ate", two with itself. The grid above shows those already
+      divided by the square root of the width.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the mask and the row
+        softmax</p>
+        <div class="worked-body">
+<pre><code class="language-text">block the future (upper triangle), then softmax down each row:
+
+   the pronoun's row, by hand:
+      scores      [ 0.      2.828   1.414   1.414 ]
+      minus max   [-2.828   0.     -1.414  -1.414 ]
+      exp          [ 0.059   1.      0.243   0.243 ]
+      / sum 1.545  [ 0.038   0.647   0.157   0.157 ]
+
+   A = softmax(masked S), all rows:
+    the [ 1.     0.     0.     0.   ]
+    cat [ 0.003  0.997  0.     0.   ]
+    ate [ 0.074  0.620  0.306  0.   ]
+    it  [ 0.038  0.647  0.157  0.157]</code></pre>
+        </div>
+      </div>
+
+      <p>The pronoun's row, done by hand: subtract the row's largest
+      score, exponentiate, divide by the sum. About two thirds of its
+      gather now comes from "cat". The first row is degenerate on
+      purpose — "the" can see only itself, so its softmax is a
+      certainty, all weight on itself.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 244"><title>The attention weights for the sentence the cat ate it, as a four-by-four grid: rows gather from columns, upper-right cells are blocked by the causal mask and drawn with a slash, and the outlined bottom row is the pronoun it, whose largest weight lands on cat</title>
+          <text class="t-dim" x="287" y="22" text-anchor="middle" font-size="12">gathers from</text>
+          <text x="185" y="44" text-anchor="middle" font-size="12">the</text>
+          <text x="255" y="44" text-anchor="middle" font-size="12">cat</text>
+          <text x="325" y="44" text-anchor="middle" font-size="12">ate</text>
+          <text x="395" y="44" text-anchor="middle" font-size="12">it</text>
+          <text x="142" y="80" text-anchor="end" font-size="12">the</text>
+          <text x="142" y="124" text-anchor="end" font-size="12">cat</text>
+          <text x="142" y="168" text-anchor="end" font-size="12">ate</text>
+          <text x="142" y="212" text-anchor="end" font-size="12">it</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="150" y="54" width="70" height="44"/>
+          <rect fill="none" class="s-ink" stroke-width="1" x="220" y="54" width="70" height="44"/>
+          <rect fill="none" class="s-ink" stroke-width="1" x="290" y="54" width="70" height="44"/>
+          <rect fill="none" class="s-ink" stroke-width="1" x="360" y="54" width="70" height="44"/>
+          <line class="s-ink3" stroke-width="1.5" x1="232" y1="88" x2="278" y2="64"/>
+          <line class="s-ink3" stroke-width="1.5" x1="302" y1="88" x2="348" y2="64"/>
+          <line class="s-ink3" stroke-width="1.5" x1="372" y1="88" x2="418" y2="64"/>
+          <rect class="f-green s-ink" stroke-width="1" x="150" y="98" width="70" height="44"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="220" y="98" width="70" height="44"/>
+          <rect fill="none" class="s-ink" stroke-width="1" x="290" y="98" width="70" height="44"/>
+          <rect fill="none" class="s-ink" stroke-width="1" x="360" y="98" width="70" height="44"/>
+          <line class="s-ink3" stroke-width="1.5" x1="302" y1="132" x2="348" y2="108"/>
+          <line class="s-ink3" stroke-width="1.5" x1="372" y1="132" x2="418" y2="108"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="150" y="142" width="70" height="44"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="220" y="142" width="70" height="44"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="290" y="142" width="70" height="44"/>
+          <rect fill="none" class="s-ink" stroke-width="1" x="360" y="142" width="70" height="44"/>
+          <line class="s-ink3" stroke-width="1.5" x1="372" y1="176" x2="418" y2="152"/>
+          <rect class="f-green s-ink" stroke-width="1" x="150" y="186" width="70" height="44"/>
+          <rect class="f-blue s-ink" stroke-width="1" x="220" y="186" width="70" height="44"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="290" y="186" width="70" height="44"/>
+          <rect class="f-yellow s-ink" stroke-width="1" x="360" y="186" width="70" height="44"/>
+          <rect fill="none" class="s-accent" stroke-width="2" x="150" y="186" width="280" height="44"/>
+          <text x="185" y="80" text-anchor="middle" font-size="12">1.000</text>
+          <text x="185" y="124" text-anchor="middle" font-size="12">0.003</text>
+          <text x="255" y="124" text-anchor="middle" font-size="12">0.997</text>
+          <text x="185" y="168" text-anchor="middle" font-size="12">0.074</text>
+          <text x="255" y="168" text-anchor="middle" font-size="12">0.620</text>
+          <text x="325" y="168" text-anchor="middle" font-size="12">0.306</text>
+          <text x="185" y="212" text-anchor="middle" font-size="12">0.038</text>
+          <text x="255" y="212" text-anchor="middle" font-size="12">0.647</text>
+          <text x="325" y="212" text-anchor="middle" font-size="12">0.157</text>
+          <text x="395" y="212" text-anchor="middle" font-size="12">0.157</text>
+        </svg>
+        <figcaption>The weight grid of the toy sentence. Washes mark
+        size — indigo for near-certain, blue for majority, yellow for
+        minor, green for negligible — and slashes mark the cells the
+        mask blocks. The outlined row is the pronoun; its biggest
+        weight sits on "cat".</figcaption>
+      </figure>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the gather</p>
+        <div class="worked-body">
+<pre><code class="language-text">out = A @ V   (each row of out = weighted sum of the value rows)
+
+   the pronoun's gather, spelled out:
+      0.038*[0 1] + 0.647*[2 0] + 0.157*[1 1] + 0.157*[1 0]
+      = [ 1.609  0.196 ]
+
+   all outputs:
+    the [ 0.      1.   ]
+    cat [ 1.993   0.003]
+    ate [ 1.546   0.380]
+    it  [ 1.609   0.196 ]</code></pre>
+        </div>
+      </div>
+
+      <p>And the gather: the pronoun's new vector is dominated by the
+      cat-piece's payload. Its input was a copy of "it"; its output
+      leans toward "cat". Whatever the higher floors make of the
+      sentence, the it-position now holds cat-ness to work with —
+      which is what predicting "purred"
+      needs <a class="prov" data-src="research/attention-example.md" href="links.html#s-attention-example" title="attention-example — research/attention-example.md">[attention-example]</a>.</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the whole mechanism, as shipped (stage 2)</figcaption>
+<pre><code class="language-python">E = np.array([[0., 1.], [2., 0.], [1., 1.], [1., 0.]])  # the cat ate it
+Wq = np.array([[2., 0.], [0., 1.]])
+Q, K, V = E @ Wq, E.copy(), E.copy()
+S = Q @ K.T / np.sqrt(2)
+S = np.where(np.tril(np.ones_like(S)) > 0, S, -np.inf)
+A = softmax(S)
+out = A @ V</code></pre>
+      </figure>
+
+      <p>One full copy of this apparatus — three tables, comparison,
+      gather — is called a
+      <dfn><a href="glossary.html#t-head">head</a></dfn>. A model could
+      run exactly one head per floor and it would work. Real models
+      run many, which is the next page's subject.</p>
+    </section>
+
+    <section id="sec-cost">
+      <h2>What looking costs</h2>
+      <p>The grid is the price. Every query meets every key: with n
+      pieces the grid holds n-times-n scores, and both the work and
+      the memory grow with the square of the piece count — quadratic
+      in length, linear in
+      width <a class="prov" data-src="research/attention-example.md" href="links.html#s-attention-example" title="attention-example — research/attention-example.md">[attention-example]</a>.</p>
+      <p>That square is why the model's reach is finite and fixed at
+      build time. The
+      <dfn><a href="glossary.html#t-context-window">context
+      window</a></dfn> is the number of pieces the model can hold at
+      once — everything outside it simply does not exist for the
+      machine. GPT-3's window is 2,048
+      pieces <a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a>;
+      at that size, one weight grid per head per floor holds about
+      four million scores, and models stack dozens of heads across
+      dozens of floors. Keeping that affordable is the next page's
+      second subject.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Every piece makes three copies of its hidden state through
+        three learned tables: a query (what to look for), a key (what
+        to be found by), a value (what to hand over).</li>
+        <li>Scores are every query dotted with every key, scaled down
+        to keep the softmax discriminating; a softmax down each row
+        turns them into attention weights.</li>
+        <li>The causal mask blocks every forward-looking score, so
+        training can demand a prediction at every slot in one pass;
+        the grid is triangular.</li>
+        <li>In the toy sentence the pronoun drew about two thirds of
+        its gather from "cat" — reference-finding out of dot products
+        and a softmax.</li>
+        <li>One copy of the apparatus is a head; the score grid grows
+        with the square of the piece count, which is why the context
+        window is finite. Next: many heads per floor.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="position.html"><span class="cap">Previous</span><span class="pg-title">Position: Order Without Coordinates</span></a>
+    <a class="pager-card" rel="next" href="multihead.html"><span class="cap">Next</span><span class="pg-title">Multi-Head Attention and GQA</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "site": "Rust fixture contract",
+  "external_links_page": "links.html",
+  "glossary_page": "glossary.html",
+  "verify_report": "verify-report.json",
+  "allowed_code_languages": ["rust", "c", "text"],
+  "default_word_window": [1200, 2200],
+  "pages": [
+    { "file": "broken.html", "id": "broken", "title": "Broken Fixture", "word_window": [300, 400] },
+    { "file": "valid.html", "id": "valid", "title": "Valid Fixture", "word_window": [50, 400] },
+    { "file": "glossary.html", "id": "glossary", "title": "Glossary", "word_window": [5, 200] }
+  ]
+}

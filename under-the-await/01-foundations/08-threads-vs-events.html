@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threads vs events: the tradeoff — Under the Await</title>
+  <meta name="description" content="The honest ledger: preemption versus cooperation, megabytes per stack versus bytes per suspended job, data races versus inverted control, and the hybrid both worlds want.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-08">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Threads vs events: the tradeoff</h1>
+
+      <p>Part 1 assembled the machine, and somewhere along the way you
+        may have noticed a fork in the road. One path is <a href="02-processes-threads-context-switches.html">chapter 2</a>'s:
+        give every concurrent thing a thread, let blocking calls put
+        threads to sleep, and let the kernel's preemptive scheduling
+        juggle them. The other path is chapters 5 and 6's: keep a few
+        threads, make every socket <a href="05-nonblocking-io.html">non-blocking</a>, and react, through one
+        sleeping question, to whatever the kernel reports. These are the
+        two classic architectures for concurrency, and programmers have
+        argued about them for thirty years with religious intensity.
+        This chapter refuses the religion. It writes out the ledger,
+        honestly, line by line, and then points at the hybrid that takes
+        the best of both, because that hybrid is where this book is
+        going.</p>
+
+      <h2>What exactly is being traded</h2>
+
+      <p>Strip both designs to their skeletons and the same five
+        questions separate them. Who decides when a running computation
+        gives up the CPU? What does a concurrent thing cost in memory?
+        What can go wrong when things share state? What shape does the
+        code take? And which failures do you fear at 3 a.m.? None of
+        these has a right answer. Each is a trade, and the two
+        architectures take opposite sides of every single one.</p>
+
+      <h2>The ledger</h2>
+
+      <table>
+        <thead>
+          <tr><th>Question</th><th>Thread per connection</th>
+            <th>Events on few threads</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>who yields the CPU, and when</th>
+            <td>the kernel, preemptively, at any instant (chapter 2)</td>
+            <td>your code, voluntarily, between reactions</td></tr>
+          <tr><th>memory per concurrent thing</th>
+            <td>megabytes of stack reservation per thread, 8 MiB by
+              default on Linux</td>
+            <td>a small blob of saved state per suspended job, often a
+              few hundred bytes</td></tr>
+          <tr><th>what sharing gets you in trouble</th>
+            <td>data races on shared memory, guarded by mutexes</td>
+            <td>no unintended sharing, but control flow is inverted and
+              fragmented</td></tr>
+          <tr><th>the shape of the code</th>
+            <td>a linear story per connection; reads like the
+              protocol</td>
+            <td>one reactive loop plus handlers; reads like a state
+              machine</td></tr>
+          <tr><th>the 3 a.m. failure</th>
+            <td>a deadlock, or a server crushed under ten thousand
+              stacks (chapter 4)</td>
+            <td>one long-running reaction starving every other
+              connection</td></tr>
+        </tbody>
+      </table>
+      <!-- fs: fact sheet §1 — Linux default stack 8 MiB virtual per thread; the few-hundred-bytes-per-suspended-job contrast is established in Parts 3 and 4 (outlines p04-02) -->
+
+      <p>Two rows deserve expansion, because they carry the most weight
+        in practice. The memory row is arithmetic, and chapter 4 already
+        ran it: a stack costs megabytes before doing anything, while a
+        suspended job's saved state costs roughly what its local
+        variables cost, bytes to a few hundred bytes. That is a factor
+        of ten thousand or more between the two units of concurrency,
+        and it is the single number that decides which designs are even
+        candidates at a million simultaneous things.</p>
+
+      <p>The failure row is subtler. The thread design's failures are
+        loud and well understood: deadlocks hang, races corrupt, and
+        both have forty years of tooling aimed at them. The event
+        design's failures are quiet and structural. Because one thread
+        runs every connection, a handler that computes for a second
+        stalls every connection behind it, and nothing crashes, nothing
+        logs, nothing preempts: the machine simply stops serving until
+        the handler returns. Fair sharing between connections is not
+        given by the event design; it has to be built, deliberately,
+        out of the places where the programmer chooses to hand control
+        back. Cooperation must be
+        enforced, because the kernel's preemptive safety net is
+        gone.</p>
+
+      <h2>Neither one is fast</h2>
+
+      <p>A tempting frame, and a wrong one, is "events are faster".
+        Faster at what? For latency on a single connection, a thread
+        that sleeps in a blocking read has a beautifully short path:
+        packet arrives, kernel wakes the thread, data flows. For
+        throughput with ten thousand mostly idle connections, events
+        win by default because the thread design cannot even field that
+        many players, as <a href="04-blocking-io-and-c10k.html">chapter 4's arithmetic</a> showed. Flip to ten
+        thousand busy connections on many cores, and the interesting
+        question becomes how either design divides work across cores,
+        at which point thread designs grow their work queues and event
+        designs grow their per-core loops, and both start resembling
+        each other. The honest summary: blocking-on-threads optimizes
+        for simplicity of each individual story; events optimize for
+        the number of simultaneous stories. Neither speed claim survives
+        without its qualifier.</p>
+
+      <p>Latency and throughput deserve one concrete scenario each,
+        because abstractions hide the mechanics. Latency: a single
+        client sends a request and waits. The thread design's path is
+        packet, wake the one sleeping thread, read, reply; the event
+        design's path is packet, wake the one loop, run the handler,
+        reply. Both are microseconds of machinery; what dominates is
+        whether anything else was queued ahead of you. Throughput: ten
+        thousand clients each deliver a request, once a minute. The
+        thread design spends nearly all of its life swapping between
+        sleepers and paying stack memory for the privilege; the event
+        design spends its life asleep inside the big question, waking
+        per packet, with waiters costing bytes. The designs do not
+        merely score differently on these scenarios. They score
+        differently on the axis you are usually not measuring when you
+        pick one by feel.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 218" role="img">
+          <title>Thread design: many tall stacks; event design: few stacks plus many tiny suspended states</title>
+          <text class="label muted" x="40" y="30" text-anchor="start">thread design:</text>
+          <rect class="box" x="40" y="44" width="28" height="120" rx="4"/>
+          <rect class="box" x="76" y="44" width="28" height="120" rx="4"/>
+          <rect class="box" x="112" y="44" width="28" height="120" rx="4"/>
+          <rect class="box" x="148" y="44" width="28" height="120" rx="4"/>
+          <rect class="box" x="184" y="44" width="28" height="120" rx="4"/>
+          <text class="label muted" x="126" y="182" text-anchor="middle">one full stack per connection</text>
+          <text class="label muted" x="420" y="30" text-anchor="start">event design:</text>
+          <rect class="box" x="420" y="44" width="40" height="120" rx="4"/>
+          <rect class="box" x="470" y="44" width="40" height="120" rx="4"/>
+          <text class="label muted" x="465" y="182" text-anchor="middle">two stacks...</text>
+          <rect class="box accent" x="530" y="52" width="22" height="16" rx="3"/>
+          <rect class="box accent" x="530" y="76" width="22" height="16" rx="3"/>
+          <rect class="box accent" x="530" y="100" width="22" height="16" rx="3"/>
+          <rect class="box accent" x="530" y="124" width="22" height="16" rx="3"/>
+          <rect class="box accent" x="560" y="52" width="22" height="16" rx="3"/>
+          <rect class="box accent" x="560" y="76" width="22" height="16" rx="3"/>
+          <rect class="box accent" x="590" y="52" width="22" height="16" rx="3"/>
+          <text class="label muted" x="612" y="203" text-anchor="end" style="font-size:12px">...plus thousands of tiny suspended jobs</text>
+        </svg>
+        <figcaption>Figure 1: the two shapes of "many concurrent
+          things". Tall stacks on the left, a sprinkle of state on the
+          right.</figcaption>
+      </figure>
+
+      <h2>The hybrid both sides drift toward</h2>
+
+      <p>Here is the punchline toward which all of Part 1 has been
+        walking. Once you accept that stacks are expensive and that
+        preemptive sharing between many thousands of things is
+        unaffordable, but you refuse to give up either multicore
+        parallelism or comfortable, story-shaped code, a specific
+        architecture suggests itself. Take a small number of OS threads,
+        typically one per core. On each, run a reactive loop in the
+        style of chapter 6, sleeping in the one big question whenever
+        nothing is ready. And represent each connection not by a thread
+        but by a cheap suspended computation: a frozen stack's worth of
+        meaning, stored as a small object, resumed exactly at the points
+        where it asked to wait.</p>
+
+      <p>That is the destination. A few kernel threads supply
+        parallelism and the preemptive safety net between loops.
+        Millions of cheap suspended jobs supply the concurrency.
+        The kernel's ready list decides which job to resume, and the
+        machinery that manages all of this, the queues, the waking,
+        the fair sharing between jobs, is ordinary user-space code,
+        built from exactly the primitives you have now met: file
+        descriptors, non-blocking sockets, <a href="06-io-multiplexing-readiness.html">one sleeping question</a>, and
+        frozen computations that resume where they left off. It is
+        threads' unit of waiting with events' unit of cost.</p>
+
+      <p>Building that machinery, or rather meeting the design that
+        won in the Rust ecosystem, is what the rest of this book does.
+        But there is a gap between "small object that resumes where it
+        left off" and code you would actually want to write, and
+        humanity has invented five distinct answers to bridging it:
+        reused threads, functions handed to loops, user-space stacks,
+        compiler-suspended functions, and disciplined hand-offs between
+        them. Those five answers, with their real names and their real
+        costs, are Part 2.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Threads and events take opposite sides of every real
+            trade: preemptive versus voluntary yielding, megabytes
+            versus bytes per concurrent thing, races versus inverted
+            control.</li>
+          <li>Neither design is "faster" without a qualifier: threads
+            give each connection a short, simple path; events give
+            scale by making waiters nearly free.</li>
+          <li>The event design's characteristic failure is a long
+            reaction starving every other connection; fair sharing must
+            be built in, because no timer interrupt will rescue
+            you.</li>
+          <li>The hybrid destination: a few OS threads, one reactive
+            loop each, and millions of cheap suspended jobs resumed by
+            the kernel's ready list.</li>
+          <li>Part 2 presents the five classic strategies for
+            expressing those suspended jobs before this book commits to
+            one.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

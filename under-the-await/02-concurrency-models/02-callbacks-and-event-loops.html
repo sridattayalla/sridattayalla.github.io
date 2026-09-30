@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<!--
+  ==========================================================================
+  UNDER THE AWAIT — CONTENT PAGE TEMPLATE
+  ==========================================================================
+  WRITER CONTRACT — copy this file into the right part directory and fill in
+  exactly FOUR things:
+
+    1. <title>PLACEHOLDER</title>            → "Page title — Under the Await"
+    2. <meta name="description" ...>         → one-sentence summary
+    3. <body data-page="PLACEHOLDER-ID">     → the page's manifest id
+                                               (e.g. "p01-03" — see assets/main.js)
+    4. Everything between the CONTENT markers in <main id="content">
+
+  Do NOT touch: the <head> links and scripts, the empty
+  <aside id="site-nav">, or the empty <nav id="page-nav">. main.js renders
+  the sidebar, the prev/next footer, code highlighting and the ← / → keys.
+  Paths are already correct for pages one level below the site root
+  (../assets/...). No external URLs, no webfonts, no inline event handlers.
+
+  CONTENT CLASSES (full list + tokens documented at the top of
+  assets/style.css):
+    .note / .warning / .pitfall     callouts (labels auto-generated)
+    aside.takeaways                 end-of-page summary box (supply a heading)
+    figure.diagram + figcaption     inline SVG figures; style shapes with
+                                    svg classes .box .arrow .arrow-head
+                                    .lane .label (+ .accent, .label.muted/mono)
+    table                           book-style, scrolls horizontally if wide
+    pre > code                      code block; add class="language-rust"
+                                    (also c, javascript, python, bash, …)
+    <code> inline · <kbd>           tinted mono · keycap
+  ==========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Callbacks and event loops — Under the Await</title>
+  <meta name="description" content="How one thread, a readiness table, and a pile of handler functions run a whole server: the reactor pattern, Node.js, callback hell, and the cooperative contract.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p02-02">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>Callbacks and event loops</h1>
+
+      <p>Strategy one kept one thread per wait and made the threads
+        reusable. Strategy two goes further: it keeps exactly one thread
+        for <em>all</em> the waits. You already own every piece of
+        machinery this needs, because Part 1 built it.
+        <a href="../01-foundations/05-nonblocking-io.html">Non-blocking
+        I/O</a> lets you ask "is there data?" instead of "give me data."
+        <a href="../01-foundations/06-io-multiplexing-readiness.html">epoll</a>
+        lets one thread ask that question about thousands of sockets at
+        once and sleep until the kernel reports <a href="../01-foundations/05-nonblocking-io.html">readiness</a>.
+        The only thing still missing is the answer to: when socket 7 finally
+        has data, whose code should run?</p>
+
+      <h2>One thread, one table, one loop</h2>
+
+      <p>The answer is a table, and the table turns out to be the whole
+        architecture. For every socket you care about, you register a
+        function: "when this one is readable, call me." Then you write a
+        loop that lives forever: ask the kernel what became ready, look up
+        each answer in the table, call the matching function, repeat. This
+        arrangement, a loop that reacts to readiness events by dispatching
+        pre-registered handlers, is called a <strong>reactor</strong>, and
+        it is the skeleton underneath Node.js, nginx, Redis, and every GUI
+        toolkit you have ever used.</p>
+
+      <p>The loop itself is the <strong>event loop</strong>: one thread
+        running a cycle of <em>wait, dispatch, run, repeat</em>. Written
+        out, it is almost embarrassingly small:</p>
+
+      <pre><code class="language-plaintext">a table mapping each watched fd to a handler function
+
+loop forever:
+    ready = wait for readiness on the watched fds   # epoll_wait: sleeps here
+    for each ready fd:
+        handler = table[fd]                          # "when 7 is readable, call this"
+        handler()                                    # runs to completion, returns here
+    run any expired timers, then repeat</code></pre>
+
+      <p>Every registered function is a <strong>callback</strong>: a piece
+        of code you hand to someone else, to be called later when a
+        condition arrives, not now when you write it. The word is older
+        than event loops. You have used callbacks for buttons and timers
+        forever. The event loop just makes them the primary way a server
+        expresses "and then."</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 240" role="img" aria-label="Diagram of the event loop cycle: the loop sleeps in epoll waiting for readiness, looks up the handler for each ready descriptor, runs each handler to completion, then returns to waiting.">
+          <title>The event loop cycle: wait for readiness, look up handlers, run them, repeat</title>
+          <rect class="box accent" x="40" y="20" width="220" height="52" rx="8"/>
+          <text class="label" x="150" y="42" text-anchor="middle">sleep in epoll_wait</text>
+          <text class="label muted" x="150" y="60" text-anchor="middle" style="font-size:12px">"wake me when anything is ready"</text>
+          <line class="arrow" x1="260" y1="46" x2="330" y2="46"/>
+          <polygon class="arrow-head" points="330,41 340,46 330,51"/>
+          <rect class="box" x="340" y="20" width="240" height="52" rx="8"/>
+          <text class="label" x="460" y="42" text-anchor="middle">look up handlers</text>
+          <text class="label muted" x="460" y="60" text-anchor="middle">fd 7 readable → table[7]</text>
+          <line class="arrow" x1="460" y1="72" x2="460" y2="118"/>
+          <polygon class="arrow-head" points="455,118 465,118 460,128"/>
+          <rect class="box" x="340" y="128" width="240" height="52" rx="8"/>
+          <text class="label" x="460" y="150" text-anchor="middle">run each handler</text>
+          <text class="label muted" x="460" y="168" text-anchor="middle">to completion, one by one</text>
+          <path class="arrow" d="M 340 154 C 180 154 150 110 150 78"/>
+          <polygon class="arrow-head" points="144,88 156,88 150,76"/>
+          <text class="label" x="100" y="130" text-anchor="middle">and back to sleep</text>
+        </svg>
+        <figcaption>Figure 1: the event loop. One thread cycles through
+          waiting, dispatching, and running. Handlers run one at a time, in
+          order, to completion.</figcaption>
+      </figure>
+
+      <p>Look at what this buys you. Ten thousand open sockets cost you a
+        table with ten thousand entries and one sleeping thread. Memory
+        use is a few bytes of bookkeeping per connection. The
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">C10K
+        arithmetic</a> that crushed thread-per-connection simply does not
+        apply here, because there are no threads to pay for.</p>
+
+      <h2>Node.js: the flagship</h2>
+
+      <p>Node.js made this model famous by bolting it to JavaScript.
+        Underneath sits libuv, a small C library that implements exactly
+        the loop above: a table of handlers, an epoll (or kqueue, or IOCP)
+        backend, and a queue of expired timers. On top of that, every I/O
+        operation in Node's standard library takes a callback as its last
+        argument. Reading a file looks like this:</p>
+
+      <pre><code class="language-javascript">const fs = require("fs");
+
+fs.readFile("config.json", "utf8", (err, text) => {
+  if (err) return console.error("config:", err);
+  const config = JSON.parse(text);
+
+  fs.readFile(config.template, "utf8", (err, template) => {
+    if (err) return console.error("template:", err);
+
+    fs.readFile(config.footer, "utf8", (err, footer) => {
+      if (err) return console.error("footer:", err);
+      render(config, template, footer);
+    });
+  });
+});
+
+console.log("still running: readFile returned immediately");</code></pre>
+
+      <p>Three files, each read only after the previous one finishes, and
+        the code has already collapsed into a wedge. Each callback receives
+        the results of the step before it, and each must handle its own
+        error, because there is no enclosing function left to catch
+        anything. Trace what happens when <code>readFile</code> is called:
+        it returns immediately (that last line proves it), and your
+        function is stashed in the table for later. Control flow no longer
+        follows the shape of the code on screen. It follows the order the
+        kernel reports events.</p>
+
+      <p>This inversion has a name that stuck before the nicer syntax
+        arrived: <strong>callback hell</strong>. The symptoms are visible
+        above: nesting that grows rightward with every sequential step,
+        error handling repeated by convention in every layer, and stack
+        traces that end at the loop, because by the time your callback
+        runs, the function that registered it returned long ago. Your
+        handler runs on a fresh, nearly empty
+        <a href="../01-foundations/01-how-programs-run.html">call stack</a>.
+        The code that was logically "after" your read is no longer below
+        you on the stack. It is a different function, registered somewhere
+        else, waiting for its own moment.</p>
+
+      <h2>The deal you signed</h2>
+
+      <p>Here is the part that will matter for the rest of this book. The
+        event loop never interrupts a running handler. There is no timer,
+        no <a href="../01-foundations/02-processes-threads-context-switches.html">preemptive</a>
+        machinery, nothing that tears your function off the CPU. The loop
+        gets control back exactly once: when your handler returns. Until
+        then, every other connection on the server waits, including ones
+        whose data is already sitting in the kernel, ready.</p>
+
+      <p>An arrangement where running code decides when to give the CPU
+        back, by returning, is <strong>cooperative</strong>. The word will
+        follow you to the last page of this book, so fix it now: the
+        alternative, the kernel's model, is to rip control away on a
+        timer whether you like it or not. The loop cannot do that. It only
+        schedules between your functions, never during them.</p>
+
+      <p>Two consequences follow, and they are two faces of the same coin.
+        <strong>Fairness</strong> is the property that every registered
+        handler gets its turn in reasonable time. <strong>Starvation</strong>
+        is what happens when one handler breaks the deal: a function that
+        runs for a second starves every other connection for that second,
+        completely, no matter how idle the machine is.</p>
+
+      <div class="pitfall">
+        <p>Real incidents look like this: a handler parses a huge uploaded
+          JSON document synchronously, or runs a regex over untrusted
+          input, or sorts a large array, and the p99 latency of every
+          unrelated request on the server spikes for exactly that long.
+          The event loop was not slow. One tenant of it was. Nothing on a
+          single-threaded loop is concurrent; everything on it is merely
+          interleaved.</p>
+      </div>
+
+      <p>There is a genuine upside hiding next to that cliff. Because one
+        thread runs every handler, two handlers can never be mid-flight at
+        the same instant, so they cannot
+        <a href="../01-foundations/02-processes-threads-context-switches.html">race</a>
+        on shared state the way two threads can. No locks between handlers.
+        The price is that your data structures can still be observed
+        half-updated <em>across</em> callbacks: state you set before an
+        asynchronous step may surprise the callback that runs after it.
+        Concurrency did not disappear. It moved into your program's logic.</p>
+
+      <h2>Promises: the same deal, better handwriting</h2>
+
+      <p>JavaScript later grew <code>Promise</code> objects to flatten the
+        pyramid. A Promise is a placeholder for a result that does not
+        exist yet, plus a chain of functions to call when it arrives:</p>
+
+      <pre><code class="language-javascript">const fs = require("fs/promises");
+
+fs.readFile("config.json", "utf8")
+  .then((text) =&gt; JSON.parse(text))
+  .then((config) =&gt; fs.readFile(config.template, "utf8")
+    .then((template) =&gt; render(config, template)))
+  .catch((err) =&gt; console.error("any step:", err));</code></pre>
+
+      <p>Flatter, and the error handling is fixed in one place, which is a
+        real improvement. But look closely at what <code>.then(...)</code>
+        takes: a function, to be called later by someone else. A Promise is
+        a callback with a contract, a memory, and nicer syntax. The
+        inversion of control is still there, one layer down. You still
+        cannot write "load the config, <em>then</em> use it" as consecutive
+        lines of code.</p>
+
+      <p>That final step, writing asynchronous flows as flat, consecutive
+        lines, needs functions that can pause without dying. That is the
+        next strategy but one, and the page you are building toward. First,
+        though, the industry took a detour through a genuinely different
+        idea: what if threads themselves were cheap?</p>
+
+      <div class="note">
+        <p>This door, one thread plus a table of wake-up functions, is the
+          one Node opened. Rust walks a later door, but the table returns:
+          Part 4 shows the same idea, a registry mapping readiness events
+          to wake-ups, living at the bottom of Tokio's I/O machinery.</p>
+      </div>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A reactor registers handlers for readiness events; the event
+            loop around it cycles through wait, dispatch, run, repeat, on a
+            single thread.</li>
+          <li>Callbacks invert control: your code runs in fragments, on
+            fresh stacks, in an order driven by the kernel's events rather
+            than by your source layout.</li>
+          <li>Callback hell is this inversion compounding: nesting per
+            sequential step, error handling by convention, and
+            stack traces that end at the loop.</li>
+          <li>The model is cooperative by necessity: the loop cannot
+            interrupt a handler, so fairness depends on every handler
+            returning quickly, and one long handler starves everyone.</li>
+          <li>Promises flatten the pyramid but keep the deal: .then still
+            registers functions to be called by someone else, later.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

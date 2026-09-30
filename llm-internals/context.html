@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Long Context: Extending the Window — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="context">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Five — The Frontier</p>
+    <h1>Long Context: Extending the Window</h1>
+    <p class="lede">Part Four priced each piece of a reply. Part
+    Five widens the machine's reach: the window — every position
+    from the first piece of the prompt to the last piece of the
+    answer — is a training-time promise, and breaking it has a
+    cost. Here is what actually happens at the edge of the window,
+    and the tricks that move it.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-problem">The wall at the edge of training</a></li>
+        <li><a href="#sec-pi">Zoom out: position interpolation</a></li>
+        <li><a href="#sec-ntk">Stretch the low notes: NTK-aware scaling</a></li>
+        <li><a href="#sec-window">Bound the cache: sliding-window attention</a></li>
+        <li><a href="#sec-ships">What ships, and what actually works</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-problem">
+      <h2>The wall at the edge of training</h2>
+      <p>Feed a model trained with an eight-thousand-position window
+      a prompt four times longer and it does not politely refuse —
+      it falls apart: perplexity explodes, because the position
+      frequencies in that far range were never seen in training
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p>Recall what a position is to this machine. The position
+      page showed each one applied as a rotation — a different
+      angle per position per frequency pair, calibrated by nothing
+      but exposure. Training tunes every weight around rotations it
+      has seen; past the edge, the angles are strangers.</p>
+      <p>The second wall is cost. Attention scores every position
+      against every other, so the score matrix is n by n: doubling
+      the context quadruples the attention arithmetic — the reason
+      the Llama three report cites quadratic growth as the cost of
+      long context
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+    </section>
+
+    <section id="sec-pi">
+      <h2>Zoom out: position interpolation</h2>
+      <p><dfn><a href="glossary.html#t-position-interpolation">Position
+      interpolation</a></dfn> shrinks the addresses instead of
+      growing the machine: rescale every position p to p over s
+      before applying the rotations, where s is the stretch —
+      target window over trained window
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p>The effect is a zoom-out on the position axis. Every
+      position in the longer prompt lands somewhere inside the
+      range training calibrated, at a price: adjacent pieces now
+      sit s times closer together, and the model must relearn to
+      read at the new density
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one stretch, priced</p>
+        <div class="worked-body">
+<pre><code class="language-text">one stretch, priced
+(trained window 8K, target window 32K):
+
+  s = 32768 / 8192 = 4
+
+  position mapping, before and after:
+    p = 100    -&gt;   25
+    p = 8000   -&gt; 2000
+    p = 32000  -&gt; 8000
+
+  fine-tune bill (position interpolation):
+    about 1000 steps on long documents,
+    a fraction of a percent of pretraining</code></pre>
+        </div>
+      </div>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 200"><title>Position interpolation: every position on the extended axis is divided by four and lands inside the range the model was trained on, four times denser</title>
+          <text x="320" y="20" text-anchor="middle" font-size="11" class="t-dim">target axis — 32K positions</text>
+          <line class="s-ink" stroke-width="1.5" x1="40" y1="50" x2="600" y2="50"/>
+          <line class="s-ink" stroke-width="1.5" x1="40" y1="45" x2="40" y2="55"/>
+          <line class="s-ink" stroke-width="1.5" x1="180" y1="45" x2="180" y2="55"/>
+          <line class="s-ink" stroke-width="1.5" x1="320" y1="45" x2="320" y2="55"/>
+          <line class="s-ink" stroke-width="1.5" x1="460" y1="45" x2="460" y2="55"/>
+          <line class="s-ink" stroke-width="1.5" x1="600" y1="45" x2="600" y2="55"/>
+          <text x="40" y="38" text-anchor="middle" font-size="11">0</text>
+          <text x="180" y="38" text-anchor="middle" font-size="11">8K</text>
+          <text x="320" y="38" text-anchor="middle" font-size="11">16K</text>
+          <text x="460" y="38" text-anchor="middle" font-size="11">24K</text>
+          <text x="600" y="38" text-anchor="middle" font-size="11">32K</text>
+          <circle class="f-accent" cx="180" cy="50" r="3.5"/>
+          <circle class="f-accent" cx="320" cy="50" r="3.5"/>
+          <circle class="f-accent" cx="600" cy="50" r="3.5"/>
+          <line class="s-ink" stroke-width="1" stroke-dasharray="4 3" x1="180" y1="55" x2="180" y2="145"/>
+          <line class="s-ink" stroke-width="1" stroke-dasharray="4 3" x1="320" y1="55" x2="320" y2="145"/>
+          <line class="s-ink" stroke-width="1" stroke-dasharray="4 3" x1="600" y1="55" x2="600" y2="145"/>
+          <line class="s-ink" stroke-width="1.5" x1="40" y1="150" x2="600" y2="150"/>
+          <line class="s-ink" stroke-width="1.5" x1="40" y1="145" x2="40" y2="155"/>
+          <line class="s-ink" stroke-width="1.5" x1="180" y1="145" x2="180" y2="155"/>
+          <line class="s-ink" stroke-width="1.5" x1="320" y1="145" x2="320" y2="155"/>
+          <line class="s-ink" stroke-width="1.5" x1="460" y1="145" x2="460" y2="155"/>
+          <line class="s-ink" stroke-width="1.5" x1="600" y1="145" x2="600" y2="155"/>
+          <circle class="f-accent" cx="180" cy="150" r="3.5"/>
+          <circle class="f-accent" cx="320" cy="150" r="3.5"/>
+          <circle class="f-accent" cx="600" cy="150" r="3.5"/>
+          <text x="40" y="172" text-anchor="middle" font-size="11">0</text>
+          <text x="180" y="172" text-anchor="middle" font-size="11">2K</text>
+          <text x="320" y="172" text-anchor="middle" font-size="11">4K</text>
+          <text x="460" y="172" text-anchor="middle" font-size="11">6K</text>
+          <text x="600" y="172" text-anchor="middle" font-size="11">8K</text>
+          <text x="320" y="195" text-anchor="middle" font-size="11" class="t-dim">trained axis — 8K positions, everything lands 4x denser</text>
+        </svg>
+        <figcaption>Divide every position by the stretch and the
+        whole target axis folds into the trained axis. Positions
+        keep their order; the model reads them four times denser
+        than training prepared.</figcaption>
+      </figure>
+
+      <p>That relearning is cheap. The original demonstration took
+      a model trained at four thousand positions to thirty-two
+      thousand with about a thousand fine-tune steps on long
+      documents — a fraction of a percent of pretraining compute
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p>Why so cheap? The weights already know how to read
+      positions — every projection and feed-forward was trained on
+      rotations of exactly this kind; only the spacing changed.
+      Fine-tuning adjusts how the model interprets differences
+      between neighbors, not the machinery that produces them. The
+      price side is just as real: with the stretch at four, two
+      pieces that training could tell apart by their angles now
+      arrive four times closer, and pairs that used to be distinct
+      can collide. Interpolation trades resolution for reach, and
+      the fine-tune is the model relearning to squint.</p>
+    </section>
+
+    <section id="sec-ntk">
+      <h2>Stretch the low notes: NTK-aware scaling</h2>
+      <p>A uniform squeeze is crude.
+      <dfn><a href="glossary.html#t-ntk-aware-scaling">NTK-aware
+      scaling</a></dfn> refuses to move the positions at all — it
+      stretches the schedule instead: the rotation frequency base
+      is raised to the stretch factor to the power of head
+      dimension over head dimension minus two
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the two edits, side by side</p>
+        <div class="worked-body">
+<pre><code class="language-text">the two edits, side by side
+(stretch s = 4, head dimension d = 128):
+
+  position interpolation:
+    every position divided by 4; base untouched
+
+  ntk-aware scaling:
+    positions untouched; base stretched:
+    b' = 10000 * 4^(128/126) = 40889</code></pre>
+        </div>
+      </div>
+
+      <p>Why do frequencies split the work this way? A
+      high-frequency pair rotates fast: adjacent positions differ
+      by a large angle, so nearby pieces are sharply separated —
+      but the pattern repeats every few positions and carries
+      nothing about long range. A low-frequency pair rotates
+      slowly: neighbors look nearly identical, yet the small drift
+      accumulates, and after thousands of positions the angle is
+      still turning — the slow hand of the clock, the one that
+      encodes distance. Squeezing all positions uniformly damages
+      both hands at once; stretching the base stretches only the
+      slow one.</p>
+      <p>The asymmetry is the point. The fast-rotating,
+      high-frequency pairings that separate nearby positions stay
+      nearly intact — local resolution survives — while the slow,
+      low-frequency rotations stretch to cover the new distance.
+      The model keeps its close reading and gains reach with zero
+      fine-tuning: two to four times the window, no additional
+      training at all
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p><dfn><a href="glossary.html#t-yarn">YaRN</a></dfn> refines
+      both edits at once. The stretch is applied per frequency —
+      extrapolate the highest, interpolate the lowest, smooth the
+      middle — and the attention logits get a temperature factor,
+      because each query now softmaxes over more terms and the
+      distribution flattens; sharpen to compensate
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.
+      The bill: ten times fewer tokens than interpolation needed,
+      two and a half times fewer steps, and the seven- and
+      thirteen-billion-parameter Llama pair reading to one hundred
+      twenty-eight thousand positions in about four hundred steps
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+    </section>
+
+    <section id="sec-window">
+      <h2>Bound the cache: sliding-window attention</h2>
+      <p><dfn><a href="glossary.html#t-sliding-window-attention">Sliding-window
+      attention</a></dfn> attacks the cost wall from the other
+      side: each piece attends only to the W pieces behind it, for
+      a fixed window W — so each layer's attention arithmetic and
+      KV cache stay bounded by W no matter how long the
+      conversation grows
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p>Reach returns with depth. A layer reads W pieces back; the
+      layer below reads W pieces back from each of those; the
+      information hops down the stack, so the top of a deep model
+      draws transitively on roughly layers times W positions
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p>The accounting: a layer's score matrix shrinks from n by
+      n to n by W, and its slice of the KV cache stops growing once
+      the conversation passes W pieces. For a very long prompt the
+      arithmetic per layer stops rising entirely — the layer pays
+      the same whether the prompt is twice the window or a hundred
+      times it.</p>
+      <p>Mistral's seven-billion model ran a
+      four-thousand-position window inside a
+      thirty-two-thousand-position context this way, and later
+      models interleave windowed layers with full-attention layers
+      — near history cheap, far history occasional
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+    </section>
+
+    <section id="sec-ships">
+      <h2>What ships, and what actually works</h2>
+      <p>Modern frontier models are trained long rather than
+      stretched after the fact: the Llama three line climbed to one
+      hundred twenty-eight thousand positions in six stages of
+      continued pretraining on long documents, adjusting the
+      rotation base along the way. The bases crept across the
+      configs as the windows grew: ten thousand originally, five
+      hundred thousand for Llama three, a million for its code
+      variant
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p>The newest edge removes position from some layers
+      entirely: Llama four interleaves layers with no positional
+      information at all among rotated layers — order comes from
+      the causal mask alone — plus the attention temperature at
+      inference, and claims ten million positions for its smallest
+      model; the largest Gemini reads more than a million
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.</p>
+      <p>Length is not comprehension. Retrieval from the middle of
+      a long prompt is measurably worse than from either end — the
+      <dfn><a href="glossary.html#t-lost-in-the-middle">lost in the
+      middle</a></dfn> curve, a U shape in accuracy by position
+      <a class="prov" data-src="research/context.md" href="links.html#s-context" title="context — research/context.md">[context]</a>.
+      A giant window is a promise about capacity, not about
+      attention.</p>
+      <p>The next page threads everything — token by token, layer
+      by layer, cache and window and sampler — through one request,
+      from the first piece of a prompt to the last piece of its
+      reply.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>A model fed past its trained window does not fail
+        politely — perplexity explodes on unseen position
+        frequencies, and attention cost is quadratic in length.</li>
+        <li>Position interpolation divides every position by the
+        stretch before rotation: the whole target range folds into
+        the trained range, s-times denser, relearned in ~1000
+        fine-tune steps.</li>
+        <li>NTK-aware scaling stretches the frequency base instead
+        — high frequencies intact, low frequencies extended —
+        buying 2-4x with zero fine-tuning; YaRN adds a per-frequency
+        ramp plus attention temperature, reaching 128K in ~400
+        steps.</li>
+        <li>Sliding-window attention bounds each layer's cost and
+        cache at W (Mistral: 4096 window in a 32K context), with
+        reach restored by depth (~layers × W).</li>
+        <li>What ships: staged long-context pretraining (Llama 3:
+        8K→128K, bases crept 10,000→500,000→1,000,000), layers with
+        no positional information interleaved (Llama 4), 1M+ inputs
+        (Gemini) — yet retrieval still sags in the middle of long
+        prompts.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="speculative.html"><span class="cap">Previous</span><span class="pg-title">Speculative Decoding</span></a>
+    <a class="pager-card" rel="next" href="e2e.html"><span class="cap">Next</span><span class="pg-title">End to End: One Request, Start to Finish</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Future trait and poll — Under the Await</title>
+  <meta name="description" content="Rust's entire async interface: one poll method, two results, and a strict contract every future and every engine must obey.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p03-02">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>The Future trait and poll</h1>
+
+      <p>Every async system you have met so far, from epoll loops to Python
+        coroutines, had the same skeleton: something that can be asked "are you done
+        yet?" and something that asks. Rust reduces that idea to its smallest
+        possible shape and puts it in the standard library. It is one trait, one
+        required method, and one enum with two variants. Everything else in Rust
+        async, including all of Tokio, is built on top of this page.</p>
+
+      <h2>The whole interface</h2>
+
+      <p>Here is the trait, verbatim, from <code>std::future</code>:</p>
+
+      <pre><code class="language-rust">pub trait Future {
+    type Output;
+
+    // Required method
+    fn poll(self: Pin&lt;&amp;mut Self&gt;, cx: &amp;mut Context&lt;'_&gt;) -&gt; Poll&lt;Self::Output&gt;;
+}</code></pre>
+
+      <p>Take it apart piece by piece.</p>
+
+      <p><code>type Output</code> is an associated type saying what the future
+        produces when it finishes. A future that yields a <code>String</code> has
+        <code>Output = String</code>; one that only signals completion has
+        <code>Output = ()</code>. There is no error lane baked in: failures are
+        just values, like <code>Result&lt;T, E&gt;</code>, delivered through
+        <code>Output</code>.</p>
+
+      <p>The method is named <code>poll</code>, and that name is a decision. To
+        <strong>poll</strong> a future is to ask it a single question: "can you
+        finish now?" The answer is the return type, <code>Poll</code>:</p>
+
+      <pre><code class="language-rust">pub enum Poll&lt;T&gt; {
+    Ready(T),
+    Pending,
+}</code></pre>
+
+      <p>Either "yes, here is the value" or "no, not yet". That is the entire
+        vocabulary of progress in Rust async. Notice what is missing: there is no
+        "failed", no abort, no percentage, no partial results. A future is a
+        computation that is either finished or not finished, and if you want richer
+        outcomes, they ride inside <code>Output</code>.</p>
+
+      <!-- fs: research/rust-async.md §1 — trait and Poll enum verified against std 1.98.1 docs -->
+      <p>The parallel with Part 1's kernel machinery is exact. <code>epoll_wait</code>
+        also answers a yes-or-no readiness question for many file descriptors at
+        once, and the std documentation for <code>Future</code> makes the comparison
+        explicit: futures are like <a href="../01-foundations/06-io-multiplexing-readiness.html">epoll</a>,
+        not like the <code>poll(2)</code> syscall. Asking "are you done?" is cheap
+        and non-destructive; demanding "give me data now" is a different, heavier
+        operation. The name is a wink at exactly that history.</p>
+
+      <h2>Two strange parameters</h2>
+
+      <p>The receiver is not the <code>&amp;mut self</code> you might expect. It is
+        <code>self: Pin&lt;&amp;mut Self&gt;</code>: a mutable reference to the
+        future wrapped in a type called <code>Pin</code>. <code>Pin</code> is a
+        promise about the future's <em>address</em>, and the reason it exists is one
+        of the best stories in this book. Page 6 tells it; for now, read the
+        receiver as "mutable access to this future, with a guarantee attached".</p>
+
+      <p>The second parameter, <code>cx</code>, is a <code>Context</code>: a thin
+        struct that today carries exactly one useful thing, a handle the future can
+        use to request a re-poll when it can make progress. How a future can be
+        woken without busy-waiting is the entire subject of the next page, so for
+        today treat <code>cx</code> as "the handle you must consult before returning
+        <code>Pending</code>".</p>
+
+      <h2>Futures are lazy</h2>
+
+      <p>Here is the behavior that surprises everyone coming from JavaScript or
+        Python. Calling an <code>async fn</code> does not start anything. Nothing
+        runs, nothing registers, no work happens at all. The call merely
+        <em>constructs</em> a value, the future, and hands it back to you. The body
+        of the async fn executes only while someone is actively calling
+        <code>poll</code> on it. Futures are <strong>lazy</strong>: inert data until
+        driven.</p>
+
+      <!-- fs: research/rust-async.md §1 — "Futures are inert" per RFC 2592, async-book, tokio tutorial -->
+      <p>Compare the <a href="../02-concurrency-models/04-stackless-coroutines.html">JS
+        and Python coroutines</a> from Part 2. A JavaScript promise starts working
+        the moment you create it; the event loop picks it up on its own. A Rust
+        future sits there like an unopened letter. If nobody ever polls it, the work
+        never happens and the value is silently dropped. This is not a flaw; it is
+        what lets the driving code decide <em>when</em> and <em>where</em> the first step
+        of the work runs, and it is why "create a future and forget to await it" is
+        such a classic Rust bug.</p>
+
+      <h2>The contract</h2>
+
+      <p><code>poll</code> looks innocent, but it is governed by one of the
+        strictest contracts in the standard library. Both sides, future and caller,
+        are bound by it. Learn it now and half of Part 4 will feel obvious.</p>
+
+      <table>
+        <thead>
+          <tr><th>#</th><th>Rule</th><th>Why it exists</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>Return <code>Ready</code> as soon as the work is
+            done</td><td>Polling is asking, not waiting; delays propagate to every
+            caller up the chain</td></tr>
+          <tr><td>2</td><td>Never block, and return quickly</td><td>While
+            <code>poll</code> runs, the thing driving it can do nothing else; one
+            slow future starves every future behind it</td></tr>
+          <tr><td>3</td><td>Before returning <code>Pending</code>, save the
+            re-poll handle from <code>cx</code> and arrange for it to be triggered
+            when you can progress</td><td>Otherwise nobody knows to ask again, and
+            the future hangs forever</td></tr>
+          <tr><td>4</td><td>After <code>Ready</code>, expect no further
+            polls</td><td>Polling a finished future is undefined behavior-adjacent
+            territory: it may panic or misbehave</td></tr>
+          <tr><td>5</td><td>Do not be polled in a tight loop; the engine should
+            wait for the wake-up signal</td><td>Re-polling a future that has
+            nothing new is the busy-poll trap from Part 1 again</td></tr>
+          <tr><td>6</td><td>Tolerate unnecessary wake-ups: re-check your state
+            every poll</td><td>Wake-ups may be coalesced, and engines are allowed
+            to be sloppy in the safe direction</td></tr>
+          <tr><td>7</td><td>On every poll, update the saved handle to the one
+            from the current <code>cx</code></td><td>A future may be moved between
+            engines; only the newest handle is guaranteed valid</td></tr>
+        </tbody>
+      </table>
+
+      <!-- fs: research/rust-async.md §1 — poll contract: Pending must store a cloned waker, most-recent-waker rule, no tight-loop repolling, quick non-blocking poll, no poll after completion -->
+      <p>Rule 4 deserves a precision: the std docs say a future polled after
+        completion "may panic, block forever, or cause other kinds of problems",
+        but it must never be undefined behavior. In practice, well-behaved futures
+        panic with a clear message, which is exactly what the <code>Delay</code>
+        you will write on page 4 does with its finished state.</p>
+
+      <p>Rule 5 is the one that makes the whole system efficient, and it rhymes
+        with the readiness model from <a href="../01-foundations/05-nonblocking-io.html">non-blocking
+        I/O</a>: ask, and if the answer is "not yet", go do something useful
+        instead of asking again in a spin loop. Rule 3 is the missing piece that
+        makes rule 5 possible, and it has a name and a whole page: the next one.</p>
+
+      <h2>Why <code>&amp;mut</code> self? Because a future is a state machine</h2>
+
+      <p>Think back to the <a href="../02-concurrency-models/04-stackless-coroutines.html">stackless
+        coroutines</a> of Part 2. A suspended coroutine is not a running thing; it
+        is a saved <em>state</em>: the values live at the suspension point, plus a
+        marker saying where to resume. A Rust future is the same idea with the
+        serial numbers filed off: a value that holds its own locals and its own
+        current position. Advancing it means mutating that state: stepping the
+        marker, storing new locals, dropping dead ones. That is why
+        <code>poll</code> takes the future by mutable reference. You are not
+        observing a computation; you are cranking it forward one turn.</p>
+
+      <p>And because the state lives <em>inside the value</em>, the value can sit
+        in a queue, be moved between queues, live for an hour between polls. A
+        stack, like a <a href="../01-foundations/01-how-programs-run.html">call
+        stack</a> or a green thread's stack, cannot do that; a state machine can.
+        Keep that image: a future is a coroutine's frozen brain, packaged as an
+        ordinary Rust value.</p>
+
+      <h2>Two futures, by hand</h2>
+
+      <p>Let's write the two degenerate futures and drive them without any
+        machinery at all. No <code>async</code>, no engine, no queue: just the
+        trait, a loop, and main. First, a future that is born finished:</p>
+
+      <pre><code class="language-rust">use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, Wake, Waker};
+use std::sync::Arc;
+
+struct Done;
+
+impl Future for Done {
+    type Output = &amp;'static str;
+
+    fn poll(self: Pin&lt;&amp;mut Self&gt;, _cx: &amp;mut Context&lt;'_&gt;)
+        -&gt; Poll&lt;&amp;'static str&gt;
+    {
+        Poll::Ready("finished")
+    }
+}</code></pre>
+
+      <p>And its opposite, a future that is never ready:</p>
+
+      <pre><code class="language-rust">struct Never;
+
+impl Future for Never {
+    type Output = ();
+
+    fn poll(self: Pin&lt;&amp;mut Self&gt;, _cx: &amp;mut Context&lt;'_&gt;)
+        -&gt; Poll&lt;()&gt;
+    {
+        Poll::Pending
+    }
+}</code></pre>
+
+      <p><code>Never</code> breaks rule 3, of course: it returns
+        <code>Pending</code> without saving any way to be re-polled, so it will
+        hang forever. It is the minimal illustration of why the re-poll handle
+        matters. Now drive them. Building the <code>cx</code> argument takes one
+        small step ahead of the narrative: we need <em>some</em> handle to put in
+        it, so here is a do-nothing one, built through std's <code>Wake</code>
+        trait. The next page explains every choice; the code just needs a
+        placeholder to run.</p>
+
+      <pre><code class="language-rust">struct NoWake;
+impl Wake for NoWake {
+    fn wake(self: Arc&lt;Self&gt;) {} // do nothing: nothing here sleeps
+}
+
+fn main() {
+    let waker = Waker::from(Arc::new(NoWake));
+    let mut cx = Context::from_waker(&amp;waker);
+
+    let mut done = Done;
+    assert_eq!(
+        Pin::new(&amp;mut done).poll(&amp;mut cx),
+        Poll::Ready("finished")
+    );
+
+    let mut never = Never;
+    assert_eq!(Pin::new(&amp;mut never).poll(&amp;mut cx), Poll::Pending);
+    println!("both futures answered");
+}</code></pre>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 190" role="img" aria-label="A caller polls a future once; the future answers Ready with a value, or Pending after saving the re-poll handle">
+          <title>Poll asks once, gets Ready or Pending</title>
+          <rect class="box" x="10" y="60" width="140" height="60" rx="8"/>
+          <text class="label" x="80" y="85" text-anchor="middle">the code that</text>
+          <text class="label" x="80" y="105" text-anchor="middle">drives futures</text>
+          <line class="arrow" x1="150" y1="80" x2="250" y2="60"/>
+          <polygon class="arrow-head" points="250,55 260,60 250,67"/>
+          <text class="label mono" x="205" y="45" text-anchor="middle">poll(cx)</text>
+          <rect class="box" x="260" y="35" width="130" height="55" rx="8"/>
+          <text class="label" x="325" y="58" text-anchor="middle">the future</text>
+          <text class="label muted" x="325" y="78" text-anchor="middle">(a state machine)</text>
+          <line class="arrow accent" x1="390" y1="55" x2="500" y2="38"/>
+          <polygon class="arrow-head accent" points="500,33 510,38 500,45"/>
+          <text class="label mono" x="450" y="25" text-anchor="middle">Ready(v)</text>
+          <rect class="box accent" x="505" y="20" width="120" height="40" rx="8"/>
+          <text class="label" x="565" y="45" text-anchor="middle">finished</text>
+          <line class="arrow" x1="390" y1="75" x2="500" y2="95"/>
+          <polygon class="arrow-head" points="500,100 510,95 500,88"/>
+          <text class="label mono" x="450" y="115" text-anchor="middle">Pending</text>
+          <rect class="box" x="505" y="80" width="120" height="55" rx="8"/>
+          <text class="label" x="565" y="103" text-anchor="middle">saved handle,</text>
+          <text class="label" x="565" y="123" text-anchor="middle" style="font-size:13px">awaiting wake-up</text>
+          <line class="lane" x1="10" y1="165" x2="630" y2="165"/>
+          <text class="label muted" x="320" y="185" text-anchor="middle">one poll is one question, answered instantly</text>
+        </svg>
+        <figcaption>Figure 1: one poll is one question. The future answers, saves
+          its re-poll handle if it must wait, and control returns immediately.</figcaption>
+      </figure>
+
+      <p>Notice what the driving code had to do: construct a handle, wrap it,
+        call <code>poll</code> through <code>Pin::new</code>. That last step is
+        free here because <code>Done</code> and <code>Never</code> are plain data
+        with no interior references; page 6 explains when it would not be. The
+        assert-style polling in main is honest-to-goodness engine code: crude,
+        synchronous, and complete. Everything Tokio's workers do to a future is
+        some industrial-strength version of exactly this call.</p>
+
+      <p>What you cannot see yet is how anything ever gets polled a second time
+        without spinning. <code>Done</code> never needed it and <code>Never</code>
+        never wanted it, so the placeholder handle got away with doing nothing. A
+        real future sleeps for milliseconds or waits for a socket; someone must
+        call it back. That someone is the <code>Waker</code>, and it is where we
+        go next.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>The entire interface is <code>Future::poll</code> returning
+            <code>Poll::Ready(value)</code> or <code>Poll::Pending</code>; there is
+            nothing else to learn at the trait level.</li>
+          <li>Futures are lazy: calling an async fn builds a value and runs
+            nothing; work happens only inside <code>poll</code>.</li>
+          <li>The contract forbids blocking inside <code>poll</code>, requires
+            saving the re-poll handle before returning <code>Pending</code>, and
+            forbids polling after <code>Ready</code>.</li>
+          <li>A future is a state machine advanced in place, which is why
+            <code>poll</code> takes it by mutable reference and why it can be
+            queued and moved like any value.</li>
+          <li>Re-polling in a tight loop is forbidden by etiquette; the wake-up
+            mechanism that makes that rule livable is the next page's subject.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

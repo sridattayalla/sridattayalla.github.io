@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Syscalls and file descriptors — Under the Await</title>
+  <meta name="description" content="The trap instruction, the syscall table, errno, and why everything the kernel gives you, files, sockets, pipes, comes back as a small integer.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p01-03">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>Syscalls and file descriptors</h1>
+
+      <p>You now know the machine has <a href="01-how-programs-run.html">two worlds and one boundary</a> between
+        them. This chapter is about the door in that boundary. Every
+        interesting thing your programs do, reading a file, accepting a
+        network connection, sleeping, printing a line, is a request carried
+        across it, and the kernel answers with small integers and error
+        codes. Once you can see those crossings, you can count them,
+        measure them, and eventually eliminate the ones you don't need.
+        That last skill is most of what "high-performance I/O" means, so
+        the door itself is worth ten minutes of your life.</p>
+
+      <h2>The syscall: a controlled doorway</h2>
+
+      <p>A syscall, short for system call, is your program's only way to
+        ask the kernel for anything. There is no polite function library
+        shared between the worlds; there is a machine instruction. On
+        x86-64 it is literally named <code>syscall</code>, and it is a
+        trap instruction: a special step that does not do arithmetic but
+        instead flips the CPU into kernel mode and jumps to a fixed entry
+        point that the kernel installed at boot.</p>
+
+      <p>The choreography is rigid, because rigidity is what makes the
+        doorway safe. Your program places a syscall number in one register
+        and the arguments in a few others, then executes the trap. The CPU,
+        now privileged, lands in kernel code, which uses the number to look
+        up a function in the syscall table, a numbered list of everything
+        the kernel is willing to do for you. The kernel performs the work,
+        places the result in a register, and returns to user mode, right
+        after the trap instruction. Your thread never changed: the same
+        registers, the same stack, just a brief, supervised visit to the
+        other world.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 165" role="img">
+          <title>A syscall crossing: user code traps into the kernel, which consults its table, does the work, and returns</title>
+          <text class="label muted" x="95" y="30" text-anchor="middle">user space</text>
+          <text class="label muted" x="420" y="30" text-anchor="middle">kernel space</text>
+          <line class="lane" x1="170" y1="18" x2="170" y2="150"/>
+          <rect class="box" x="30" y="58" width="118" height="46" rx="8"/>
+          <text class="label" x="89" y="86" text-anchor="middle">your code</text>
+          <line class="arrow" x1="148" y1="81" x2="196" y2="81"/>
+          <polygon class="arrow-head" points="196,76 206,81 196,86"/>
+          <text class="label mono muted" x="177" y="52" text-anchor="middle">trap</text>
+          <rect class="box accent" x="210" y="58" width="140" height="46" rx="8"/>
+          <text class="label" x="280" y="79" text-anchor="middle">syscall table</text>
+          <text class="label muted" x="280" y="96" text-anchor="middle">number to function</text>
+          <line class="arrow" x1="350" y1="81" x2="392" y2="81"/>
+          <polygon class="arrow-head" points="392,76 402,81 392,86"/>
+          <rect class="box accent" x="406" y="58" width="120" height="46" rx="8"/>
+          <text class="label" x="466" y="86" text-anchor="middle">the work</text>
+          <polyline class="lane" points="466,104 466,140 89,140 89,110"/>
+          <polygon class="arrow-head" points="83,112 95,112 89,102"/>
+          <text class="label muted" x="278" y="132" text-anchor="middle">result, or -1 plus errno</text>
+        </svg>
+        <figcaption>Figure 1: one crossing. The table is why the kernel,
+          not your program, decides what is possible.</figcaption>
+      </figure>
+
+      <p>Failure has a convention. Nearly every syscall returns
+        <code>-1</code> on failure and stores a small error code in
+        <code>errno</code>, a per-thread slot saying what went wrong: file
+        not found, permission denied, and, as you will learn in chapter 5,
+        one particular "not yet" code that ends up mattering more than all
+        the others combined.</p>
+
+      <h2>A mode switch is not a context switch</h2>
+
+      <p>Here is a distinction worth internalizing early. Crossing the
+        boundary is cheap: the trip into kernel mode and back is measured
+        at under 50 ns round trip. That is a mode switch, a privilege flip
+        for the same thread, and it is not what chapter 2 was charging you
+        microseconds for. A <a href="02-processes-threads-context-switches.html">context switch</a>, swapping which thread runs on
+        the core, is a different and far more expensive event.</p>
+      <!-- fs: fact sheet §2 — LPC 2013 (Danis): kernel mode switch "surprisingly inexpensive: <50ns round trip" -->
+
+      <p>The two are related but independent. A syscall that finishes
+        quickly, like getting the current time, never causes a switch: you
+        cross, get your answer, and continue, with no one else ever having
+        run. A syscall that must wait, like reading from a socket whose
+        data has not arrived yet, is another story: there the kernel puts
+        the calling thread to sleep, runs someone else, and that is a
+        context switch. High-performance I/O is largely the art of getting
+        many waits out of few threads, so keep the two costs separate in
+        your head: crossings are almost free; waiting is what costs.</p>
+
+      <h2>File descriptors: everything is an integer</h2>
+
+      <p>When the kernel agrees to do something ongoing for you, open this
+        file, connect this socket, it needs a way for you to talk about it
+        later. The answer is beautiful in its smallness: a file descriptor,
+        a small non-negative integer that indexes a per-process table the
+        kernel keeps. Descriptor 3 is "entry 3 in my table of ongoing
+        arrangements with the kernel". The integer is yours; the table
+        entry belongs to the kernel, and it points at the kernel's own
+        bookkeeping for that arrangement, formally an open file description,
+        which remembers things like your position in the file and the mode
+        you opened it in.</p>
+
+      <p>Every process starts with three of them, wired up before your
+        <code>main</code> runs:</p>
+
+      <table>
+        <thead>
+          <tr><th>Descriptor</th><th>Meaning</th><th>Usual wiring</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>0</td><td>standard input</td><td>your terminal, or a
+            pipe</td></tr>
+          <tr><td>1</td><td>standard output</td><td>your terminal, or a
+            pipe</td></tr>
+          <tr><td>2</td><td>standard error</td><td>your terminal</td></tr>
+          <tr><td>3 and up</td><td>whatever you open next</td><td>files,
+            sockets, pipes, and stranger things</td></tr>
+        </tbody>
+      </table>
+
+      <p>That last row is doing heavy lifting. Files, TCP sockets, UDP
+        sockets, pipes, the terminals your shell wires together, even
+        kernel objects with no file behind them at all: all of them are
+        file descriptors, all reached with the same <code>read</code>,
+        <code>write</code>, and <code>close</code> calls. Unix decided
+        decades ago that one uniform interface for byte streams beats a
+        special interface per thing, and that decision is the foundation
+        this entire book stands on, because the machinery of chapter 6
+        monitors many descriptors at once without caring what they
+        are.</p>
+
+      <p>Two descriptors can point at the same underlying arrangement.
+        Duplicate one with <code>dup</code>, or fork a process into two,
+        and both sides hold integers referring to the same kernel-side
+        bookkeeping. Closing your descriptor does not close the other one;
+        the arrangement dies only when the last descriptor referring to it
+        is closed. This sharing is why a shell can reconnect a program's
+        output to a file and why the descriptor, not the file, is the thing
+        your code actually holds.</p>
+
+      <h2>strace: the X-ray machine</h2>
+
+      <p>Everything above is invisible in normal programming, which is a
+        pity, because Linux ships a tool that makes every crossing visible.
+        <code>strace</code> runs your program and prints every syscall it
+        makes, with arguments and results. If you adopt one investigative
+        habit from this book, make it this one.</p>
+
+      <pre><code class="language-bash">$ strace ./hello
+execve("./hello", ["./hello"], 0x7ffc9c50 /* 24 vars */) = 0
+brk(NULL)                               = 0x55e0dbaf0000
+openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+...
+write(1, "hi\n", 3)                     = 3
+exit_group(0)                           = ?
++++ exited with 0 +++</code></pre>
+
+      <p>That is the complete life of a program that prints three
+        characters: the kernel loads it (<code>execve</code>), sets up its
+        memory, and the very first thing after the trimmed setup noise is
+        the <code>write</code> you asked for, followed by
+        <code>exit_group</code>, the door marked exit. A dynamically linked
+        binary makes a few dozen calls before <code>main</code> even runs;
+        a statically linked one makes almost none. Put a real server under
+        <code>strace</code> and you will see
+        <code>accept</code>, <code>read</code>, <code>write</code>, and
+        <code>close</code> churning in a loop, each line one trip through
+        the door you now know the shape of.</p>
+
+      <h2>The full dance in C</h2>
+
+      <p>Here is the whole chapter as a program: open a file, read from
+        it, write the bytes out, close it. Four calls, four crossings,
+        every failure checked the way C demands.</p>
+
+      <pre><code class="language-c">#include &lt;fcntl.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(void) {
+    int fd = open("notes.txt", O_RDONLY);    /* get a descriptor */
+    if (fd &lt; 0) {
+        perror("open");                      /* prints errno's message */
+        return 1;
+    }
+
+    char buf[256];
+    ssize_t n = read(fd, buf, sizeof buf);   /* fill buf, up to 256 */
+    if (n &lt; 0) {
+        perror("read");
+        close(fd);
+        return 1;
+    }
+
+    if (write(STDOUT_FILENO, buf, (size_t)n) != n)
+        perror("write");                     /* STDOUT_FILENO is 1 */
+
+    close(fd);                               /* give the descriptor back */
+    return 0;
+}</code></pre>
+
+      <p>Read it as a dialogue. You ask for a descriptor and get back,
+        say, 3. You hand 3 to <code>read</code> with a buffer and a
+        maximum length, and get back how many bytes actually arrived,
+        possibly fewer than you asked for, or <code>-1</code> with
+        <code>errno</code> explaining the problem. You hand 3 to
+        <code>write</code> with the bytes. Finally you hand 3 to
+        <code>close</code>, and entry 3 is free for the next
+        arrangement.</p>
+
+      <div class="note"><p>Notice the error convention: <code>-1</code>
+        plus <code>errno</code>, where errno is stored per thread, so two
+        threads failing simultaneously cannot scribble over each other's
+        reasons. C's <code>perror</code> just prints a readable version of
+        it. Higher-level languages wrap all of this; Python's
+        <code>open()</code> eventually performs exactly this dance.</p></div>
+
+      <p>Two instruments, then: a door with a strict knock, and integer
+        handles for everything the kernel does for you. One question
+        remains before the story gets interesting. What exactly happens
+        when you knock, asking for data, and there is no data yet? The
+        answer involves a sleeping thread, a queue inside the kernel, and
+        the arithmetic that breaks naive servers, and it is the next
+        chapter.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A syscall is a request through the boundary, made by placing
+            a number and arguments in registers and executing a trap
+            instruction; the kernel dispatches via its syscall table.</li>
+          <li>The mode switch across the boundary is cheap, well under a
+            microsecond; a context switch caused by a waiting call is the
+            expensive event.</li>
+          <li>File descriptors are small integers indexing the kernel's
+            per-process table; files, sockets, and pipes are all reached
+            through them.</li>
+          <li>Failures return <code>-1</code> with a per-thread
+            <code>errno</code>; successes return the answer, often the
+            count of bytes moved.</li>
+          <li><code>strace</code> shows every crossing a program makes,
+            the cheapest possible education in what your software actually
+            asks the kernel to do.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

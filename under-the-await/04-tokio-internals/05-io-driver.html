@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The I/O driver — Under the Await</title>
+  <meta name="description" content="Tokio's I/O driver: mio over epoll, interest sets, tokens, and the wake path that turns arriving bytes into a scheduled task.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p04-05">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>The I/O driver</h1>
+
+      <p>Everything so far in this part has been supply side: how a <a href="02-task-anatomy.html">task</a>
+        is allocated, how the <a href="03-scheduler.html">scheduler</a> stores it, steals it, and
+        polls it. Now the demand side. A task parked in the middle of an
+        <code>.await</code> is worthless unless something, somewhere, notices that
+        the outside world changed and puts that task back where a worker can
+        reach it. That something is the <strong>I/O driver</strong>: the part of the
+        runtime that owns the single polling relationship with the kernel, and
+        whose entire job is converting &ldquo;this socket became ready&rdquo; into
+        &ldquo;that task should run again.&rdquo;</p>
+
+      <p>You met the driver as a box on the <a href="01-runtime-overview.html">runtime
+        map</a>. This page opens the box. The good news is that you have already
+        seen every idea inside it. <a href="../01-foundations/06-io-multiplexing-readiness.html">epoll</a>
+        is Part&nbsp;1 material, <a href="../03-rust-async/03-waker-and-context.html">wakers</a>
+        are Part&nbsp;3, and the run queues it feeds were the subject of the
+        <a href="03-scheduler.html">scheduler page</a>. The driver is the knot where
+        those three threads are tied together.</p>
+
+      <h2>One poller, wrapped once</h2>
+
+      <p>Recall the shape of epoll: one thread registers interest in thousands
+        of sockets once, then calls <code>epoll_wait</code> and sleeps until the
+        kernel reports that at least one of them is ready. It is the
+        <a href="../01-foundations/06-io-multiplexing-readiness.html">multiplexing</a>
+        trick that lets a handful of threads serve a huge number of connections,
+        and it runs on the kernel's notion of
+        <a href="../01-foundations/05-nonblocking-io.html">readiness</a> rather
+        than on blocking waits.</p>
+
+      <p>Tokio does not call epoll directly. Between the runtime and the
+        operating system sits <strong>mio</strong>, a small crate that wraps the OS
+        polling facility behind one portable API. On Linux mio uses epoll; on
+        macOS and the BSDs it uses kqueue; on Windows it uses IOCP; on Solaris
+        and illumos, event ports. Tokio inherits whichever backend mio picks,
+        so on Unix the driver is a readiness poller through and through. (The
+        completion-based alternative, <a href="../01-foundations/07-readiness-vs-completion.html">io_uring</a>,
+        exists in Tokio but as an unstable, opt-in, Linux-only path; the default
+        remains the readiness model.) <!-- fs: research/tokio-internals.md §2 — mio backend selection (epoll/kqueue/IOCP/event ports); §8 — io_uring unstable, opt-in, Linux-only --></p>
+
+      <p>The driver itself is deliberately small: one <code>mio::Poll</code>
+        instance created when the runtime boots, one reusable buffer that
+        <code>epoll_wait</code> fills with events, and one reserved wakeup token
+        so the rest of the runtime can interrupt a parked poll without going
+        through a socket. In mio terms, everything the driver does for one
+        socket reduces to a registration like this: <!-- fs: research/tokio-internals.md §2 — Driver::new builds mio::Poll, a mio::Waker on TOKEN_WAKEUP, and a Registry clone --></p>
+
+      <pre><code class="language-rust">// What tokio does once per source, written in raw mio:
+let mut poll = mio::Poll::new()?;            // one per runtime
+let registry = poll.registry().clone();
+
+poll.registry().register(
+    &amp;mut socket,                                 // the OS handle
+    mio::Token(fd_as_usize),                   // the lookup key
+    mio::Interest::READABLE | mio::Interest::WRITABLE, // what to report
+)?;</code></pre>
+
+      <h2>Interest and tokens</h2>
+
+      <p>Two small registered values do all the work, and both ride along with
+        every event the driver later reports.</p>
+
+      <p><strong>Interest</strong> is the set of events a source currently cares
+        about: readable, writable, or both. A socket that wants to read
+        registers read interest. A socket whose send buffer is full registers
+        write interest, so it learns the moment the kernel drains it. A freshly
+        registered source can ask for both at once and narrow later. Interest
+        is not a promise to act; it is a request to be told.</p>
+
+      <p>A <strong>token</strong> is the return address. When you register a
+        source with mio, you attach a token, an ordinary integer, and mio hands
+        that same integer back attached to every event for that source. The
+        token is how the driver gets from &ldquo;something is ready&rdquo; back to
+        &ldquo;this exact socket, this exact bookkeeping.&rdquo; Tokio derives each
+        token from the source's raw descriptor or pointer, so the driver can
+        jump straight to the right record with no translation table in between.
+        <!-- fs: research/tokio-internals.md §2 — RawFd/pointer is used as the mio token for direct lookup --></p>
+
+      <p>Registration is lazy. Creating a <code>TcpStream</code> touches
+        nothing. The registration happens on first use, when the socket is
+        first polled: at that moment the runtime allocates one
+        <code>ScheduledIo</code> record for the source out of a slab and
+        registers the source with mio under its token.
+        <!-- fs: research/tokio-internals.md §2 — lazy registration on first use; ScheduledIo allocated from a slab; register(source, token, interest) --></p>
+
+      <h2>ScheduledIo: a readiness word and a bench of wakers</h2>
+
+      <p>The <code>ScheduledIo</code> is the per-source half of the driver, and
+        it is exactly two things.</p>
+
+      <p>First, a readiness word: one atomic integer packed as
+        <code>[shutdown (1 bit) | driver tick (15 bits) | readiness (16 bits)]</code>.
+        <!-- fs: research/tokio-internals.md §2 — ScheduledIo AtomicUsize packed [shutdown(1) | tick(15) | readiness(16)] -->
+        The readiness field is a bitset of everything the driver has reported
+        for this source: readable, writable, closed, and friends. Asking
+        &ldquo;may I read now?&rdquo; is a load and a mask. No syscall is involved.</p>
+
+      <p>Second, a waiter list: a queue of waiters, each holding one task's
+        waker plus the interest that task is waiting for. This is the bench
+        where sleeping tasks sit. When a poll finds no readiness for what it
+        wants, the polling code links a waiter onto this list and returns
+        <code>Pending</code>. <!-- fs: research/tokio-internals.md §2 — Waiter = waiting task + its interest; not-ready tasks register a waker and return Pending --></p>
+
+      <div class="note"><p>Look at what this buys. The Future contract from
+        <a href="../03-rust-async/02-future-trait.html">Part&nbsp;3</a> says: if
+        you return <code>Pending</code>, you must have arranged to be woken
+        first. The entire mechanism of &ldquo;arranging&rdquo; is a push onto a
+        linked list. Every async socket read you have ever written bottomed out
+        in that one push.</p></div>
+
+      <h2>The wake path</h2>
+
+      <p>Here is the whole driver in motion: one socket, one sleeping task,
+        from arriving bytes to a run queue.</p>
+
+      <ol>
+        <li>Bytes arrive. The network card raises an interrupt, the kernel
+          runs, and the bytes land in the socket's receive queue. The socket
+          transitions to readable.</li>
+        <li>epoll, which has held this socket in its interest list since first
+          use, adds it to the ready list. In edge-triggered mode this happens
+          once, at the transition.</li>
+        <li>Some worker is sitting in <code>epoll_wait</code>. Which worker,
+          and why it is there, is the last section of this page. The call
+          returns a small pile of events: (token, readable).</li>
+        <li>The driver takes the token, finds the <code>ScheduledIo</code>,
+          and merges the reported events into the readiness word with an
+          atomic OR.</li>
+        <li>Then it wakes. The driver walks the waiter list, and every waiter
+          whose registered interest overlaps the new readiness gets its waker
+          fired.</li>
+        <li>The waker is a scheduler handle in disguise. Firing it queues
+          the task: local queue, LIFO slot, or inject queue, depending on
+          who woke it and from where.</li>
+        <li>A worker picks the task up and polls it. The future resumes exactly
+          where it suspended, checks the readiness word it stashed a waker for,
+          and this time it proceeds.</li>
+      </ol>
+      <!-- fs: research/tokio-internals.md §2 — wake path: Driver::turn → ScheduledIo::set_readiness (OR) → io.wake scans Waiters whose interest overlaps → waker queues the task -->
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 150" role="img">
+          <title>The wake path: bytes arrive, epoll reports, the token finds the ScheduledIo, the waker fires, the task lands in a run queue</title>
+          <rect class="box" x="8" y="45" width="100" height="52" rx="8"/>
+          <text class="label" x="58" y="68" text-anchor="middle">bytes</text>
+          <text class="label muted" x="58" y="87" text-anchor="middle">arrive</text>
+          <line class="arrow" x1="108" y1="71" x2="136" y2="71"/>
+          <polygon class="arrow-head" points="136,66 146,71 136,76"/>
+          <rect class="box" x="148" y="45" width="100" height="52" rx="8"/>
+          <text class="label" x="198" y="68" text-anchor="middle">epoll</text>
+          <text class="label muted" x="198" y="87" text-anchor="middle">ready list</text>
+          <line class="arrow" x1="248" y1="71" x2="276" y2="71"/>
+          <polygon class="arrow-head" points="276,66 286,71 276,76"/>
+          <rect class="box" x="288" y="45" width="100" height="52" rx="8"/>
+          <text class="label mono" x="338" y="68" text-anchor="middle">token</text>
+          <text class="label muted" x="338" y="87" text-anchor="middle">lookup key</text>
+          <line class="arrow" x1="388" y1="71" x2="416" y2="71"/>
+          <polygon class="arrow-head" points="416,66 426,71 416,76"/>
+          <rect class="box accent" x="428" y="45" width="110" height="52" rx="8"/>
+          <text class="label" x="483" y="68" text-anchor="middle">ScheduledIo</text>
+          <text class="label muted" x="483" y="87" text-anchor="middle">waker fires</text>
+          <line class="arrow accent" x1="538" y1="71" x2="566" y2="71"/>
+          <polygon class="arrow-head accent" points="566,66 576,71 566,76"/>
+          <rect class="box" x="578" y="45" width="54" height="52" rx="8"/>
+          <text class="label" x="605" y="68" text-anchor="middle">run</text>
+          <text class="label" x="605" y="87" text-anchor="middle">queue</text>
+        </svg>
+        <figcaption>Figure 1: the wake path. The same five hops run for every
+          readiness event in the runtime, whether it came from a socket, a
+          pipe, or a timer-adjacent signal.</figcaption>
+      </figure>
+
+      <h2>Edge-triggered, without the lost wakeups</h2>
+
+      <p>Edge-triggered epoll is the efficient choice, but it has a famous
+        failure mode: the event is reported once, at the transition. If a task
+        clears its cached readiness, attempts the read, and finds nothing
+        there, the kernel will not re-report anything. The task could sleep
+        forever on a socket that is, in truth, ready.</p>
+
+      <p>Tokio's guard is small and exact, and it explains those fifteen tick
+        bits in the readiness word. Every driver pass increments the tick and
+        stamps it into the word. When a task clears readiness before trying a
+        syscall, only the bits whose tick matches the current driver pass get
+        cleared. A readiness event that lands after the clear carries a newer
+        tick, survives the clear, and the next poll sees it. The classic
+        edge-triggered lost wakeup cannot happen.
+        <!-- fs: research/tokio-internals.md §2 — tick incremented each poll and stored in readiness; clear_readiness only clears bits whose tick matches the current poll --></p>
+
+      <h2>Who calls epoll_wait?</h2>
+
+      <p>The tempting mental model is &ldquo;the driver is a thread.&rdquo; It
+        is not, and believing it will mislead you. The driver is a data
+        structure plus a function. Workers drive it.</p>
+
+      <p>When a worker has searched the LIFO slot, its local queue, the global
+        queue, and its siblings' queues, and found nothing, it parks. But it
+        does not park on a bare condition variable. It parks
+        <em>inside</em> the driver, in <code>epoll_wait</code>. The same nap
+        now serves two masters: any readiness event, on any of the runtime's
+        thousands of sockets, wakes the worker with useful work already
+        attached.</p>
+
+      <p>The nap is bounded. <code>epoll_wait</code> accepts a maximum wait,
+        and the runtime fills it in from its clocks: the nearest pending
+        deadline becomes the cap, so a sleeping worker doubles as an alarm that
+        cannot oversleep. That deadline comes from <a href="07-time-driver.html">the
+        timer machinery</a>, two pages ahead. If nothing is sleeping, nothing
+        bounds the nap, and the worker rests until I/O happens or another
+        worker wakes it.</p>
+
+      <p>What about a worker that never runs dry? It never parks, so on its
+        own it would never poll the driver, and sleeping tasks would pile up
+        behind a busy runtime. To prevent that, the scheduler folds driver
+        turns into the ordinary worker loop: every so many scheduler ticks, a
+        busy worker takes one driver pass between tasks. The default interval
+        is 61 ticks. <!-- fs: research/tokio-internals.md §1 — event_interval: ticks between driver polls, default 61 for the multi-thread runtime --></p>
+
+      <p>That is the driver, complete: one poller, a slab of readiness words
+        and waiter benches, and a wake path that ends in a run queue. Every
+        piece is now on the table separately. The next page runs one actual
+        <code>read().await</code> through all of it at once, hop by hop. <!-- fs: research/tokio-internals.md §2 — the full readiness → wake → poll sequence --></p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>The I/O driver is mio over epoll (kqueue on macOS): one poller
+            for the whole runtime, not a thread.</li>
+          <li>Registration is lazy: on first use, each source gets a
+            <code>ScheduledIo</code> holding a packed readiness word and a
+            waiter list of wakers.</li>
+          <li>Interest says what a source wants to be told about; the token is
+            the return address that maps an epoll event back to its
+            <code>ScheduledIo</code>.</li>
+          <li>The wake path is always the same: bytes, epoll, token, waker,
+            run queue, poll.</li>
+          <li>Tick bits in the readiness word make edge-triggered epoll safe
+            against lost wakeups, and parked workers double as the runtime's
+            alarm clocks.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

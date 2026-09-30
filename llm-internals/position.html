@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Position: Order Without Coordinates — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="position">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part One — The Machine</p>
+    <h1>Position: Order Without Coordinates</h1>
+    <p class="lede">After this page you can say exactly why shuffling a
+    sentence changes nothing for the machine built so far — and how modern
+    models stamp each piece with its slot, as angles inside the vector
+    itself.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-bag">The bag problem</a></li>
+        <li><a href="#sec-wish">What a good slot-mark looks like</a></li>
+        <li><a href="#sec-clocks">The 2017 answer: add a clock</a></li>
+        <li><a href="#sec-rotate">The modern answer: rotate by slot</a></li>
+        <li><a href="#sec-idea">Two clocks, one idea</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-bag">
+      <h2>The bag problem</h2>
+      <p>The last page ended on a defect, so start by making it precise.
+      Look up the pieces of a sentence — any sentence — and you get one
+      vector per piece. Swap two pieces and look again: the same vectors
+      come back, attached to the same pieces, and nothing anywhere in the
+      machinery — not the lookup, not a dot product, not a table
+      multiply — can tell the two inputs apart. A function with that
+      property has
+      <dfn><a href="glossary.html#t-permutation-invariance">permutation
+      invariance</a></dfn>: permute the inputs and the output does not
+      move.</p>
+      <p>For language that is fatal, because so much of meaning lives in
+      arrangement. "The dog bit the man" and "the man bit the dog" are
+      the same bag of pieces with opposite meanings. A bag-processor
+      asked what comes next after "the man bit the dog" has no way to
+      feel that this time the dog is the victim — victim and aggressor
+      are told apart by order, and order is what the bag throws
+      away.</p>
+      <p>The fix cannot be a later module that reads slot numbers off to
+      the side, because of how the next mechanism works.
+      <!-- term-ok: foreshadow by name only; defined on attention.html, the next page -->
+      Attention — the gathering machinery of the next page, and the
+      reason the architecture carries its name — lets pieces exchange
+      information by taking dot products between their vectors. A dot
+      product sees only the two vectors it is handed. If order is to
+      survive to that point, it must already be inside those vectors:
+      the slot has to ride on the piece. That is this page's whole
+      job.</p>
+    </section>
+
+    <section id="sec-wish">
+      <h2>What a good slot-mark looks like</h2>
+      <p>Suppose the mark had to be designed from scratch. Four
+      requirements would shape it.</p>
+      <p>First, distinct: pieces at different slots must carry different
+      marks, or nothing downstream can tell slot three from slot
+      seven.</p>
+      <p>Second, made of vector stuff: the mark lives inside entries
+      that get added, multiplied, and compared, so it must be numbers in
+      those entries — not a side-channel the rest of the machinery
+      cannot see.</p>
+      <p>Third, and subtlest: comparisons should feel gaps, not
+      addresses. The piece three slots back is a meaningful relation;
+      the piece at slot four thousand ninety-six is not. A phrase
+      contributes the same meaning at the top of a page and at the
+      bottom, so the agreement between two pieces should ideally depend
+      on how far apart they sit — not on where.</p>
+      <p>Fourth, stretchable: text keeps arriving, and the scheme should
+      keep distinguishing slots well past any length it was tuned
+      around.</p>
+      <p>Practice settled on two answers. The original transformer added
+      a fixed pattern to every vector. Modern models rotate the vectors
+      instead. Both turn slot into geometry, and both lean on the same
+      trick — many rhythms at different speeds — which is worth meeting
+      slowly, once.</p>
+    </section>
+
+    <section id="sec-clocks">
+      <h2>The 2017 answer: add a clock</h2>
+      <p>A
+      <dfn><a href="glossary.html#t-positional-encoding">positional
+      encoding</a></dfn> is any scheme that bakes the slot number into
+      each piece's vector. The first one, from the 2017 paper that
+      introduced the transformer
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>,
+      is a
+      <dfn><a href="glossary.html#t-sinusoidal-encoding">sinusoidal
+      encoding</a></dfn>: a fixed, unlearned pattern of sines and
+      cosines — one pair of entries per rhythm — added on top of the
+      embedding row.</p>
+      <p>The pattern for width <code>d</code> is built pair by pair:
+      pair <code>i</code> oscillates as the sine and cosine of the slot
+      divided by <code>10000^(2i/d)</code> — formally,
+      <code>PE(pos, 2i) = sin(pos / 10000^(2i/d))</code> for an even
+      entry and the cosine of the same angle for the odd entry after it
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.
+      Nothing in the pattern is learned; it is the same fixed table for
+      every model that uses it, and the paper reports that letting a
+      model learn its own pattern worked no better
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.</p>
+      <p>Read each pair as a clock hand. As the slot advances by one,
+      the hand turns by a fixed small angle; each pair turns at its own
+      constant speed. The fast pairs whirl — they pin down neighboring
+      slots precisely. The slow pairs creep — like hour hands, they mark
+      coarse position without wrapping ambiguously over any realistic
+      length. Read together, a modest number of pairs gives every slot
+      a different combined reading: a fingerprint of where.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the clocks at four
+        slots</p>
+        <div class="worked-body">
+<pre><code class="language-text">width 4 = two pairs: pair 0 runs at speed 1, pair 1 at speed 0.01
+PE(pos) = [ sin(pos)  cos(pos)  sin(0.01*pos)  cos(0.01*pos) ]
+
+  pos  0    0.000   1.000    0.000   1.000
+  pos  1    0.841   0.540    0.010   1.000
+  pos  7    0.657   0.754    0.070   0.998
+  pos 50   -0.262   0.965    0.479   0.878
+            -- fast pair --    -- slow pair --
+
+fast pair: full turn every ~6.28 slots (about 8 turns by slot 50)
+slow pair: full turn every ~628 slots (under a tenth of one turn by then)</code></pre>
+        </div>
+      </div>
+
+      <p>Every entry above is one sine or cosine call away — the panel
+      is checkable with a calculator
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.
+      Two readings worth pausing on. The fast pair has wrapped around
+      about eight times by slot fifty — nearly useless for
+      where-in-the-document, excellent for how-far-from-the-previous-piece.
+      The slow pair has completed less than a tenth of one turn in the
+      same span — it could keep distinguishing slots for hundreds of
+      positions before finishing its first cycle. Fast for resolution,
+      slow for range, with the speeds between them spread wide.</p>
+      <p>Because the pattern is added to the embedding row, every hidden
+      state from the ground floor up carries two things at once: what
+      the piece is, from the row, and where it sits, from the pattern.
+      The scheme works. But notice which requirement it misses: the
+      marks are absolute. How two pieces' patterns relate depends on
+      both slots, not just on the gap between them. The paper points
+      out a regularity that softens this — the pattern at slot m plus a
+      fixed gap is a fixed linear transformation of the pattern at slot
+      m — but comparisons that feel only the gap are not built in
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.
+      The modern scheme builds them in.</p>
+    </section>
+
+    <section id="sec-rotate">
+      <h2>The modern answer: rotate by slot</h2>
+      <p>Modern models do not add a pattern to the vector; they turn
+      the vector itself.
+      <dfn><a href="glossary.html#t-rope">RoPE</a></dfn> — rotary
+      position embedding — treats the vector's entries as pairs and
+      rotates pair <code>i</code> of the piece at slot <code>m</code>
+      by the angle <code>m * theta_i</code>, where
+      <code>theta_i = 10000^(-2i/d)</code>
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>.
+      The speeds come from the same ten-thousand spread as the clocks
+      above. The difference is what gets marked: instead of adding a
+      where-signal on top of the meaning, the scheme rotates
+      coordinates so that where is baked into the angles themselves.</p>
+      <p>Why rotation, of all things? Because of how dot products
+      behave under it. Turn two vectors by the same angle and their
+      dot product is unchanged. Turn them by different angles and the
+      dot product shifts — but only by the difference of the two
+      angles. So if every piece's coordinates are rotated by its own
+      slot, then any dot product between two pieces depends on the gap
+      between their slots and on nothing else. No addresses anywhere.
+      The third requirement, solved by geometry.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 320"><title>One coordinate pair of a vector, drawn as an arrow from a center: at slot zero it points right, at slot one it is turned one radian further, at slot two one radian further still — angles drawn to scale</title>
+          <circle cx="170" cy="175" r="95" fill="none" class="s-ink3" stroke-width="1.5"/>
+          <line x1="170" y1="175" x2="265" y2="175" class="s-ink" stroke-width="2"/>
+          <line x1="170" y1="175" x2="221" y2="95" class="s-ink" stroke-width="2"/>
+          <line x1="170" y1="175" x2="131" y2="89" class="s-ink" stroke-width="2"/>
+          <circle cx="265" cy="175" r="4.5" class="f-accent s-ink" stroke-width="1.5"/>
+          <circle cx="221" cy="95" r="4.5" class="f-accent s-ink" stroke-width="1.5"/>
+          <circle cx="131" cy="89" r="4.5" class="f-accent s-ink" stroke-width="1.5"/>
+          <circle cx="170" cy="175" r="3" class="f-accent s-ink" stroke-width="1"/>
+          <path d="M282 175 A112 112 0 0 0 230.5 80.8" fill="none" class="s-accent" stroke-width="1.5"/>
+          <path d="M230.5 80.8 A112 112 0 0 0 123.4 73.2" fill="none" class="s-accent" stroke-width="1.5"/>
+          <text x="291" y="118" font-size="13">θ</text>
+          <text x="186" y="46" font-size="13">θ</text>
+          <text x="272" y="194" font-size="13">slot 0</text>
+          <text x="238" y="72" font-size="13">slot 1</text>
+          <text x="44" y="102" font-size="13">slot 2</text>
+          <text class="t-dim" x="360" y="120" font-size="13">one coordinate pair of a vector,</text>
+          <text class="t-dim" x="360" y="145" font-size="13">drawn from the center as an arrow</text>
+          <text x="360" y="192" font-size="13">each slot rotates it by one more θ</text>
+          <text x="360" y="215" font-size="13">(one radian per slot in this toy)</text>
+        </svg>
+        <figcaption>RoPE in one picture: the slot number becomes an
+        angle. The same vector at slots zero, one, and two, turned one
+        radian further each step — comparisons between rotated vectors
+        feel only the gap between slots.</figcaption>
+      </figure>
+
+      <p>Watch it happen with one pair turning one radian per slot.
+      Every number below is printed by the companion script and recorded
+      in the research sheet
+      <a class="prov" data-src="research/components.md" href="links.html#s-components" title="components — research/components.md">[components]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — equal gaps, equal dot
+        products</p>
+        <div class="worked-body">
+<pre><code class="language-text">toy setup: width 2 = one pair, theta = 1 radian per slot
+u = [ 1  0 ]      v = [ 0.5  1 ]      u . v = 0.5
+
+rotate u to slot m, v to slot n, then take the dot product:
+
+  (m, n) = ( 0,  0)    dot = 0.500  \
+  (m, n) = ( 3,  3)    dot = 0.500   }  gap 0 -> always 0.500
+  (m, n) = (17, 17)    dot = 0.500  /
+
+  (m, n) = ( 1,  0)    dot = 1.112  \
+  (m, n) = ( 5,  4)    dot = 1.112   }  gap 1 -> always 1.112
+  (m, n) = (40, 39)    dot = 1.112  /
+
+  (m, n) = ( 2,  0)    dot = 0.701  \
+  (m, n) = ( 9,  7)    dot = 0.701   }  gap 2 -> always 0.701
+
+one rotation spelled out: rope([1, 0], slot 3) = [cos 3, sin 3] = [-0.990, 0.141]</code></pre>
+        </div>
+      </div>
+
+      <p>Same gap, same dot product — whether the two pieces sit at
+      the front of the text or deep inside it. Different gap, different
+      dot product. And one limit the panel cannot show: a single pair
+      at a single speed eventually wraps and repeats, so far-apart gaps
+      can collide. Real vectors carry many pairs whose speeds span a
+      factor of ten thousand, and their joint pattern separates gaps
+      that any single pair would confuse — the same
+      fast-for-resolution, slow-for-range spread as before, doing a
+      new job.</p>
+      <p>One honest detail about placement: the rotation is not applied
+      to the piece's working vector itself. It is applied to two small
+      derived copies of it — the pair of copies that the next page's
+      machinery compares against each other — right before their dot
+      product. The geometry above is the whole idea; the copies get
+      their names on the next page.</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the rotation, exactly as shipped</figcaption>
+<pre><code class="language-python">def rope(x, positions, inverse=False):
+    """Rotate (first-half, second-half) dim pairs by pos * theta."""
+    dh = x.shape[-1]
+    half = dh // 2
+    theta = 10000.0 ** (-2.0 * np.arange(half) / dh)
+    ang = positions[:, None].astype(float) * theta[None, :]
+    cos, sin = np.cos(ang)[:, None, :], np.sin(ang)[:, None, :]
+    if inverse:
+        sin = -sin
+    x1, x2 = x[..., :half], x[..., half:]
+    out = np.empty_like(x)
+    out[..., :half] = x1 * cos - x2 * sin
+    out[..., half:] = x1 * sin + x2 * cos
+    return out</code></pre>
+      </figure>
+
+      <p>Two details in the code: the pairs are formed by matching the
+      first half of the entries with the second half, and the speeds
+      come from the ten-thousand spread — visible in the
+      <code>theta</code> line.</p>
+    </section>
+
+    <section id="sec-idea">
+      <h2>Two clocks, one idea</h2>
+      <p>Both schemes answer the same question with the same shape of
+      answer: turn slot into geometry inside the vectors, using many
+      rhythms at different speeds. The additive version marks slots
+      absolutely and lets the machinery learn around it. The rotation
+      version makes every comparison feel the gap directly.</p>
+      <p>And with the marks in place, the order-blindness is gone.
+      Shuffle the input now and the rotations misalign — dot products
+      that came out equal come out different, and the outputs move
+      with them. The dog-bites-man pair finally enters as genuinely
+      different input.</p>
+      <p>What the marks are for arrives on the next page: the machinery
+      that lets every piece gather information from the pieces before
+      it, whose comparisons these rotations were designed to serve.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Everything before this page is permutation-invariant:
+        shuffle the input and the outputs do not move. Word order
+        carries meaning, and a bag throws exactly that away.</li>
+        <li>A positional encoding bakes the slot into the vector
+        itself; the sinusoidal recipe adds a fixed sine-and-cosine
+        pattern — fast pairs resolve neighbors, slow pairs cover
+        range.</li>
+        <li>RoPE rotates coordinate pairs by an angle that grows with
+        the slot, so rotated dot products depend only on the gap
+        between slots, never on the addresses.</li>
+        <li>One pair at one speed repeats; many pairs spanning a factor
+        of ten thousand in speed give each gap a distinct joint
+        fingerprint.</li>
+        <li>Next: the gathering machinery that turns these marked
+        vectors into information flow between pieces — the mechanism
+        that gives the architecture its name.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="embeddings.html"><span class="cap">Previous</span><span class="pg-title">Embeddings: Tokens Become Vectors</span></a>
+    <a class="pager-card" rel="next" href="attention.html"><span class="cap">Next</span><span class="pg-title">Attention: Every Token Looks at Every Earlier Token</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

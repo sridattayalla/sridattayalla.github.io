@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quantization: int8 and int4 — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="quantization">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Four — Inference at Scale</p>
+    <h1>Quantization: int8 and int4</h1>
+    <p class="lede">The serving page filled the card's idle
+    arithmetic and left the floor standing: one full sweep of the
+    weights per piece. This page shrinks the floor itself — the same
+    weights, stored as small integers — and meets the two problems
+    that make it hard: rounding noise, and a handful of channels
+    that must not be rounded at all.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-lever">The lever: fewer bytes per weight</a></li>
+        <li><a href="#sec-grid">Scale and grid</a></li>
+        <li><a href="#sec-outliers">The exception: outliers</a></li>
+        <li><a href="#sec-recipes">Two recipes that ship</a></li>
+        <li><a href="#sec-limits">Where the lever stops</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-lever">
+      <h2>The lever: fewer bytes per weight</h2>
+      <p>The decode floor is a division: weight bytes divided by
+      memory bandwidth. The serving page amortized the numerator
+      across requests. This page shrinks it.
+      <dfn><a href="glossary.html#t-quantization">Quantization</a></dfn>
+      is storing the trained weights as small integers instead of
+      sixteen-bit floats — the same network, in less memory — done
+      after training, with no retraining
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p>The arithmetic of the lever, on the floor the loop page
+      established
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the same sweep,
+        smaller weights</p>
+        <div class="worked-body">
+<pre><code class="language-text">the same sweep, smaller weights
+(7B model, decode at one request):
+
+  fp16 (2 bytes/param):   14e9 bytes -&gt; 146 pieces/s ceiling
+  int8 (1 byte/param):     7e9 bytes -&gt; ~292 pieces/s
+  int4 (0.5 bytes/param):  3.5e9 bytes -&gt; ~584 pieces/s
+
+  the arithmetic per step is unchanged — only the
+  bytes moved. (requires kernels that restore the
+  integers on the fly, inside the sweep)</code></pre>
+        </div>
+      </div>
+
+      <p>Halve the bytes and the ceiling doubles; quarter them and
+      it quadruples — the arithmetic per piece is untouched, only
+      the bytes moved
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p>The panel's parenthetical is the engineering crux: the
+      restoration happens inside the sweep. A quantized kernel never
+      rebuilds the float matrix in memory — that would give the
+      bytes right back. Instead, as each block of integers streams
+      past on its way to the arithmetic units, the kernel multiplies
+      by the group's scale in registers and feeds the result
+      straight into the multiply-adds. The floats exist for
+      nanoseconds, inside the chip, never in the card's memory at
+      all.</p>
+      <p>Two cautions before the mechanism. First, this is a
+      serving-time trick: training stays in mixed precision, as the
+      GPU page accounted, and the integers are created afterward,
+      once
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.
+      Second, the lever only pays in the bandwidth-bound phase: at
+      large batch or long prefill, the step turns compute-bound and
+      smaller weights buy almost nothing — the arithmetic still has
+      to happen
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+    </section>
+
+    <section id="sec-grid">
+      <h2>Scale and grid</h2>
+      <p>How does a float become a small integer? Pick a
+      <dfn><a href="glossary.html#t-scale-factor">scale
+      factor</a></dfn> — one number per group of weights — and
+      divide. The result is rounded to the nearest integer on a
+      grid of fixed size: sixteen levels for four-bit, two hundred
+      fifty-six for eight-bit. Multiply the integer by the scale and
+      the weight comes back, approximately
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 170"><title>A number line with grid points every 0.28 from minus 0.56 to 0.84; a dot at 0.62 sits nearest the 0.56 grid point</title>
+          <line class="s-ink" stroke-width="1.5" x1="100" y1="80" x2="620" y2="80"/>
+          <line class="s-ink" stroke-width="1.5" x1="160" y1="72" x2="160" y2="88"/>
+          <line class="s-ink" stroke-width="1.5" x1="240" y1="72" x2="240" y2="88"/>
+          <line class="s-ink" stroke-width="1.5" x1="320" y1="72" x2="320" y2="88"/>
+          <line class="s-ink" stroke-width="1.5" x1="400" y1="72" x2="400" y2="88"/>
+          <line class="s-ink" stroke-width="1.5" x1="480" y1="72" x2="480" y2="88"/>
+          <line class="s-ink" stroke-width="1.5" x1="560" y1="72" x2="560" y2="88"/>
+          <text x="160" y="110" text-anchor="middle" font-size="11" class="t-dim">-0.56</text>
+          <text x="240" y="110" text-anchor="middle" font-size="11" class="t-dim">-0.28</text>
+          <text x="320" y="110" text-anchor="middle" font-size="11" class="t-dim">0</text>
+          <text x="400" y="110" text-anchor="middle" font-size="11" class="t-dim">0.28</text>
+          <text x="480" y="110" text-anchor="middle" font-size="11" class="t-dim">0.56</text>
+          <text x="560" y="110" text-anchor="middle" font-size="11" class="t-dim">0.84</text>
+          <circle class="f-accent s-ink" stroke-width="1" cx="497" cy="80" r="5"/>
+          <text x="497" y="58" text-anchor="middle" font-size="12">w = 0.62</text>
+          <text x="320" y="145" text-anchor="middle" font-size="11" class="t-dim">the scale sets the grid spacing; rounding picks the nearest point</text>
+        </svg>
+        <figcaption>The scale factor sets the grid spacing. A weight
+        of 0.62 rounds to the nearest grid point — two scale steps
+        up from zero — committing an error smaller than the spacing,
+        which the matrix multiply's millions of other terms average
+        away.</figcaption>
+      </figure>
+
+      <p>One group, end to end
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one group of four
+        weights, int4</p>
+        <div class="worked-body">
+<pre><code class="language-text">one group of four weights, int4
+(grid: integers -8..7, sixteen levels):
+
+  weights w:        [ 0.62  -1.10   1.93  -0.44 ]
+  scale s = max/7 =  1.93/7 ~ 0.28
+  store q = round(w/s):
+                     [  2     -4      7     -2  ]  (4 bits each)
+  restore s * q:
+                     [ 0.56  -1.12   1.96  -0.56 ]
+  worst error: 0.12 (on the -0.44 weight)
+
+  stored: 4 x 4-bit integers + one 16-bit scale
+  was:    4 x 16-bit floats</code></pre>
+        </div>
+      </div>
+
+      <p>Why groups? The scale must span the largest weight in
+      whatever it covers. One scale for a whole matrix makes the
+      grid coarse for every small weight in it; one scale per
+      handful of weights — a hundred twenty-eight of them, in the
+      common recipe —       keeps each grid fine for its own neighborhood
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p>And the scale's own cost is thin. A hundred twenty-eight
+      four-bit integers plus one sixteen-bit scale is five hundred
+      twenty-eight bits for the group — an eighth of a bit per
+      weight of overhead. The grouping buys fine grids almost for
+      free.</p>
+      <p>Why does the rounding mostly not matter? A single restored
+      weight can be off by a few percent, and a single wrong weight
+      would matter. But a matrix multiply sums millions of terms per
+      output — the errors are independent, some high some low, and
+      they average toward nothing in the sum. Uniform rounding noise
+      is mostly harmless at scale
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.
+      Mostly.</p>
+    </section>
+
+    <section id="sec-outliers">
+      <h2>The exception: outliers</h2>
+      <p>The "mostly" is doing work in that last sentence. Past
+      roughly 6.7B parameters, trained models grow a small set of
+      channels with outsized magnitudes — an
+      <dfn><a href="glossary.html#t-outlier">outlier</a></dfn>
+      problem that appears as a phase transition, not a gradual
+      drift: about a tenth of a percent of hidden dimensions,
+      concentrated in roughly six channels in a 6.7B model
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p>These channels are load-bearing. Zeroing just those
+      dimensions inflates perplexity by 600-1000%; rounding them to
+      the eight-bit grid destroys quality just as thoroughly
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.
+      The noise-averaging argument fails here because the outlier
+      channels are exactly where a few terms dominate the sum —
+      their errors do not cancel, they propagate.</p>
+      <p>The fix keeps both worlds: mixed precision. LLM.int8(), the
+      method that documented the outliers, computes those few
+      channels in sixteen-bit floats and everything else in
+      eight-bit integers — no measured quality loss at the 175B
+      scale, roughly half the memory, and 175B-scale inference on
+      far fewer GPUs
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+    </section>
+
+    <section id="sec-recipes">
+      <h2>Two recipes that ship</h2>
+      <p>Outlier-aware mixed precision is one ingredient. Production
+      int4 needed two more ideas, and they ship under their paper
+      names. Both are
+      <dfn><a href="glossary.html#t-weight-only-quantization">weight-only
+      quantization</a></dfn> — the integers replace the weights,
+      while the activations flowing through stay sixteen-bit — the
+      common production recipe, with the cache sometimes following
+      in eight-bit
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p><dfn><a href="glossary.html#t-gptq">GPTQ</a></dfn>
+      compensates errors as it goes. It quantizes the weights one
+      column at a time, and when a weight's rounding error is
+      committed, it nudges the not-yet-quantized weights to cancel
+      that error — using approximate second-order information about
+      which weights matter, the lineage of an old pruning method
+      called Optimal Brain Surgeon
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.
+      One pass, no retraining: a 175B model in about four GPU-hours,
+      three-to-four-bit weights with negligible degradation
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p><dfn><a href="glossary.html#t-awq">AWQ</a></dfn> protects
+      instead of compensating. Its observation: about one percent of
+      weight channels are salient — chosen by the size of the
+      activations flowing through them, not by the size of the
+      weights — and those channels must not absorb rounding error.
+      The trick scales them up before quantization, shrinking their
+      relative error, and folds the scaling into the activation side
+      where it cancels exactly. No backprop, no retraining, and —
+      the paper's point — it generalizes: code and math survive int4
+      where naive rounding breaks them
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p>Notice the symmetry with the outlier story. LLM.int8 found
+      its trouble by watching activations blow up in a few hidden
+      dimensions; AWQ finds its protected channels the same way —
+      by activation magnitude, not weight magnitude. Two papers,
+      two fixes, one lesson: the trained network concentrates its
+      traffic in a few channels, and a compression scheme that
+      cannot find and spare them breaks the model.</p>
+      <p>The one-percent protection, measured
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — protecting one
+        percent of channels</p>
+        <div class="worked-body">
+<pre><code class="language-text">protecting one percent of channels
+(OPT-6.7B, int4, group size 128;
+WikiText2 perplexity):
+
+  plain round-to-nearest int4:      43.2   (broken)
+  + 1% salient channels kept
+    at full precision:              13.0   (recovered)
+  the fp16 original:                13.09
+
+  salience measured by activation size,
+  not weight size</code></pre>
+        </div>
+      </div>
+
+      <p>At four bits, a 70B model fits a single 48 GB card, and
+      runs about three times faster than the float original with
+      proper kernels
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+    </section>
+
+    <section id="sec-limits">
+      <h2>Where the lever stops</h2>
+      <p>The lever has edges. Quantization error is not uniform
+      across tasks: code generation and math degrade before chat
+      does, because a single wrong piece breaks a program where
+      prose forgives it
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.
+      Perplexity — the training page's measure — is a weak proxy
+      here; teams evaluate real downstream tasks before shipping
+      four-bit weights
+      <a class="prov" data-src="research/quantization.md" href="links.html#s-quantization" title="quantization — research/quantization.md">[quantization]</a>.</p>
+      <p>And the floor survives, smaller but standing: fewer bytes
+      per piece, still one sweep per piece. The next page attacks
+      the sweep itself — let a small model propose several pieces,
+      and let the big model check them all in one pass.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Quantization stores trained weights as small integers
+        plus scale factors — a post-training, serving-time change;
+        halving bytes doubles the decode ceiling, quartering them
+        quadruples it.</li>
+        <li>Divide by the scale, round onto the grid, restore by
+        multiplying — per-group scales keep each grid fine for its
+        neighborhood, and independent rounding errors average out
+        across a matrix multiply's millions of terms.</li>
+        <li>Past ~6.7B parameters, a few outlier channels carry
+        outsized magnitude — rounding or zeroing them wrecks quality;
+        mixed precision keeps them in fp16 with no measured loss.</li>
+        <li>GPTQ compensates: each committed rounding error is pushed
+        onto not-yet-quantized weights via second-order information.
+        AWQ protects: ~1% salient channels, chosen by activation
+        size, pre-scaled to shrink their relative error — perplexity
+        43.2 recovered to 13.0 on OPT-6.7B int4.</li>
+        <li>Weight-only int4 is the shipping recipe; the lever pays
+        only in the bandwidth-bound phase — and one weight sweep per
+        piece still remains, which the next page attacks.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="serving.html"><span class="cap">Previous</span><span class="pg-title">Serving: Batching, PagedAttention, FlashAttention</span></a>
+    <a class="pager-card" rel="next" href="speculative.html"><span class="cap">Next</span><span class="pg-title">Speculative Decoding</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

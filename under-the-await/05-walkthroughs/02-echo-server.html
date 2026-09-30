@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A TCP echo server, await by await — Under the Await</title>
+  <meta name="description" content="The complete TCP echo server in Tokio, with every .await annotated by which part of the runtime it enters, plus graceful shutdown with select! and ctrl_c.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p05-02">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>A TCP echo server, await by await</h1>
+
+      <p>Here is the oldest useful program in networking: whatever a
+        client sends, send back. Thirty lines of Tokio, and inside them,
+        every piece of machinery from Part 4 gets used at least once.
+        This page walks the whole program from your chair: what each
+        line does, what each <code>.await</code> enters, and what the
+        runtime does behind it. One await, the socket read, already has
+        its own page:
+        <a href="../04-tokio-internals/06-tcpstream-trace.html">Part 4
+        traced one read</a> through the
+        <a href="../04-tokio-internals/05-io-driver.html">I/O driver</a>
+        hop by hop, down to the waker lists and the readiness bits. This
+        page will point at that trace instead of repeating it. Read this
+        page for the program, that one for the machinery.</p>
+
+      <h2>The whole server</h2>
+
+      <p>First the setup and the accept loop:</p>
+
+      <pre><code class="language-rust">use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+#[tokio::main]
+async fn main() -&gt; std::io::Result&lt;()&gt; {
+    let listener = TcpListener::bind("127.0.0.1:7878").await?;
+    println!("echoing on {}", listener.local_addr()?);
+
+    loop {
+        let (socket, peer) = listener.accept().await?;
+        tokio::spawn(async move {
+            if let Err(e) = echo(socket).await {
+                eprintln!("{peer}: connection error: {e}");
+            }
+        });
+    }
+}</code></pre>
+
+      <p>Then the per-connection task, the entire protocol:</p>
+
+      <pre><code class="language-rust">async fn echo(mut socket: TcpStream) -&gt; std::io::Result&lt;()&gt; {
+    let mut buf = vec![0u8; 4096];
+    loop {
+        let n = socket.read(&amp;mut buf).await?;
+        if n == 0 {
+            return Ok(()); // the peer closed its end
+        }
+        socket.write_all(&amp;buf[..n]).await?;
+    }
+}</code></pre>
+
+      <p>That is the complete server. Bind once, accept forever, one
+        task per connection, read until the stream closes, write back
+        what arrived. The interesting part is not the code; it is what
+        each of those five awaits walked into.</p>
+
+      <h2>Every await, annotated</h2>
+
+      <table>
+        <thead>
+          <tr><th>The await</th><th>What it enters</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>bind(...).await</code></td>
+            <td>kernel socket setup, then the I/O driver</td>
+            <td>The socket, bind, and listen
+              <a href="../01-foundations/03-syscalls-and-file-descriptors.html">syscalls</a>
+              run during the first poll. The fd is marked
+              <a href="../01-foundations/05-nonblocking-io.html">non-blocking</a>
+              and registered with the driver, which allocates its
+              bookkeeping record. Then the future returns
+              <a href="../03-rust-async/02-future-trait.html">Ready</a>.
+              This await waits for nothing; it is where the kernel
+              object is born.</td>
+          </tr>
+          <tr>
+            <td><code>accept().await</code></td>
+            <td>the listener's waker bench</td>
+            <td>Try <code>accept</code> now; the backlog is empty, so
+              the kernel answers
+              <a href="../01-foundations/05-nonblocking-io.html"><code>EAGAIN</code></a>.
+              Park a waker with read interest on the listener, return
+              Pending. A connection arrives, epoll reports the listener
+              readable, the waker fires, a worker re-polls, and
+              <code>accept</code> hands back a fresh non-blocking
+              socket, already registered.</td>
+          </tr>
+          <tr>
+            <td><code>tokio::spawn(...)</code></td>
+            <td>the scheduler, via the inject queue</td>
+            <td>Not an await, but it sits in the loop and deserves its
+              row. The connection future is boxed into a
+              <a href="../04-tokio-internals/02-task-anatomy.html">task</a>.
+              Because the caller here is the main thread from
+              <a href="01-boot-sequence.html">the boot sequence</a>,
+              the task lands in the global inject queue for a worker to
+              adopt. Inside a worker, the same call would use the LIFO
+              slot instead.</td>
+          </tr>
+          <tr>
+            <td><code>read(...).await</code></td>
+            <td>the full Part 4 flight</td>
+            <td>Try the read, eat the <code>WouldBlock</code>, stash
+              the waker, sleep as a parked state machine until a packet
+              arrives, wake, retry, hand over the bytes. That is
+              <a href="../04-tokio-internals/06-tcpstream-trace.html">the
+              page you already read</a>, all twelve hops of it.</td>
+          </tr>
+          <tr>
+            <td><code>write_all(...).await</code></td>
+            <td>the mirror flight</td>
+            <td>Write what fits now. If the socket's send buffer is
+              full, the kernel says <code>WouldBlock</code>, the task
+              parks a waker with write interest, and the
+              <a href="../04-tokio-internals/05-io-driver.html">driver</a>
+              waits for the buffer to drain. <code>write_all</code>
+              repeats until your whole buffer is out; each stall parks
+              the task, never the worker.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Notice the shape of the answer every await gives: try the
+        operation immediately, and only if the kernel says
+        &ldquo;not yet&rdquo; does the task arrange a wakeup and step
+        aside. That two-step, the readiness question before the data
+        question, is the contract
+        <a href="../01-foundations/05-nonblocking-io.html">Part 1</a>
+        spent a page establishing, and it is baked into every
+        <a href="../04-tokio-internals/06-tcpstream-trace.html"><code>AsyncRead</code>
+        and <code>AsyncWrite</code></a> implementation in the
+        ecosystem.</p>
+
+      <h2>One connection, in slow motion</h2>
+
+      <p>Trace a single client through the server's first minute.
+        A telnet connects: the kernel completes the handshake, the
+        listener becomes readable, and the parked
+        <code>accept</code> wakes through the driver. The accept loop
+        gets a socket and a peer address, spawns one echo task, and
+        immediately parks again at the top of the loop. Somewhere
+        nearby, a worker adopts that task from the inject queue and
+        polls it for the first time.</p>
+
+      <p>The task's first poll runs straight through
+        <code>echo</code>'s setup, the buffer allocation included,
+        and into <code>read</code>, which tries the socket, finds it
+        empty, parks a waker, and returns Pending. The task has now
+        executed perhaps a microsecond of real work and will sit
+        dormant for as long as the user thinks. The worker, having
+        spent that microsecond, is already polling somebody else. When
+        the user finally types, the packet lands, epoll fires, the
+        waker queues the task, a worker polls it, and the read hands
+        over the line of text. The task flows into
+        <code>write_all</code>, which usually completes immediately on
+        a fresh socket, and loops back into <code>read</code> to park
+        again. Ping, pong, park, over and over, each round costing one
+        queue push and one poll, and the thread count never moving off
+        the number it booted with.</p>
+
+      <p>When the client quits, the kernel marks the socket
+        read-at-end-of-stream; the next read wakes, returns zero, and
+        the task returns <code>Ok</code>, drops its socket, its buffer,
+        and its state machine, and disappears from every queue without
+        ceremony. The whole lifecycle of a connection, birth to death,
+        moved four pieces of state: one task allocation, one driver
+        registration, one waker bench reservation at a time, and
+        zero threads.</p>
+
+      <h2>Ten thousand connections, zero new threads</h2>
+
+      <p>Start a few thousand clients against this server and watch
+        what changes: almost nothing. Each connection costs one
+        <a href="../04-tokio-internals/02-task-anatomy.html">task</a>,
+        a heap allocation of a few hundred bytes holding a pinned state
+        machine, and nothing else. No
+        <a href="../01-foundations/02-processes-threads-context-switches.html">thread</a>
+        is created, no
+        <a href="../01-foundations/04-blocking-io-and-c10k.html">8 MB
+        stack is reserved</a>, no kernel wait queue gains a sleeper.
+        <!-- fs: research/os-io-primitives.md §1 — Linux default thread stack 8 MiB virtual -->
+        The arithmetic that sank thread-per-connection servers in
+        Part 1 never even begins, because the thing that would have
+        been parked, a whole thread, was replaced by a parked state
+        machine and one waker on a bench.</p>
+
+      <p>Where do all those tasks run? On the same handful of workers
+        that booted before your first line. Idle connections are
+        invisible: a task blocked in <code>read</code> sits in no run
+        queue at all, only in the driver's waiter lists. Active
+        connections take turns, and each gets a
+        <a href="../04-tokio-internals/03-scheduler.html">budget</a> of
+        polls before being re-queued at the back, so one client
+        streaming data at full speed cannot starve the others. When a
+        packet arrives for any connection, the wake path is always the
+        same: epoll, token, waker, queue, poll. The scheduler does not
+        know or care that the task happens to be speaking TCP.</p>
+
+      <div class="note"><p>The one thread that is not busy is the main
+        thread. After the accept loop's first iteration, it lives
+        entirely inside <code>accept().await</code>, parked in
+        <a href="../03-rust-async/07-mini-executor.html">block_on</a>,
+        waking only when the listener produces a connection. A common
+        refinement is to spawn the accept loop itself as a task and let
+        the main future do nothing but wait for a shutdown signal,
+        which is exactly where we are heading.</p></div>
+
+      <h2>Graceful shutdown</h2>
+
+      <p>As written, the server runs until you kill it, and killing it
+        is ungraceful by definition. The standard sketch races the
+        accept loop against the keyboard interrupt:</p>
+
+      <pre><code class="language-rust">use tokio::signal::ctrl_c;
+
+#[tokio::main]
+async fn main() -&gt; std::io::Result&lt;()&gt; {
+    let listener = TcpListener::bind("127.0.0.1:7878").await?;
+
+    loop {
+        tokio::select! {
+            res = listener.accept() =&gt; {
+                let (socket, _peer) = res?;
+                tokio::spawn(echo(socket));
+            }
+            _ = ctrl_c() =&gt; break,
+        }
+    }
+
+    println!("accept loop stopped; open connections continue");
+    Ok(())
+}</code></pre>
+
+      <p>You know this macro from
+        <a href="../04-tokio-internals/09-cancellation-and-select.html">the
+        cancellation chapter</a>, so only the walkthrough-specific
+        facts matter here. Both futures are polled together; when
+        Ctrl-C lands, the signal future wins, the pending
+        <code>accept</code> future is dropped mid-await, and the loop
+        breaks. Two details make this loop safe. First,
+        <code>accept</code> on a listener is cancellation-safe: it
+        either handed over a connection or did not, so dropping it
+        between polls loses nothing. Second, the branch futures are
+        rebuilt every iteration, which is why the shutdown check never
+        goes stale.</p>
+
+      <p>What happens to the connection tasks still running when the
+        loop breaks? They are detached, and they keep running: the
+        accept loop owns none of them. The program then returns, the
+        runtime drops, and, as
+        <a href="01-boot-sequence.html">the boot page's ending</a>
+        showed, every task is stopped at its next yield point. For a
+        real server you would hand each connection task a shutdown
+        signal, a <a href="../04-tokio-internals/08-sync-primitives.html">watch
+        channel</a> is the usual choice, and wait for the stragglers
+        before returning; the tool for that waiting arrives on the
+        next-but-one page.</p>
+
+      <p>The fully graceful shape, in words since the pattern is now
+        familiar: create the watch channel before the accept loop and
+        give every connection task a receiver. The connection loop
+        races its read against <code>rx.changed()</code>, and on the
+        shutdown notice it drains what it can, flushes its writes, and
+        returns cleanly instead of being cut at a yield point. The
+        main task, after Ctrl-C, waits for the connection count to
+        reach zero before letting the runtime drop. Nothing in that
+        design needs machinery you have not already seen; it is
+        drivers, wakers, queues, and one channel all the way down.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>The whole echo server is bind, accept, spawn, read,
+            write: five awaits, and each enters a different part of the
+            machine you dissected in Part 4.</li>
+          <li><code>bind</code> creates the kernel objects during its
+            first poll; <code>accept</code> parks a waker with read
+            interest on the listener until a connection wakes it.</li>
+          <li><code>read</code> is the Part 4 trace in one line;
+            <code>write_all</code> is its mirror, parking with write
+            interest until the send buffer drains.</li>
+          <li>Connections scale as tasks, not threads: a few hundred
+            bytes and one waker each, round-robined by the scheduler
+            with per-task budgets.</li>
+          <li>Graceful shutdown races the accept loop against
+            <code>ctrl_c</code> with <code>select!</code>; detached
+            connection tasks are stopped at their next yield when the
+            runtime drops.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

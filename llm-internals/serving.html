@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serving: Batching, PagedAttention, FlashAttention — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="serving">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Four — Inference at Scale</p>
+    <h1>Serving: Batching, PagedAttention, FlashAttention</h1>
+    <p class="lede">The last page left the card holding one
+    conversation's keys and values and asked what a production
+    system does when many arrive. This page is that system: how it
+    keeps a GPU fed, why it slices caches into blocks, and what
+    happens inside a single attention step.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-starve">One request, one starving GPU</a></li>
+        <li><a href="#sec-continuous">Keeping the batch full</a></li>
+        <li><a href="#sec-paged">The cache, cut into blocks</a></li>
+        <li><a href="#sec-flash">Inside one step: tiling the attention</a></li>
+        <li><a href="#sec-tension">The knob every operator turns</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-starve">
+      <h2>One request, one starving GPU</h2>
+      <p>Start from the floor the loop page derived. A decode step
+      reads every weight once and produces one piece; on a 7B model
+      that is roughly one unit of arithmetic per byte read, against
+      a machine whose balance point sits at one hundred fifty to six
+      hundred
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.
+      The arithmetic units idle. The memory system runs flat out.
+      One request, alone, wastes most of the card
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>The idle capacity has a source waiting outside: other
+      requests. Run the same decode step for many requests at once
+      and the weights are still read once — but now they serve a
+      piece for each request in flight. The arithmetic per byte
+      multiplies by the request count; the memory traffic stays put
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.
+      This is
+      <dfn><a href="glossary.html#t-batching">batching</a></dfn> —
+      grouping requests so one weight sweep serves them all — and it
+      is the founding trick of every serving system
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>The arithmetic of sharing, at three sizes
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one weight sweep,
+        many requests</p>
+        <div class="worked-body">
+<pre><code class="language-text">one weight sweep, many requests
+(decode step, 7B model; research/serving.md + gpus.md):
+
+  bytes read per step:  14e9   (once, shared by all)
+  pieces produced:      B      (one per request in flight)
+
+  B = 1:    ~1 FLOP per byte     — GPU starves
+  B = 16:   ~16 FLOPs per byte   — balance: 150-600
+  B = 64:   ~64 FLOPs per byte   — nearing balance
+
+  per-piece pace stays ~flat; tokens per second
+  rise nearly linearly in B, until the step turns
+  compute-bound</code></pre>
+        </div>
+      </div>
+
+      <p>Per-piece pace stays roughly flat — each request still gets
+      its piece per step — while the tokens per second across all
+      requests, the system's
+      <dfn><a href="glossary.html#t-throughput">throughput</a></dfn>,
+      climb nearly linearly, until the step finally turns
+      compute-bound
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+    </section>
+
+    <section id="sec-continuous">
+      <h2>Keeping the batch full</h2>
+      <p>Batching, done naively, has a hole. Collect a group of
+      requests, run the whole group to completion, start the next:
+      that is static batching, and it idles. Requests finish at
+      different times — a two-line reply against a two-hundred-line
+      one — and a finished request's slot sits empty until the
+      slowest member of its group is done
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>The fix schedules at every step.
+      <dfn><a href="glossary.html#t-iteration-level-scheduling">Iteration-level
+      scheduling</a></dfn> runs the scheduler at every decode
+      iteration — every piece-step — admitting new requests and
+      evicting finished ones between steps; the vLLM engine calls it
+      <dfn><a href="glossary.html#t-continuous-batching">continuous
+      batching</a></dfn>
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.
+      The slot empties at one step; a waiting request fills it at
+      the next.</p>
+      <p>One wrinkle: the requests in a step no longer share shapes
+      — each carries a cache of different length, so attention
+      cannot run as one grouped operation. Orca's answer,
+      <dfn><a href="glossary.html#t-selective-batching">selective
+      batching</a></dfn>: run the shape-compatible parts together —
+      the embedding lookup, the feed-forward layers, the output
+      projection, all elementwise or matmul work over pieces — and
+      run attention per request
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 260"><title>Two timelines of three request slots: in the static batch, request A's slot sits idle after A finishes until the slowest request B completes; in continuous batching, new requests D and E immediately fill the freed slots</title>
+          <text x="15" y="52" font-size="13">static</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="100" y="28" width="165" height="20"/>
+          <text x="182" y="42" text-anchor="middle" font-size="12">A</text>
+          <rect fill="none" class="s-ink" stroke-width="1" stroke-dasharray="4 3" x="265" y="28" width="275" height="20"/>
+          <text x="402" y="42" text-anchor="middle" font-size="11" class="t-dim">idle</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="100" y="54" width="440" height="20"/>
+          <text x="320" y="68" text-anchor="middle" font-size="12">B</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="100" y="80" width="275" height="20"/>
+          <text x="237" y="94" text-anchor="middle" font-size="12">C</text>
+          <rect fill="none" class="s-ink" stroke-width="1" stroke-dasharray="4 3" x="375" y="80" width="165" height="20"/>
+          <text x="457" y="94" text-anchor="middle" font-size="11" class="t-dim">idle</text>
+          <text x="15" y="182" font-size="13">continuous</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="100" y="158" width="165" height="20"/>
+          <text x="182" y="172" text-anchor="middle" font-size="12">A</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="265" y="158" width="275" height="20"/>
+          <text x="402" y="172" text-anchor="middle" font-size="12">D</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="100" y="184" width="440" height="20"/>
+          <text x="320" y="198" text-anchor="middle" font-size="12">B</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="100" y="210" width="275" height="20"/>
+          <text x="237" y="224" text-anchor="middle" font-size="12">C</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="375" y="210" width="165" height="20"/>
+          <text x="457" y="224" text-anchor="middle" font-size="12">E</text>
+          <text x="320" y="248" text-anchor="middle" font-size="11" class="t-dim">same requests, same card — static idles finished slots until the batch ends; continuous refills at the next step</text>
+        </svg>
+        <figcaption>Two schedulers, the same traffic. Top: the
+        static batch — A and C finish early, but their slots wait
+        for B. Bottom: continuous batching — D takes A's slot at the
+        next step, E takes C's. The card never idles a slot it can
+        fill.</figcaption>
+      </figure>
+
+      <p>The payoff was the paper's headline: Orca, the system that
+      introduced the trick, reported over thirty-six times the
+      throughput of the static-batch baseline on a 175B model, with
+      one-point-one to nine-point-one times across settings
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+    </section>
+
+    <section id="sec-paged">
+      <h2>The cache, cut into blocks</h2>
+      <p>Batching fills the card's arithmetic; the next problem is
+      the card's memory. Every request in flight brings a KV cache
+      that grows as it generates. The obvious bookkeeping — reserve
+      each cache as one contiguous span, sized for the maximum
+      length the request might reach — wastes most of the memory:
+      reserved-but-unused space in every short reply, and gaps
+      between reservations that fit nothing. Measured on the systems
+      before the fix: sixty to eighty percent of cache memory
+      wasted, and a single long sequence on a 13B model could carry
+      1.7 GB of keys and values
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>The fix is an operating system's trick, applied to the
+      cache.
+      <dfn><a href="glossary.html#t-pagedattention">PagedAttention</a></dfn>
+      — the vLLM engine's name for it — partitions each request's
+      cache into fixed-size blocks, sixteen pieces by default,
+      stores those blocks wherever there is room, and maps each
+      request's logical sequence of pieces to its physical blocks
+      through a
+      <dfn><a href="glossary.html#t-block-table">block table</a></dfn>
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.
+      Pages, a page table, allocation on demand: virtual memory, for
+      keys and values.</p>
+      <p>Waste drops below four percent of total memory
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.
+      And the indirection buys something contiguous caches cannot:
+      sharing. Two requests with the same opening — the same system
+      prompt, the same worked examples — can point at the same
+      physical blocks, copied only when one of them writes a
+      divergent piece
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>End to end, the whole stack — continuous batching plus
+      paged caches — served two to four times the throughput of the
+      earlier systems, and cut latency two to four times at matched
+      pace
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+    </section>
+
+    <section id="sec-flash">
+      <h2>Inside one step: tiling the attention</h2>
+      <p>One more layer down. Everything above manages work between
+      steps;
+      <dfn><a href="glossary.html#t-flashattention">FlashAttention</a></dfn>
+      speeds the attention inside every step
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.
+      The naive kernel computes a score for every query against
+      every key — an n-by-n grid — and writes that grid to the
+      card's high-bandwidth memory, then reads it back to combine.
+      For a thousand-piece sequence that is a million scores
+      round-tripped; attention was bound not by arithmetic but by
+      the memory traffic of its own intermediate
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>The fix is
+      <dfn><a href="glossary.html#t-tiling">tiling</a></dfn>: load
+      small blocks of queries, keys, and values into the on-chip
+      SRAM next to the arithmetic units, compute partial softmax
+      results per tile, and rescale as more tiles stream in — an
+      online softmax, running tile by tile
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.
+      The n-by-n grid is never materialized in main memory at all.
+      And the math is exact — the same numbers, computed in a
+      different order
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>The measured effect: attention alone up to 7.6x faster on
+      GPT-2; whole-model speedups of 3x at thousand-piece sequences
+      and 15% on BERT-large; memory that grows linearly with
+      sequence length instead of quadratically — up to 20x saved at
+      64K pieces, which is what made very long sequences practical
+      at all
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>The three fixes stack cleanly
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>:
+      FlashAttention accelerates the attention inside each step —
+      prefill and long sequences most of all; PagedAttention manages
+      the keys and values between steps; continuous batching keeps
+      the card full across steps. Kernel, memory, schedule — one
+      system.</p>
+    </section>
+
+    <section id="sec-tension">
+      <h2>The knob every operator turns</h2>
+      <p>With the machinery in place, the operator's dial is the
+      batch size, and it trades two numbers against each other.
+      Bigger batches mean more throughput — but longer queues
+      before a new request is admitted, so TTFT grows; and some TPOT
+      growth too, since each step's cache reads grow with the batch
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>Chunked prefill is the smoothing move: split a huge
+      prompt's prefill across several steps, interleaved with
+      decode, so a thousand-piece question does not freeze every
+      reply mid-stream
+      <a class="prov" data-src="research/serving.md" href="links.html#s-serving" title="serving — research/serving.md">[serving]</a>.</p>
+      <p>This page filled the card's idle arithmetic. The floor
+      itself — one full sweep of the weights per piece — is still
+      untouched: every byte of every weight, read every step. The
+      next page attacks the weights: make each byte smaller, and the
+      same sweep carries more pieces.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>At one request, decode runs at roughly one unit of
+        arithmetic per byte against a machine balance of 150-600 —
+        the GPU starves; batching amortizes one weight read over
+        every request in flight.</li>
+        <li>Static batches idle finished slots; iteration-level
+        scheduling — continuous batching — admits and evicts at
+        every decode step, and selective batching runs the
+        shape-compatible parts together, attention per request.</li>
+        <li>PagedAttention cuts each cache into fixed-size blocks
+        mapped through a block table — virtual memory for keys and
+        values — dropping waste from 60-80% to under 4% and letting
+        shared prompts share blocks.</li>
+        <li>FlashAttention tiles attention through SRAM with an
+        online softmax: exact math, the n-by-n score grid never
+        materialized, memory linear in sequence length.</li>
+        <li>Throughput and TTFT trade off along the batch dial;
+        chunked prefill smooths the mix — and the weight sweep per
+        piece remains the floor the next page attacks.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="kv-cache.html"><span class="cap">Previous</span><span class="pg-title">The KV Cache</span></a>
+    <a class="pager-card" rel="next" href="quantization.html"><span class="cap">Next</span><span class="pg-title">Quantization: int8 and int4</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

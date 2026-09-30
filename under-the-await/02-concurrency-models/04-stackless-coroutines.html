@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<!--
+  ==========================================================================
+  UNDER THE AWAIT — CONTENT PAGE TEMPLATE
+  ==========================================================================
+  WRITER CONTRACT — copy this file into the right part directory and fill in
+  exactly FOUR things:
+
+    1. <title>PLACEHOLDER</title>            → "Page title — Under the Await"
+    2. <meta name="description" ...>         → one-sentence summary
+    3. <body data-page="PLACEHOLDER-ID">     → the page's manifest id
+                                               (e.g. "p01-03" — see assets/main.js)
+    4. Everything between the CONTENT markers in <main id="content">
+
+  Do NOT touch: the <head> links and scripts, the empty
+  <aside id="site-nav">, or the empty <nav id="page-nav">. main.js renders
+  the sidebar, the prev/next footer, code highlighting and the ← / → keys.
+  Paths are already correct for pages one level below the site root
+  (../assets/...). No external URLs, no webfonts, no inline event handlers.
+
+  CONTENT CLASSES (full list + tokens documented at the top of
+  assets/style.css):
+    .note / .warning / .pitfall     callouts (labels auto-generated)
+    aside.takeaways                 end-of-page summary box (supply a heading)
+    figure.diagram + figcaption     inline SVG figures; style shapes with
+                                    svg classes .box .arrow .arrow-head
+                                    .lane .label (+ .accent, .label.muted/mono)
+    table                           book-style, scrolls horizontally if wide
+    pre > code                      code block; add class="language-rust"
+                                    (also c, javascript, python, bash, …)
+    <code> inline · <kbd>           tinted mono · keycap
+  ==========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stackless coroutines — Under the Await</title>
+  <meta name="description" content="How async/await functions pause without a stack: the compiler stores only the live locals, and the suspended coroutine becomes a value you can hold, pass around, and ask to continue.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p02-04">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ====================
+         Replace everything between CONTENT-START and CONTENT-END with the
+         page itself (1200–2200 words). Start with the page <h1>. -->
+    <article>
+      <h1>Stackless coroutines</h1>
+
+      <p>Strategy four is the one this book has been walking toward, so
+        take it slowly. <a href="03-green-threads.html">Green threads</a>
+        made suspension cheap by shrinking the stack. This strategy makes
+        one observation sharper: if you only ever pause where you chose to
+        mark, you do not need a stack at all. The pause can be stored as a
+        small value. And a value, unlike a stack, is something your
+        program can own, inspect, move, and hand to a loop. That inversion,
+        from "the machinery owns my paused code" to "my paused code is a
+        value I own," is the seed of everything in Parts 3 and 4.</p>
+
+      <h2>A function that pauses</h2>
+
+      <p>A <strong>coroutine</strong> is a function that can pause
+        mid-run, keep its place and its local variables, and be resumed
+        later from that exact place. Regular functions cannot do this.
+        When a regular function returns, its locals are gone and its
+        <a href="../01-foundations/01-how-programs-run.html">stack
+        frame</a> is reclaimed. A coroutine suspends instead: it steps
+        off to the side, and everything it needs to continue
+        survives.</p>
+
+      <p>JavaScript had the bare mechanism years before it had
+        <code>async</code>, in the form of generators. Look at one
+        pausing in mid-function:</p>
+
+      <pre><code class="language-javascript">function* countdown() {
+  console.log("started");
+  yield 3;              // pause: hand back 3, keep your place
+  console.log("resumed");
+  yield 2;              // pause again
+  return 1;
+}
+
+const it = countdown();   // nothing has run yet
+it.next();  // logs "started", returns { value: 3, done: false }
+it.next();  // logs "resumed", returns { value: 2, done: false }
+it.next();  // returns { value: 1, done: true }</code></pre>
+
+      <p>Read that last block again, because it is the whole strategy in
+        four lines. <code>countdown()</code> did not run when called. It
+        produced an object, <code>it</code>, that stands for a computation
+        frozen at the very start. Each <code>next()</code> thaws it, runs
+        to the next <code>yield</code>, and refreezes it. The paused
+        function is not a concept. It is an object sitting in a variable,
+        waiting to be asked for its next step.</p>
+
+      <h2>async/await: coroutines with a contract</h2>
+
+      <p>Generators hand values back. What suspension-for-I/O needs is a
+        slight variation: hand <em>control</em> back, and be resumed when
+        some operation completes. That is exactly what
+        <code>async</code>/<code>await</code> is. An async function is a
+        coroutine that pauses at every <code>await</code>, and each
+        <code>await</code> marks a <em>suspension point</em>: the place
+        control can leave this function.</p>
+
+      <p>Here is the three-file flow from the
+        <a href="02-callbacks-and-event-loops.html">callback pyramid</a>,
+        rewritten. Same operations, same order, same single thread:</p>
+
+      <pre><code class="language-javascript">const fs = require("fs/promises");
+
+async function renderPage() {
+  const text = await fs.readFile("config.json", "utf8");       // pause 1
+  const config = JSON.parse(text);
+  const template = await fs.readFile(config.template, "utf8"); // pause 2
+  const footer = await fs.readFile(config.footer, "utf8");     // pause 3
+  return render(config, template, footer);
+}</code></pre>
+
+      <p>The wedge became a straight line. The code reads top to bottom,
+        exactly like the blocking code from Part 1, but it never blocks a
+        thread. At each <code>await</code>, if the result is not ready,
+        the function suspends: it returns control to whoever asked it to
+        run, carrying a promise to continue later. When the file arrives,
+        the loop resumes it at that exact line, with <code>text</code>
+        and <code>config</code> intact, as if nothing had happened.</p>
+
+      <p>Python's version makes the object-nature impossible to miss.
+        Calling a coroutine function does not run it. It builds a
+        coroutine object and hands it to you:</p>
+
+      <pre><code class="language-python">import asyncio
+
+async def greet():
+    print("started")
+    await asyncio.sleep(1)   # the marked pause
+    print("finished")
+    return "done"
+
+coro = greet()      # calling it runs nothing yet
+print(coro)         # the object itself, printed like any value
+asyncio.run(coro)   # the loop drives it through its pause</code></pre>
+
+      <pre><code class="language-plaintext">&lt;coroutine object greet at 0x7f31c9a5f340&gt;
+started
+finished</code></pre>
+
+      <p>That first line of output is not a metaphor. A paused
+        computation printed its address, because it is an object on the
+        heap with an identity, the same as any list or dict you have
+        printed. Nothing inside it ran until the loop asked it to.</p>
+
+      <h2>Stackless: what a pause actually stores</h2>
+
+      <p>Here is the distinction this page owns. Green threads are
+        <a href="03-green-threads.html">stackful</a>: pausing preserves
+        an entire call stack, so the pause can happen anywhere. Coroutines
+        like these are <strong>stackless</strong>: the function keeps no
+        private stack at all. It may pause only at its marked suspension
+        points, and what survives a pause is the compiler's own minimal
+        summary:</p>
+
+      <pre><code class="language-plaintext">what the compiler stores for renderPage() at pause 2, conceptually:
+
+    +-------------------------------------------------+
+    | state: WAITING_ON_TEMPLATE                      |
+    | live locals: text, config                       |
+    | resumption: just after the template read        |
+    +-------------------------------------------------+
+
+a state tag, the two locals still in use, nothing else. no stack.</code></pre>
+
+      <p>The compiler turns the async function into a small state
+        machine: one state per await, and the fields are exactly the
+        locals alive across that await. Nothing more is kept, because
+        nothing more can be needed: the pause can only resume at a marked
+        point, and between those points the regular stack does its
+        regular job.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 250" role="img" aria-label="Diagram contrasting a stackless coroutine pause with a stackful green thread pause: a small state box on the left versus a tall multi-frame stack on the right.">
+          <title>Stackless versus stackful: the pause on the left stores a state tag and two locals; the pause on the right preserves an entire call stack</title>
+          <text class="label accent" x="160" y="26" text-anchor="middle">stackless: a paused coroutine</text>
+          <rect class="box accent" x="40" y="40" width="240" height="92" rx="8"/>
+          <text class="label mono" x="160" y="66" text-anchor="middle">state: WAITING_ON_TEMPLATE</text>
+          <text class="label mono" x="160" y="88" text-anchor="middle">locals: text, config</text>
+          <text class="label muted" x="160" y="116" text-anchor="middle">a few machine words</text>
+          <text class="label" x="480" y="26" text-anchor="middle">stackful: a paused green thread</text>
+          <rect class="box" x="380" y="40" width="200" height="190" rx="8"/>
+          <text class="label mono" x="480" y="66" text-anchor="middle">frame: render</text>
+          <text class="label mono" x="480" y="92" text-anchor="middle">frame: loadTemplate</text>
+          <text class="label mono" x="480" y="118" text-anchor="middle">frame: readAll</text>
+          <text class="label mono" x="480" y="144" text-anchor="middle">frame: syscall wrapper</text>
+          <text class="label mono" x="480" y="170" text-anchor="middle">frame: library internals</text>
+          <text class="label muted" x="480" y="212" text-anchor="middle">the whole stack, preserved</text>
+          <line class="arrow" x1="280" y1="86" x2="370" y2="86"/>
+          <polygon class="arrow-head" points="370,81 380,86 370,91"/>
+          <text class="label muted" x="330" y="72" text-anchor="middle" style="font-size:11px">same pause,</text>
+          <text class="label muted" x="330" y="108" text-anchor="middle" style="font-size:11px">different storage</text>
+        </svg>
+        <figcaption>Figure 1: both sides show the same logical situation,
+          a function waiting for a file. The left stores a state tag and
+          the two live locals. The right preserves every frame on the
+          stack, because it must be resumable from anywhere.</figcaption>
+      </figure>
+
+      <table>
+        <thead>
+          <tr><th></th><th>Green thread (stackful)</th><th>Coroutine (stackless)</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Where it can pause</td>
+            <td>anywhere, even ten calls deep</td>
+            <td>only at marked suspension points</td>
+          </tr>
+          <tr>
+            <td>What a pause stores</td>
+            <td>an entire call stack</td>
+            <td>a state tag plus the live locals</td>
+          </tr>
+          <tr>
+            <td>Memory per paused thing</td>
+            <td>kilobytes upward</td>
+            <td>the size of a small struct</td>
+          </tr>
+          <tr>
+            <td>Who finds the machinery</td>
+            <td>invisible: the language hides it</td>
+            <td>visible: every pause is in your source</td>
+          </tr>
+          <tr>
+            <td>Examples</td>
+            <td>Go goroutines, Java virtual threads</td>
+            <td>JS async functions, Python coroutines, and Rust</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>The suspended coroutine is a value</h2>
+
+      <p>Now the payoff, stated as plainly as I can manage. A suspended
+        coroutine is a value. You can assign it to a variable. You can put
+        it in a list. You can pass it to a function, return it from one,
+        keep it for a millisecond or an hour. And whenever you like, you
+        can ask it to continue. When you ask, exactly one of two things
+        happens: it runs to its next suspension point and answers "still
+        waiting," or it runs to completion and hands you its return
+        value.</p>
+
+      <p>Two answers. "Still waiting," or "here is the result." Hold onto
+        that pair; you will meet it again, wearing different clothes,
+        as the load-bearing idea of Part 3.</p>
+
+      <p>Compare what suspension costs in each model. Pausing a green
+        thread leaves you holding a liability: a whole preserved stack
+        that must be kept alive and managed by machinery you cannot
+        see. Pausing a stackless coroutine leaves you holding an
+        asset: a small object, the size of its live variables, that your
+        code can own like any other value. The event loop from two pages
+        ago can keep a million of them in a collection, and each time a
+        readiness event arrives, ask the matching paused coroutine to
+        continue. This is precisely how asyncio, and Node under its
+        syntax, and Tokio after them, actually work.</p>
+
+      <p>The general concept deserves its name before we go on. A
+        <strong>continuation</strong> is "the rest of the computation,"
+        packaged as a thing. Every function you have ever called had a
+        continuation: the code waiting at the call site. What these
+        coroutine objects give you is a continuation you can hold in your
+        hand, a materialized "and then," that you can choose to run, defer,
+        or abandon. Callbacks, from the previous page, are continuations
+        spelled out by hand, one nested function at a time. Promises are
+        continuations with a contract. Stackless coroutines are
+        continuations the compiler packages for you, automatically, at
+        every <code>await</code>.</p>
+
+      <div class="note">
+        <p>This is the door Rust picks: door number four. In Rust, the
+          paused function becomes a plain value with a strict, small
+          protocol for being asked to continue, built by the compiler
+          from your <code>async</code> functions. Part 3 names it, builds
+          one by hand before the keyword does it for you, and then
+          <a href="../03-rust-async/05-async-await-desugaring.html">takes
+          the compiler's transform apart line by line</a>.</p>
+      </div>
+
+      <h2>The tax: function coloring</h2>
+
+      <p>Nothing in this strategy is free, and its cost has a famous
+        name. Suspension is now part of a function's type. An async
+        function does not return a value; it returns a promise of one, or
+        a coroutine object. A plain function that calls it receives that
+        object, and cannot stand still and wait for the value inside:
+        waiting requires being able to pause, and plain functions cannot
+        pause. So the caller must become async too, and its caller, and
+        so on outward. This virality is <strong>function coloring</strong>:
+        two colors of function in one program, and the boundary between
+        them must be managed by hand, usually at the top of your
+        program.</p>
+
+      <p>You have already written this boundary without noticing.
+        <code>asyncio.run(...)</code> exists precisely to let ordinary
+        Python drive a colored function. Node's top-level
+        <code>await</code> exists for the same reason. And every library
+        author in the JS and Python ecosystems has faced the question
+        "should this function be async?", knowing the answer stains every
+        caller.</p>
+
+      <p>Go has no such boundary, and that is a genuine, daily
+        ergonomic win for <a href="03-green-threads.html">green
+        threads</a>: every function may block, so there is one color and
+        nobody thinks about it. The stackless world pays in colors what
+        the stackful world pays in kilobytes.</p>
+
+      <p>There is a refund, though, and it is not sentimental. In the
+        stackless world, every place control can possibly leave your
+        function is marked in your source with <code>await</code>. You
+        can look at a function and know exactly where it might be
+        interrupted, because it can only be interrupted there. Reasoning
+        about interleavings becomes a local, readable property instead of
+        a global, invisible one. When Part 4 shows you where a Rust
+        program may be paused, resumed, or quietly abandoned, the marks
+        will already be in front of you.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>A coroutine is a function that can pause mid-run and resume
+            later with its locals intact; async/await is the mainstream
+            packaging of that idea, with each await marking a suspension
+            point.</li>
+          <li>Stackless means no private stack: the pause stores only a
+            state tag and the locals live across it, so a paused function
+            costs the size of a small struct, not a stack.</li>
+          <li>The suspended coroutine is a value: storable, passable, and
+            answerable with exactly one of two replies when asked to
+            continue, "still waiting" or "here is the result."</li>
+          <li>A continuation is the rest of a computation packaged as a
+            thing; callbacks spell them by hand, promises give them a
+            contract, and stackless coroutines generate them at every
+            await.</li>
+          <li>The tax is function coloring: suspension is viral, so plain
+            code cannot wait for suspending code. The refund is that
+            every possible interruption is visible in your source.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

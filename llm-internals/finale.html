@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Whole Machine — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="finale">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Five — The Frontier</p>
+    <h1>The Whole Machine</h1>
+    <p class="lede">Two pages ago you watched one request cross the
+    whole machine. This page steps back: what the machine looks
+    like assembled, what changed in the years it was being built,
+    and the honest list of what nobody has solved — a snapshot as
+    of this writing; the specifics will age, the mechanisms will
+    not. Then one loop to hold it all.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-loop">The loop, walked once more</a></li>
+        <li><a href="#sec-moe">More capacity without more arithmetic</a></li>
+        <li><a href="#sec-mla">The cache, compressed again</a></li>
+        <li><a href="#sec-reasoning">The third axis: thinking</a></li>
+        <li><a href="#sec-open">What remains open</a></li>
+        <li><a href="#sec-model">The whole machine, in one paragraph</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-loop">
+      <h2>The loop, walked once more</h2>
+      <p>Walk it once, slowly. A prompt arrives as text and is cut
+      into pieces — the frequency-driven cuts of the tokenizer.
+      Each piece becomes a row in a matrix: an embedding vector,
+      rotated by its position, so that attention can tell pieces
+      apart by where they sit.</p>
+      <p>Then the layer stack. In every layer, each vector asks
+      questions of the vectors before it — queries against cached
+      keys, weighted sums of values — gathering context; then,
+      alone, it passes through the feed-forward net, the layer's
+      private store of facts and patterns. The stack's output is
+      one vector: the final position's prediction, flattened by a
+      softmax into a probability for every piece in the
+      vocabulary.</p>
+      <p>The sampler draws one piece — greedy, or tempered, or
+      nucleus-cut. The drawn piece is appended to the sequence,
+      and everything runs again: one more position through every
+      layer, one more row in every layer's cache, one more
+      distribution. That is the whole machine: a loop that turns
+      a probability distribution into text one draw at a time,
+      with every earlier page a study of one box or one cost
+      inside it.</p>
+      <p>What the loop cannot do is remember. Between requests the
+      machine keeps nothing: a conversation exists only as the
+      pieces currently inside the window — which is why the
+      request page's compounding prompt is the whole of a chat's
+      memory, and why the window page's stretching tricks matter
+      at all. The loop is the machine's entire notion of time.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 170"><title>The whole machine as one loop: embed and rotate, attend over the cache, transform, repeat per layer, score, sample — then append the drawn piece and run it all again</title>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="20" y="40" width="100" height="48"/>
+          <text x="70" y="58" text-anchor="middle" font-size="12">embed</text>
+          <text x="70" y="76" text-anchor="middle" font-size="10" class="t-dim">+ rotations</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="140" y="40" width="90" height="48"/>
+          <text x="185" y="58" text-anchor="middle" font-size="12">attention</text>
+          <text x="185" y="76" text-anchor="middle" font-size="10" class="t-dim">reads the cache</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="250" y="40" width="80" height="48"/>
+          <text x="290" y="58" text-anchor="middle" font-size="12">FFN</text>
+          <text x="290" y="76" text-anchor="middle" font-size="10" class="t-dim">per vector</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="350" y="40" width="70" height="48"/>
+          <text x="385" y="58" text-anchor="middle" font-size="12">× L</text>
+          <text x="385" y="76" text-anchor="middle" font-size="10" class="t-dim">the stack</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="440" y="40" width="90" height="48"/>
+          <text x="485" y="58" text-anchor="middle" font-size="12">softmax</text>
+          <text x="485" y="76" text-anchor="middle" font-size="10" class="t-dim">scores</text>
+          <rect class="f-accent s-ink" stroke-width="1" x="550" y="40" width="80" height="48"/>
+          <text x="590" y="58" text-anchor="middle" font-size="12">sampler</text>
+          <text x="590" y="76" text-anchor="middle" font-size="10" class="t-dim">one piece</text>
+          <line class="s-ink" stroke-width="1.5" x1="120" y1="64" x2="140" y2="64"/>
+          <line class="s-ink" stroke-width="1.5" x1="230" y1="64" x2="250" y2="64"/>
+          <line class="s-ink" stroke-width="1.5" x1="330" y1="64" x2="350" y2="64"/>
+          <line class="s-ink" stroke-width="1.5" x1="420" y1="64" x2="440" y2="64"/>
+          <line class="s-ink" stroke-width="1.5" x1="530" y1="64" x2="550" y2="64"/>
+          <path fill="none" class="s-ink" stroke-width="1.5" d="M 590 88 L 590 140 L 70 140 L 70 88"/>
+          <text x="330" y="132" text-anchor="middle" font-size="11" class="t-dim">append the drawn piece — the whole loop runs again</text>
+        </svg>
+        <figcaption>The entire book in one shape. Each box is a
+        page or a part; the return path is the loop — the drawn
+        piece becomes part of the input for the next pass.</figcaption>
+      </figure>
+
+      <p>The costs gave the parts their shape. Part One built the
+      boxes and showed why each exists: embeddings to carry
+      meaning, rotations to carry order, attention to gather,
+      feed-forward nets to store. Part Two: the loop is only as
+      good as the training that shaped its distributions. Part
+      Three taught the loop its manners — post-training turned an
+      autocompleter into an assistant, and the sampler turned one
+      answer into many. Part Four: the loop's floor — one sweep of
+      the weights per piece — and the five ways around it. Part
+      Five: the window's edge, and the request that threads it
+      all.</p>
+    </section>
+
+    <section id="sec-moe">
+      <h2>More capacity without more arithmetic</h2>
+      <p>The dense model has one awkward property: every piece
+      pays for every weight, and the feed-forward nets are the
+      bulk of those weights. A
+      <dfn><a href="glossary.html#t-moe">mixture-of-experts</a></dfn>
+      design breaks the bulk into parts: many separate
+      <dfn><a href="glossary.html#t-expert">experts</a></dfn> —
+      feed-forward nets — plus a small router that reads each
+      vector and consults only a few of them per piece
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>The decoupling is the point: total capacity — stored
+      knowledge — lives in all the experts together, but per-piece
+      arithmetic tracks only the consulted few. Mixtral proved the
+      recipe in open weights: under thirteen billion active
+      weights matching or beating a dense seventy-billion model —
+      five times fewer active parameters for the same quality
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>The frontier runs on it. DeepSeek's third generation: six
+      hundred seventy-one billion total, thirty-seven billion
+      active, two hundred fifty-six routed experts plus one
+      shared, eight consulted per piece. Llama's fourth: the same
+      shape at two sizes, both with seventeen billion active
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>The training bill tells the same story: the whole
+      six-hundred-seventy-one-billion-weight model was trained on
+      nearly fifteen trillion pieces of text for about two point
+      eight million accelerator-hours
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — capacity versus arithmetic</p>
+        <div class="worked-body">
+<pre><code class="language-text">capacity versus arithmetic
+(three designs, one token each):
+
+  dense Llama 2 70B:
+    every piece pays all 70B weights
+
+  Mixtral 8x7B:
+    12.9B active — 5x fewer —
+    matching or beating the 70B
+    dense model
+
+  DeepSeek-V3:
+    37B active of 671B total
+    256 routed experts + 1 shared,
+    8 consulted per piece</code></pre>
+        </div>
+      </div>
+
+      <p>The catch is the one Part Four taught: inference cost
+      tracks active weights, but memory holds total weights. A
+      mixture trades bandwidth for capacity — memory, not
+      arithmetic, becomes the binding constraint
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+    </section>
+
+    <section id="sec-mla">
+      <h2>The cache, compressed again</h2>
+      <p>The KV cache got its own page and its own bill; the
+      toolbox keeps shrinking it. Grouped-query attention — many
+      query heads sharing a handful of key-value heads — was the
+      first cut.
+      <dfn><a href="glossary.html#t-mla">MLA</a></dfn> goes
+      further: compress each piece's keys and values into a small
+      latent vector, cache only that, and let the heads
+      reconstruct what they need from it — an even smaller cache
+      at the same reach
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>Around it, the rest of the toolbox ships: windowed layers
+      next to full-attention ones, layers with no positional
+      information at all, multi-piece prediction heads that
+      double as draft proposals for speculation
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+    </section>
+
+    <section id="sec-reasoning">
+      <h2>The third axis: thinking</h2>
+      <p>Everything so far scaled two axes: more parameters, more
+      data. The newest axis spends at run time:
+      <dfn><a href="glossary.html#t-test-time-compute">test-time
+      compute</a></dfn> — more compute per query, after training,
+      at inference
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>The mechanism is disarmingly familiar: a
+      <dfn><a href="glossary.html#t-chain-of-thought">chain of
+      thought</a></dfn> — the model generating intermediate steps
+      before the answer — is more decode steps. A long think is
+      not a bigger model; it is more sampled pieces feeding back
+      as context, each pass paying the same bandwidth floor Part
+      Four priced. One hard query can run tens of thousands of
+      forward passes
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>How did models learn to think? Reinforcement learning
+      with verifiable rewards —
+      <dfn><a href="glossary.html#t-rlvr">RLVR</a></dfn>: rewards
+      a program can check — mathematics that verifies, code that
+      runs — rather than a human's preference. Train against that
+      signal and the long think emerges; the raw chain stays
+      hidden, summarized for the user instead. The post-training
+      stack converged with it: supervised fine-tuning, preference
+      optimization, and verifiable-reward reinforcement — the
+      recipes of the major closed and open lines alike
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>The arrival proof: o1, the first of the class, scored
+      eighty-three percent on an olympiad qualifying exam where
+      its sibling GPT-4o scored thirteen; DeepSeek-R1 matched the
+      recipe in open weights months later; and the largest
+      thinking models expose a
+      <dfn><a href="glossary.html#t-thinking-budget">thinking
+      budget</a></dfn> — a dial for how much inference compute one
+      query may spend
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>The bill follows the machinery. A thinking model is the
+      bandwidth floor's best customer: tens of thousands of decode
+      steps per query means tens of thousands of weight sweeps,
+      and a fleet sized for short chatty replies must either queue
+      the long thinks or cap them. The thinking budget is that
+      economics surfaced as a setting: the same dial, pointed at
+      the user.</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — the third scaling axis</p>
+        <div class="worked-body">
+<pre><code class="language-text">the third scaling axis
+(three places to spend more):
+
+  more parameters:
+    a bigger sweep — if it fits in memory
+
+  more data:
+    a longer training run — paid once
+
+  more thinking:
+    tens of thousands of extra decode
+    steps, per query, every query
+
+  the arrival proof:
+    o1:      83% on an IMO qualifying exam
+    GPT-4o:  13% on the same exam</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="sec-open">
+      <h2>What remains open</h2>
+      <p>An honest close needs the open ledger. Is the chain of
+      thought faithful — does the text of the reasoning reflect
+      the computation, or is it a plausible story beside it? The
+      field does not know; treat shown reasoning as evidence, not
+      confession
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>Hallucination is structural, not a bug to patch next
+      release: the sampler draws from a distribution, and nothing
+      in the machinery checks the draw against the world.
+      Mitigations — retrieval, verification, tools — route around
+      it; none cures it
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+      <p>Long-context claims outrun effective use — the middle of
+      a giant window is read worse than its ends. And reasoning
+      distills imperfectly: the long think of a big model
+      compresses into a small one, but something is always lost
+      <a class="prov" data-src="research/state-2026.md" href="links.html#s-state-2026" title="state-2026 — research/state-2026.md">[state-2026]</a>.</p>
+    </section>
+
+    <section id="sec-model">
+      <h2>The whole machine, in one paragraph</h2>
+      <p>Here is the machine, whole. A tokenizer cuts text into
+      pieces; each piece becomes a vector and is rotated by its
+      position; layers of attention — each vector gathering
+      context from the cached keys and values behind it — and
+      feed-forward transforms — each vector processed alone —
+      refine the row; a softmax turns the final vector into a
+      distribution over every piece; a sampler draws one; the
+      draw is appended and the loop runs again. Training shaped
+      those distributions with next-piece prediction on a vast
+      corpus, and post-training taught them the shape of a helpful
+      turn. Serving runs the loop under a bandwidth floor, with
+      caches and batches and small drafts and small numbers
+      bending it. That is the whole of it — one loop, one
+      distribution at a time.</p>
+      <p>The glossary collects every term this book defined, one
+      line each. The sources page lists where the facts came from
+      — the papers, posts, and pinned sheets behind every
+      number.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>The whole machine is one loop: tokenize, embed and
+        rotate, attend over the cache, transform, score, sample,
+        append, repeat — every page of this book studied one box
+        or one cost inside it.</li>
+        <li>Mixture-of-experts decouples capacity from arithmetic:
+        many feed-forward experts, a few consulted per piece
+        (Mixtral: 12.9B active matching a 70B dense;
+        DeepSeek-V3: 37B of 671B) — and the binding constraint
+        moves to memory.</li>
+        <li>The attention toolbox ships compressed caches — GQA,
+        then MLA's latent compression — beside windowed and
+        position-free layers.</li>
+        <li>Test-time compute is the third scaling axis: a chain
+        of thought is more decode steps, not a bigger model —
+        trained by RL with verifiable rewards, spendable through a
+        thinking budget (o1: 83% vs 13% on an olympiad qualifying
+        exam).</li>
+        <li>What stays open: chain-of-thought faithfulness,
+        structural hallucination, the long-context middle, and
+        what distillation loses.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="e2e.html"><span class="cap">Previous</span><span class="pg-title">End to End: One Request, Start to Finish</span></a>
+    <a class="pager-card" rel="next" href="glossary.html"><span class="cap">Next</span><span class="pg-title">Glossary</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sampling: Choosing the Next Token — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="sampling">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Three — The Assistant</p>
+    <h1>Sampling: Choosing the Next Token</h1>
+    <p class="lede">After this page you can say exactly what happens
+    between the machine's final scores and the piece that appears on
+    your screen — what temperature does to the numbers, why the
+    always-best choice loops, and how the tail of the distribution
+    gets cut.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-choice">One distribution, one decision</a></li>
+        <li><a href="#sec-greedy">The certain choice and its failure</a></li>
+        <li><a href="#sec-temperature">The temperature dial</a></li>
+        <li><a href="#sec-tail">Cutting the tail</a></li>
+        <li><a href="#sec-beam">The road not taken</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-choice">
+      <h2>One distribution, one decision</h2>
+      <p>Post-training shaped the distribution; it never chose from
+      it. Name the choosing.
+      <dfn><a href="glossary.html#t-sampling">Sampling</a></dfn> is
+      the rule that turns the model's probability distribution at one
+      position into the single piece that comes out — the draw from
+      the distribution
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>The raw material first. The forward pass ends, at every
+      position, in a score for each piece of the vocabulary — the
+      output table's row for that position, unbounded numbers. The
+      softmax turns scores into probabilities: exponentiate each,
+      divide by the sum. One mechanical detail matters for
+      correctness: subtract the largest score before exponentiating —
+      exponentials of large numbers overflow, and the subtraction
+      changes nothing, because the same factor divides out of every
+      term
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>The companion script's version, guard built in:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — scores to probabilities, with the
+        overflow guard</figcaption>
+<pre><code class="language-python">def softmax(z, axis=-1):
+    """Overflow-safe softmax: subtract the row max before exponentiating."""
+    z = z - np.max(z, axis=axis, keepdims=True)
+    e = np.exp(z)
+    return e / np.sum(e, axis=axis, keepdims=True)</code></pre>
+      </figure>
+
+      <p>With probabilities in hand, the choice is a decision with
+      knobs, and the knobs are the whole of this page. Every assistant
+      runs the same pipeline — scale, squash, cut, draw:</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 200"><title>A pipeline of five boxes read left to right: raw scores flow into a divide-by-temperature box, then a softmax box, then a cut-the-tail box labeled top-k or top-p, then a draw box that emits one piece</title>
+          <rect class="f-accent s-ink" stroke-width="1" x="15" y="75" width="85" height="70"/>
+          <text x="57" y="105" text-anchor="middle" font-size="13">scores</text>
+          <text x="57" y="127" text-anchor="middle" font-size="11" class="t-dim">raw</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="125" y="75" width="120" height="70"/>
+          <text x="185" y="105" text-anchor="middle" font-size="13">divide by T</text>
+          <text x="185" y="127" text-anchor="middle" font-size="11" class="t-dim">sharpen or flatten</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="265" y="75" width="100" height="70"/>
+          <text x="315" y="105" text-anchor="middle" font-size="13">softmax</text>
+          <text x="315" y="127" text-anchor="middle" font-size="11" class="t-dim">probabilities</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="385" y="75" width="115" height="70"/>
+          <text x="442" y="105" text-anchor="middle" font-size="13">cut the tail</text>
+          <text x="442" y="127" text-anchor="middle" font-size="11" class="t-dim">top-k or top-p</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="520" y="75" width="95" height="70"/>
+          <text x="567" y="105" text-anchor="middle" font-size="13">draw</text>
+          <text x="567" y="127" text-anchor="middle" font-size="11" class="t-dim">one piece</text>
+          <line class="s-ink" stroke-width="1.5" x1="100" y1="110" x2="125" y2="110"/>
+          <line class="s-ink" stroke-width="1.5" x1="245" y1="110" x2="265" y2="110"/>
+          <line class="s-ink" stroke-width="1.5" x1="365" y1="110" x2="385" y2="110"/>
+          <line class="s-ink" stroke-width="1.5" x1="500" y1="110" x2="520" y2="110"/>
+          <text x="310" y="180" text-anchor="middle" font-size="12" class="t-dim">one choice, from raw scores to a single piece</text>
+        </svg>
+        <figcaption>One choice, end to end: scores are scaled by
+        temperature, squashed to probabilities, truncated to their
+        head, and one piece is drawn. Every knob an assistant exposes
+        for "creativity" lives somewhere in this pipeline.</figcaption>
+      </figure>
+
+      <p>How is a "draw" actually made? Not with a spinning wheel.
+      The probabilities partition the stretch between zero and one:
+      the first piece owns the opening slice, the next owns the slice
+      that follows, and so on until the whole interval is spent. The
+      machine draws one uniform random number inside that interval —
+      every point equally likely — and takes whichever piece owns the
+      slice where the number landed. A piece holding sixty percent of
+      the mass owns sixty percent of the interval, so it comes up
+      about six times in ten. That is all "random" means here: one
+      uniform number, looked up in a table of slices.</p>
+    </section>
+
+    <section id="sec-greedy">
+      <h2>The certain choice and its failure</h2>
+      <p>The first rule to try is the natural one: always take the
+      most likely piece.
+      <dfn><a href="glossary.html#t-greedy-decoding">Greedy
+      decoding</a></dfn> — the argmax at every position, no chance
+      involved
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      It is fast, it is deterministic, and it fails in a
+      characteristic way.</p>
+      <p>It repeats. Take the best piece, and the text just built
+      makes the same piece the best again: "I am a robot. I am a
+      robot." — the documented loop of best-choice generation on
+      open-ended text
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The companion script shows the same failure in miniature: its
+      greedy run on the toy emits the&lt;/w&gt; c the&lt;/w&gt; c
+      . ate&lt;/w&gt; . ate&lt;/w&gt; ate&lt;/w&gt; . — ten pieces,
+      cycling through four distinct ones; the certain choice is a
+      repeating pattern
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>That failure teaches this page's real lesson: sampling is
+      not a creativity feature bolted on for variety. It is an
+      anti-degeneracy mechanism. The deterministic rule collapses
+      into repetition precisely because it is deterministic — the
+      second "I am a robot" is the most likely continuation of the
+      first. Chance is what breaks the loop
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+    </section>
+
+    <section id="sec-temperature">
+      <h2>The temperature dial</h2>
+      <p><dfn><a href="glossary.html#t-temperature">Temperature</a></dfn>
+      is the first knob: divide the scores by a number T before the
+      softmax
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      Below one, the distribution sharpens — the biggest score grows
+      relatively bigger. Above one, it flattens — the mass spreads
+      toward even. Pushed toward zero, temperature becomes the
+      certain choice; pushed large, the coin-flip chorus. Nothing
+      about the model changes — the same scores, rescaled; the dial
+      only changes how much of the learned shape survives the
+      softmax.</p>
+      <p>The dial, in the companion script, is one division:</p>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — the whole dial: divide the scores,
+        then softmax</figcaption>
+<pre><code class="language-python">    for T in (0.5, 1.0, 2.0):
+        probs = softmax(z / T)</code></pre>
+      </figure>
+
+      <p>The same four scores through three settings, verified by the
+      script's run
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one distribution,
+        three temperatures</p>
+        <div class="worked-body">
+<pre><code class="language-text">one distribution, three temperatures
+(scores [2.0, 1.0, 0.5, -1.0]; tiny_llm.py, stage 6):
+
+  T = 0.5:  [0.842, 0.114, 0.042, 0.002]   sharper
+  T = 1.0:  [0.609, 0.224, 0.136, 0.030]   as trained
+  T = 2.0:  [0.434, 0.263, 0.205, 0.097]   flatter
+
+  (T toward zero: the top piece takes all.
+   T large: near-even.)</code></pre>
+        </div>
+      </div>
+
+      <p>Read the direction, not the exact numbers: halving the
+      temperature moved the top piece from about sixty percent to
+      about eighty-four; doubling it spread the mass until the top
+      piece held less than half
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      When an assistant product exposes a "creativity" setting, this
+      is the dial being turned.</p>
+    </section>
+
+    <section id="sec-tail">
+      <h2>Cutting the tail</h2>
+      <p>Even a well-shaped distribution has a tail worth fearing. At
+      temperature one, a trained model assigns some probability to
+      every piece of a fifty-thousand-piece vocabulary — including
+      pieces no fluent writer would place next. Draw often enough and
+      the tail will speak: the wrong-but-plausible word, the broken
+      half-piece, the pivot into nonsense
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>Two ways to cut.
+      <dfn><a href="glossary.html#t-top-k">Top-k</a></dfn>: keep the
+      k most likely pieces, renormalize, and draw from those — a
+      fixed count, whatever the distribution looks like
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      <dfn><a href="glossary.html#t-top-p">Top-p</a></dfn> — usually
+      called <dfn><a href="glossary.html#t-nucleus-sampling">nucleus
+      sampling</a></dfn> — keeps the smallest set of pieces whose
+      probabilities add up to at least p, renormalizes, and draws — a
+      fixed mass, whatever the count
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>The same distribution, cut both ways:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one distribution, cut
+        two ways</p>
+        <div class="worked-body">
+<pre><code class="language-text">the same distribution, cut two ways
+(start: [0.609, 0.224, 0.136, 0.030]):
+
+  top-k, k = 2:
+    keep [0.609, 0.224], renormalize:
+    -&gt; [0.731, 0.269]          (a fixed count)
+
+  top-p, p = 0.9:
+    smallest set reaching 0.9:
+    0.609 + 0.224 + 0.136 = 0.969
+    -&gt; [0.628, 0.231, 0.140]   (a fixed mass)</code></pre>
+        </div>
+      </div>
+
+      <p>The empirical finding behind the field's preference: on
+      natural text the mass concentrates — the set carrying ninety
+      percent of the probability is often only a few hundred pieces
+      of the whole vocabulary, so cutting below it removes the
+      incoherent tail while leaving the real choices intact
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      GPT-3 shipped with top-p at 0.9 as its default for generation
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>In practice the knobs compose in one order. Temperature
+      first, on the score scale; then the cut; then the draw. Top-k
+      could run on either scale — the softmax preserves order, so the
+      ranking of pieces is the same before and after — but top-p is
+      meaningless before the squash: "the set holding ninety percent
+      of the mass" presupposes a mass. The knobs also interact
+      predictably: a cold temperature already empties much of the
+      tail, so the cut matters less; a hot one refills it, so the cut
+      does more work. A conservative assistant runs a temperature
+      below one with a modest cut; a playful one runs nearer one and
+      cuts harder. None of this is learned — the scores are fixed at
+      this point; the knobs belong to the operator, not the
+      trainer.</p>
+    </section>
+
+    <section id="sec-beam">
+      <h2>The road not taken</h2>
+      <p>One more rule belongs here, because it is the one a
+      programmer invents first.
+      <dfn><a href="glossary.html#t-beam-search">Beam search</a></dfn>:
+      keep not the single best piece but the b best partial texts;
+      extend every one of them at each step; drop the least
+      promising; finish with the highest-probability whole text. A
+      search of fixed width for the best sequence — the natural way
+      to make the certain choice less shortsighted
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.</p>
+      <p>It is the right rule for the wrong objective. Beam search
+      optimizes the probability of the whole sequence — the criterion
+      of tasks that have one best answer, like translation.
+      Open-ended generation has no single best answer, and the
+      sequences it finds are the repetitive, safest ones: the same
+      degeneration as the certain choice, arrived at more thoroughly
+      <a class="prov" data-src="research/inference.md" href="links.html#s-inference" title="inference — research/inference.md">[inference]</a>.
+      The working recipe for open-ended text is the simpler one — a
+      temperature, a cut, a draw.</p>
+      <p>The choice is now fully specified. But one choice is not a
+      reply. A reply is this decision repeated — piece after piece,
+      each new piece fed back in as input, the distribution re-formed
+      at every step — and inside that repetition live two very
+      different kinds of work, with different costs. The loop itself,
+      and its two phases, are the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Sampling is the rule that turns one position's
+        probability distribution into the single piece that appears;
+        the pipeline is scale, squash, cut, draw.</li>
+        <li>Greedy decoding — the argmax every step — loops, because
+        the repeated text is its own most likely continuation; chance
+        is an anti-degeneracy mechanism, not a creativity extra.</li>
+        <li>Temperature divides the scores before the softmax: below
+        one sharpens, above one flattens, zero is the certain choice
+        — the same model, a different shape.</li>
+        <li>Top-k keeps a fixed count, top-p (the nucleus) a fixed
+        mass; on natural text the ninety-percent set is often a few
+        hundred pieces, so the cut removes the incoherent tail and
+        keeps the real choices.</li>
+        <li>Beam search hunts the highest-probability whole text —
+        right when one best answer exists, degenerate on open-ended
+        generation; the working recipe is temperature, a cut, a
+        draw.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="post-training.html"><span class="cap">Previous</span><span class="pg-title">Post-Training: From Autocompleter to Assistant</span></a>
+    <a class="pager-card" rel="next" href="inference-loop.html"><span class="cap">Next</span><span class="pg-title">The Inference Loop</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

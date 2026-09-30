@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<!--
+  WRITER TEMPLATE — copy to PAGENAME.html in the site root, then replace every
+  UPPERCASE placeholder and delete the guidance examples. The contract checker
+  must pass after every edit:
+      python3 tools/check.py --partial PAGENAME.html
+
+  What the checker enforces (full list in tools/check.py docstring):
+  - title contains the exact manifest title; body data-page equals manifest id
+  - exactly one h1; main id="main"; rel=prev/next match manifest neighbors
+  - every number in prose carries a prov mark within ten lines, e.g.
+    <a class="prov" data-src="research/gpus.md" href="links.html#s-gpus"
+       title="gpus — research/gpus.md">[gpus]</a>
+  - intentional exceptions use the comment markers "term-ok:" (covers three
+    lines below it) and "prov-ok:" (covers ten lines around it), each with a
+    reason; never leave an escape in silently
+  - never use a ledger term before its defining page (terms.json); the nav,
+    the pager, code, svg, and prov marks are exempt
+  - every pre block needs a code child with class language-python or
+    language-text, and at most 30 lines (matrices count: use language-text)
+  - svg needs role="img" plus a title child and a viewBox, or aria-hidden
+    "true"; style fills/strokes with the f-blue f-green f-red f-yellow f-accent
+    and s-ink s-ink3 s-accent helper classes, t-dim for dim labels
+  - takeaways: 3 to 5 list items, no uncited numbers
+  - prose word window from manifest.json, default 1200 to 2200
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PAGE TITLE — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="PAGE-ID">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">PART KICKER — PART NAME</p>
+    <h1>PAGE H1</h1>
+    <p class="lede">One-sentence promise: what the reader will be able to
+    predict or compute after finishing this page.</p>
+
+    <!-- Optional mini table of contents for pages with five or more sections;
+         the toc class is exempt from term checks. Section ids are yours. -->
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-first">First section title</a></li>
+        <li><a href="#sec-second">Second section title</a></li>
+      </ol>
+    </nav>
+
+    <!-- Delete everything from here to the takeaways aside; it is guidance. -->
+
+    <section id="sec-first">
+      <h2>First section</h2>
+      <p>Ordinary prose. Every number carries a prov mark; the demo table
+      below puts its prov inside the cell, and numbers inside code blocks
+      or svg text are exempt because they are not claims. A ledger term
+      gets a dotted underline on first use:
+      <dfn><a href="glossary.html#t-model">model</a></dfn> keeps its plain
+      meaning everywhere after. Inline code looks like
+      <code>nn.Linear</code>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 220"><title>Short diagram description for screen readers</title>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="24" y="24" width="150" height="64" rx="8"/>
+          <text x="99" y="61" text-anchor="middle" font-size="13">token</text>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M174 56h120"/>
+          <path class="s-accent" fill="none" stroke-width="1.5" d="M288 50l8 6-8 6"/>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="296" y="24" width="150" height="64" rx="8"/>
+          <text x="371" y="61" text-anchor="middle" font-size="13">vector</text>
+          <text class="t-dim" x="320" y="110" font-size="12">caption labels stay inside the viewBox</text>
+        </svg>
+        <figcaption>One sentence saying what to notice in the diagram.</figcaption>
+      </figure>
+    </section>
+
+    <section id="sec-second">
+      <h2>Second section</h2>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — hand-checkable arithmetic</p>
+        <div class="worked-body">
+<pre><code class="language-text">inputs   [ 1.0   0.0 ]
+weights  [ 0.5   0.5 ]
+result   [ 0.5   0.0 ]   one multiply and one add per cell</code></pre>
+        </div>
+      </div>
+
+      <div class="note"><span class="cap">Note</span>
+        <p>Notes are blue and hold context that helps but can be skipped.</p>
+      </div>
+
+      <div class="warn"><span class="cap">Watch out</span>
+        <p>Warnings are red and flag the mistake readers actually make.</p>
+      </div>
+
+      <figure class="codeblock">
+        <figcaption>tiny_llm.py — excerpt</figcaption>
+<pre><code class="language-python">def step(model, ids):
+    logits = model.forward(ids)
+    return logits[-1]</code></pre>
+      </figure>
+
+      <p class="math">z = W x + b</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Model</th><th>Amount</th></tr></thead>
+          <tbody>
+            <tr><td>reference</td><td class="num">65 billion<a class="prov" data-src="research/model-configs.md" href="links.html#s-model-configs" title="model-configs — research/model-configs.md">[model-configs]</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Tag pills mark part labels only: <span class="tag">Part Two</span>
+      <span class="tag-green">Reference</span> and keyboard hints use
+      <kbd>Esc</kbd>.</p>
+    </section>
+
+    <!-- Guidance ends. Replace with real sections, then takeaways. -->
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Three to five predictions the reader can now make.</li>
+        <li>Each one concrete, no uncited numbers.</li>
+        <li>The last one hands off to the next page.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="PREV.html"><span class="cap">Previous</span><span class="pg-title">PREVIOUS PAGE TITLE</span></a>
+    <a class="pager-card" rel="next" href="NEXT.html"><span class="cap">Next</span><span class="pg-title">NEXT PAGE TITLE</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

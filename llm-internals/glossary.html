@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="glossary">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Reference</p>
+    <h1>Glossary</h1>
+    <p class="lede">Every term this book defined, one line each.
+    Entries are grouped by the part where the term first appears,
+    and the linked title at the end of each line points to the
+    page that defines it.</p>
+
+    <section id="sec-start">
+      <h2>Start</h2>
+      <dl>
+        <dt id="t-token">Token</dt>
+        <dd>The unit of text a model reads and writes — usually a
+        frequent character sequence, not a word. <a href="index.html">How LLMs Actually Work</a></dd>
+        <dt id="t-model">Model</dt>
+        <dd>The trained network itself: an architecture plus
+        learned weights. <a href="index.html">How LLMs Actually Work</a></dd>
+        <dt id="t-language-model">Language model</dt>
+        <dd>A model trained to assign probabilities to text, one
+        next piece at a time. <a href="index.html">How LLMs Actually Work</a></dd>
+      </dl>
+    </section>
+
+    <section id="sec-part-one">
+      <h2>Part One — The Machine</h2>
+      <dl>
+        <dt id="t-parameter">Parameter</dt>
+        <dd>One learned number in the network; together they hold
+        the model's knowledge. <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-weights">Weights</dt>
+        <dd>The learned numbers collectively — what training
+        changes. <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-forward-pass">Forward pass</dt>
+        <dd>One run of input through the layers to an output.
+        <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-logits">Logits</dt>
+        <dd>Raw scores, one per vocabulary entry, before
+        normalization. <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-softmax">Softmax</dt>
+        <dd>Turns scores into probabilities that sum to one.
+        <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-probability-distribution">Probability distribution</dt>
+        <dd>A probability for every possible next piece.
+        <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-autoregressive">Autoregressive</dt>
+        <dd>Generating one piece at a time, each conditioned on
+        all earlier pieces. <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-inference">Inference</dt>
+        <dd>Running a trained model, as opposed to training it.
+        <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-transformer">Transformer</dt>
+        <dd>The architecture of this book: stacked attention and
+        feed-forward layers. <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-layer">Layer</dt>
+        <dd>One repeatable stage of the stack, feeding the next.
+        <a href="core-idea.html">The Core Idea</a></dd>
+        <dt id="t-vocabulary">Vocabulary</dt>
+        <dd>The fixed list of pieces the model can read or emit.
+        <a href="tokens.html">Tokens</a></dd>
+        <dt id="t-bpe">BPE</dt>
+        <dd>Byte-pair encoding: pieces built by merging frequent
+        pairs. <a href="tokens.html">Tokens</a></dd>
+        <dt id="t-byte-level-bpe">Byte-level BPE</dt>
+        <dd>BPE over raw bytes, so any text is coverable.
+        <a href="tokens.html">Tokens</a></dd>
+        <dt id="t-merge">Merge</dt>
+        <dd>One learned combination of two pieces into one longer
+        piece. <a href="tokens.html">Tokens</a></dd>
+        <dt id="t-token-id">Token ID</dt>
+        <dd>The vocabulary index of a piece — the integer the
+        model consumes. <a href="tokens.html">Tokens</a></dd>
+        <dt id="t-special-token">Special token</dt>
+        <dd>A reserved piece marking structure: roles, boundaries,
+        ends. <a href="tokens.html">Tokens</a></dd>
+        <dt id="t-detokenization">Detokenization</dt>
+        <dd>Turning pieces back into text; split characters wait
+        for their bytes. <a href="tokens.html">Tokens</a></dd>
+        <dt id="t-vector">Vector</dt>
+        <dd>An ordered list of numbers — the model's container for
+        meaning. <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-embedding">Embedding</dt>
+        <dd>The vector a piece becomes at the input.
+        <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-embedding-matrix">Embedding matrix</dt>
+        <dd>The lookup table with one row per vocabulary entry.
+        <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-one-hot">One-hot</dt>
+        <dd>All zeros with a single one — a raw row selector.
+        <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-dot-product">Dot product</dt>
+        <dd>Multiply matching entries and sum — the similarity
+        workhorse. <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-matrix-multiply">Matrix multiply</dt>
+        <dd>Every output row as dot products, batched.
+        <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-dimension">Dimension</dt>
+        <dd>The length of a vector; the width of a layer.
+        <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-hidden-state">Hidden state</dt>
+        <dd>A layer's internal vector for one position.
+        <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-tensor">Tensor</dt>
+        <dd>A multi-dimensional array; stacked vectors.
+        <a href="embeddings.html">Embeddings</a></dd>
+        <dt id="t-permutation-invariance">Permutation invariance</dt>
+        <dd>Attention alone cannot tell order; position must be
+        added. <a href="position.html">Position</a></dd>
+        <dt id="t-positional-encoding">Positional encoding</dt>
+        <dd>Any scheme that injects order into the vectors.
+        <a href="position.html">Position</a></dd>
+        <dt id="t-sinusoidal-encoding">Sinusoidal encoding</dt>
+        <dd>The original order signal: fixed sines at many
+        frequencies. <a href="position.html">Position</a></dd>
+        <dt id="t-rope">RoPE</dt>
+        <dd>Rotate queries and keys by position-dependent angles,
+        so dot products carry relative distance.
+        <a href="position.html">Position</a></dd>
+        <dt id="t-query">Query</dt>
+        <dd>The vector asking: what am I looking for?
+        <a href="attention.html">Attention</a></dd>
+        <dt id="t-key">Key</dt>
+        <dd>The vector advertising: what do I contain?
+        <a href="attention.html">Attention</a></dd>
+        <dt id="t-value">Value</dt>
+        <dd>The vector delivered when a position is selected.
+        <a href="attention.html">Attention</a></dd>
+        <dt id="t-attention-weights">Attention weights</dt>
+        <dd>Normalized scores deciding how much of each position
+        is gathered. <a href="attention.html">Attention</a></dd>
+        <dt id="t-causal-mask">Causal mask</dt>
+        <dd>Scores to future positions zeroed — look behind only.
+        <a href="attention.html">Attention</a></dd>
+        <dt id="t-attention">Attention</dt>
+        <dd>Each position takes a weighted average of earlier
+        values. <a href="attention.html">Attention</a></dd>
+        <dt id="t-context-window">Context window</dt>
+        <dd>Everything one forward pass can see.
+        <a href="attention.html">Attention</a></dd>
+        <dt id="t-head">Head</dt>
+        <dd>One attention computation in its own subspace.
+        <a href="attention.html">Attention</a></dd>
+        <dt id="t-multi-head-attention">Multi-head attention</dt>
+        <dd>Many heads per layer, each with its own queries, keys,
+        values. <a href="multihead.html">Multi-Head and GQA</a></dd>
+        <dt id="t-gqa">GQA</dt>
+        <dd>Grouped-query attention: query heads share key-value
+        heads — a smaller cache. <a href="multihead.html">Multi-Head and GQA</a></dd>
+        <dt id="t-mqa">MQA</dt>
+        <dd>Multi-query attention: one shared key-value head — the
+        smallest cache. <a href="multihead.html">Multi-Head and GQA</a></dd>
+        <dt id="t-kv-cache">KV cache</dt>
+        <dd>Stored keys and values of earlier positions, so decode
+        skips recompute. <a href="multihead.html">Multi-Head and GQA</a></dd>
+        <dt id="t-ffn">FFN</dt>
+        <dd>The feed-forward network: a per-vector two-layer
+        transform. <a href="ffn.html">The Feed-Forward Network</a></dd>
+        <dt id="t-activation-function">Activation function</dt>
+        <dd>The nonlinearity between the two linear maps.
+        <a href="ffn.html">The Feed-Forward Network</a></dd>
+        <dt id="t-swiglu">SwiGLU</dt>
+        <dd>The modern gated activation: one map decides, one
+        supplies. <a href="ffn.html">The Feed-Forward Network</a></dd>
+        <dt id="t-expansion-ratio">Expansion ratio</dt>
+        <dd>How much wider the feed-forward hidden layer is.
+        <a href="ffn.html">The Feed-Forward Network</a></dd>
+        <dt id="t-residual-connection">Residual connection</dt>
+        <dd>Adding a sublayer's output back to its input.
+        <a href="block.html">The Transformer Block</a></dd>
+        <dt id="t-residual-stream">Residual stream</dt>
+        <dd>The running sum every sublayer reads and writes.
+        <a href="block.html">The Transformer Block</a></dd>
+        <dt id="t-layernorm">LayerNorm</dt>
+        <dd>Normalize each vector before a sublayer reads it.
+        <a href="block.html">The Transformer Block</a></dd>
+        <dt id="t-rmsnorm">RMSNorm</dt>
+        <dd>The cheaper norm: root-mean-square scaling only.
+        <a href="block.html">The Transformer Block</a></dd>
+        <dt id="t-pre-norm">Pre-norm</dt>
+        <dd>Normalize before the sublayer, keeping the residual
+        path clean. <a href="block.html">The Transformer Block</a></dd>
+        <dt id="t-transformer-block">Transformer block</dt>
+        <dd>One full repeat: attention, then feed-forward, on the
+        stream. <a href="block.html">The Transformer Block</a></dd>
+      </dl>
+    </section>
+
+    <section id="sec-part-two">
+      <h2>Part Two — Training</h2>
+      <dl>
+        <dt id="t-loss">Loss</dt>
+        <dd>The number training minimizes — the penalty for wrong
+        predictions. <a href="training-objective.html">The Training Objective</a></dd>
+        <dt id="t-cross-entropy">Cross-entropy</dt>
+        <dd>Minus the log probability given to the correct next
+        piece. <a href="training-objective.html">The Training Objective</a></dd>
+        <dt id="t-log-probability">Log probability</dt>
+        <dd>Log of a probability; products become sums.
+        <a href="training-objective.html">The Training Objective</a></dd>
+        <dt id="t-perplexity">Perplexity</dt>
+        <dd>Exponentiated loss — the effective number of choices.
+        <a href="training-objective.html">The Training Objective</a></dd>
+        <dt id="t-corpus">Corpus</dt>
+        <dd>The training text: trillions of pieces.
+        <a href="training-objective.html">The Training Objective</a></dd>
+        <dt id="t-pretraining">Pretraining</dt>
+        <dd>The largest stage: next-piece prediction over the
+        corpus. <a href="training-objective.html">The Training Objective</a></dd>
+        <dt id="t-batch">Batch</dt>
+        <dd>Examples processed together for one update.
+        <a href="training-objective.html">The Training Objective</a></dd>
+        <dt id="t-gradient">Gradient</dt>
+        <dd>The derivative of loss per parameter — the direction to
+        move. <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-backpropagation">Backpropagation</dt>
+        <dd>All gradients in one backward sweep.
+        <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-chain-rule">Chain rule</dt>
+        <dd>Derivatives through composition multiply.
+        <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-computational-graph">Computational graph</dt>
+        <dd>The recorded operations of the forward pass, reused
+        backward. <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-autograd">Autograd</dt>
+        <dd>Library machinery that differentiates the record
+        automatically. <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-learning-rate">Learning rate</dt>
+        <dd>The step size — how far each update moves.
+        <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-gradient-descent">Gradient descent</dt>
+        <dd>Nudge parameters against their gradients, repeatedly.
+        <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-adamw">AdamW</dt>
+        <dd>The standard optimizer: adaptive steps plus decoupled
+        weight decay. <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-activations">Activations</dt>
+        <dd>Intermediate values saved for the backward sweep.
+        <a href="backprop.html">Backpropagation</a></dd>
+        <dt id="t-flops">FLOPs</dt>
+        <dd>Floating-point operations — the count of arithmetic.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-hbm">HBM</dt>
+        <dd>High-bandwidth memory: the card's large pool.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-sram">SRAM</dt>
+        <dd>On-chip memory: tiny, fast, precious.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-tensor-core">Tensor core</dt>
+        <dd>The matrix-multiply unit — where arithmetic happens.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-memory-bandwidth">Memory bandwidth</dt>
+        <dd>Bytes per second the card can move.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-compute-bound">Compute-bound</dt>
+        <dd>Limited by arithmetic capacity.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-memory-bound">Memory-bound</dt>
+        <dd>Limited by data movement.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-mixed-precision">Mixed precision</dt>
+        <dd>Compute low, store master weights high.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-tensor-parallel">Tensor parallel</dt>
+        <dd>Split one layer's matrices across cards.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-pipeline-parallel">Pipeline parallel</dt>
+        <dd>Split the layer stack into stages.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-data-parallel">Data parallel</dt>
+        <dd>Copy the model, split the data, average gradients.
+        <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-gradient-checkpointing">Gradient checkpointing</dt>
+        <dd>Discard activations, recompute backward — memory for
+        time. <a href="gpus.html">GPUs</a></dd>
+        <dt id="t-scaling-laws">Scaling laws</dt>
+        <dd>Curves predicting loss from size, data, and compute.
+        <a href="scaling.html">Scaling Laws</a></dd>
+        <dt id="t-chinchilla-optimal">Chinchilla-optimal</dt>
+        <dd>The compute-matched balance of parameters and tokens.
+        <a href="scaling.html">Scaling Laws</a></dd>
+        <dt id="t-parametric-knowledge">Parametric knowledge</dt>
+        <dd>Knowledge stored in weights, not files.
+        <a href="scaling.html">Scaling Laws</a></dd>
+      </dl>
+    </section>
+
+    <section id="sec-part-three">
+      <h2>Part Three — The Assistant</h2>
+      <dl>
+        <dt id="t-base-model">Base model</dt>
+        <dd>The raw pretrained model — an autocompleter without
+        manners. <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-instruction-tuning">Instruction tuning</dt>
+        <dd>Teaching instruction-following from demonstrations.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-sft">SFT</dt>
+        <dd>Supervised fine-tuning on example dialogues.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-rlhf">RLHF</dt>
+        <dd>Reinforcement learning from human feedback.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-reward-model">Reward model</dt>
+        <dd>A trained judge of human preference.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-dpo">DPO</dt>
+        <dd>Preference training without a separate reward model.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-chat-template">Chat template</dt>
+        <dd>Serialization of a messages array into one token
+        string. <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-system-prompt">System prompt</dt>
+        <dd>Persistent instructions framing the conversation.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-hallucination">Hallucination</dt>
+        <dd>Confident output ungrounded in the weights.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-catastrophic-forgetting">Catastrophic forgetting</dt>
+        <dd>Old skills overwritten by narrow fine-tuning.
+        <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-prompt">Prompt</dt>
+        <dd>Everything sent in one request: framing, history, new
+        turn. <a href="post-training.html">Post-Training</a></dd>
+        <dt id="t-sampling">Sampling</dt>
+        <dd>Drawing the next piece instead of taking the top one.
+        <a href="sampling.html">Sampling</a></dd>
+        <dt id="t-greedy-decoding">Greedy decoding</dt>
+        <dd>Always take the highest-probability piece — repetitive,
+        loop-prone. <a href="sampling.html">Sampling</a></dd>
+        <dt id="t-temperature">Temperature</dt>
+        <dd>Divide logits before softmax: lower sharpens, higher
+        flattens. <a href="sampling.html">Sampling</a></dd>
+        <dt id="t-top-k">Top-k</dt>
+        <dd>Keep only the k best candidates.
+        <a href="sampling.html">Sampling</a></dd>
+        <dt id="t-top-p">Top-p</dt>
+        <dd>Keep the smallest set whose probabilities reach p.
+        <a href="sampling.html">Sampling</a></dd>
+        <dt id="t-nucleus-sampling">Nucleus sampling</dt>
+        <dd>Top-p — the kept set is the nucleus.
+        <a href="sampling.html">Sampling</a></dd>
+        <dt id="t-beam-search">Beam search</dt>
+        <dd>Track several partial sequences, keep the best.
+        <a href="sampling.html">Sampling</a></dd>
+      </dl>
+    </section>
+
+    <section id="sec-part-four">
+      <h2>Part Four — Inference at Scale</h2>
+      <dl>
+        <dt id="t-decode">Decode</dt>
+        <dd>The serial phase: one piece per pass.
+        <a href="inference-loop.html">The Inference Loop</a></dd>
+        <dt id="t-ttft">TTFT</dt>
+        <dd>Time to first token: queueing plus prefill.
+        <a href="inference-loop.html">The Inference Loop</a></dd>
+        <dt id="t-tpot">TPOT</dt>
+        <dd>Time per output token: the per-piece decode cost.
+        <a href="inference-loop.html">The Inference Loop</a></dd>
+        <dt id="t-prefill">Prefill</dt>
+        <dd>The parallel first pass over the prompt.
+        <a href="inference-loop.html">The Inference Loop</a></dd>
+        <dt id="t-decode-phase">Decode phase</dt>
+        <dd>The memory-bound loop after prefill.
+        <a href="inference-loop.html">The Inference Loop</a></dd>
+        <dt id="t-eos">EOS</dt>
+        <dd>The end-of-sequence piece — the vote to stop.
+        <a href="inference-loop.html">The Inference Loop</a></dd>
+        <dt id="t-latency">Latency</dt>
+        <dd>Response time as the user perceives it.
+        <a href="inference-loop.html">The Inference Loop</a></dd>
+        <dt id="t-batching">Batching</dt>
+        <dd>Serving many requests per weight read.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-continuous-batching">Continuous batching</dt>
+        <dd>Admit and retire requests every step.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-iteration-level-scheduling">Iteration-level scheduling</dt>
+        <dd>Re-plan the batch at each decode step.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-selective-batching">Selective batching</dt>
+        <dd>Prefill unbatched, decode batched.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-pagedattention">PagedAttention</dt>
+        <dd>The cache in fixed-size blocks with a block table.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-block-table">Block table</dt>
+        <dd>The per-request map of cache blocks to positions.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-throughput">Throughput</dt>
+        <dd>Pieces per second across all requests.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-flashattention">FlashAttention</dt>
+        <dd>Exact attention tiled inside on-chip memory.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-tiling">Tiling</dt>
+        <dd>Big matrix multiplies as cache-sized tiles.
+        <a href="serving.html">Serving</a></dd>
+        <dt id="t-quantization">Quantization</dt>
+        <dd>Weights as small integers times a scale factor.
+        <a href="quantization.html">Quantization</a></dd>
+        <dt id="t-scale-factor">Scale factor</dt>
+        <dd>The multiplier mapping integers back to real values.
+        <a href="quantization.html">Quantization</a></dd>
+        <dt id="t-outlier">Outlier</dt>
+        <dd>A channel with far larger values — the spoiler.
+        <a href="quantization.html">Quantization</a></dd>
+        <dt id="t-gptq">GPTQ</dt>
+        <dd>Post-training quantization, compensated column by
+        column. <a href="quantization.html">Quantization</a></dd>
+        <dt id="t-awq">AWQ</dt>
+        <dd>Activation-aware: protect the salient channels.
+        <a href="quantization.html">Quantization</a></dd>
+        <dt id="t-weight-only-quantization">Weight-only quantization</dt>
+        <dd>Quantize weights; dequantize on the fly to compute.
+        <a href="quantization.html">Quantization</a></dd>
+        <dt id="t-speculative-decoding">Speculative decoding</dt>
+        <dd>A small model proposes; the big model verifies in one
+        pass. <a href="speculative.html">Speculative Decoding</a></dd>
+        <dt id="t-draft-model">Draft model</dt>
+        <dd>The small, cheap proposer.
+        <a href="speculative.html">Speculative Decoding</a></dd>
+        <dt id="t-target-model">Target model</dt>
+        <dd>The real model the output must match.
+        <a href="speculative.html">Speculative Decoding</a></dd>
+        <dt id="t-acceptance-rate">Acceptance rate</dt>
+        <dd>How often proposals survive the check.
+        <a href="speculative.html">Speculative Decoding</a></dd>
+        <dt id="t-eagle">EAGLE</dt>
+        <dd>Feature-level drafting: predict hidden states, not
+        pieces. <a href="speculative.html">Speculative Decoding</a></dd>
+      </dl>
+    </section>
+
+    <section id="sec-part-five">
+      <h2>Part Five — The Frontier</h2>
+      <dl>
+        <dt id="t-position-interpolation">Position interpolation</dt>
+        <dd>Divide positions by the stretch before rotation.
+        <a href="context.html">Long Context</a></dd>
+        <dt id="t-ntk-aware-scaling">NTK-aware scaling</dt>
+        <dd>Stretch the rotation base, not the positions.
+        <a href="context.html">Long Context</a></dd>
+        <dt id="t-yarn">YaRN</dt>
+        <dd>A per-frequency ramp plus attention temperature.
+        <a href="context.html">Long Context</a></dd>
+        <dt id="t-sliding-window-attention">Sliding-window attention</dt>
+        <dd>Each piece sees a fixed window behind it.
+        <a href="context.html">Long Context</a></dd>
+        <dt id="t-lost-in-the-middle">Lost in the middle</dt>
+        <dd>Middle-of-prompt retrieval is worse than at the ends.
+        <a href="context.html">Long Context</a></dd>
+        <dt id="t-moe">MoE</dt>
+        <dd>Mixture-of-experts: many nets, a few consulted per
+        piece. <a href="finale.html">The Whole Machine</a></dd>
+        <dt id="t-expert">Expert</dt>
+        <dd>One parallel feed-forward net in a mixture.
+        <a href="finale.html">The Whole Machine</a></dd>
+        <dt id="t-mla">MLA</dt>
+        <dd>Cache a compressed latent instead of keys and values.
+        <a href="finale.html">The Whole Machine</a></dd>
+        <dt id="t-test-time-compute">Test-time compute</dt>
+        <dd>More inference compute per query — the third axis.
+        <a href="finale.html">The Whole Machine</a></dd>
+        <dt id="t-chain-of-thought">Chain of thought</dt>
+        <dd>Generated intermediate steps — more decode, not more
+        model. <a href="finale.html">The Whole Machine</a></dd>
+        <dt id="t-rlvr">RLVR</dt>
+        <dd>Verifiable rewards: programs judge, not raters.
+        <a href="finale.html">The Whole Machine</a></dd>
+        <dt id="t-thinking-budget">Thinking budget</dt>
+        <dd>The dial for per-query inference compute.
+        <a href="finale.html">The Whole Machine</a></dd>
+      </dl>
+    </section>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="finale.html"><span class="cap">Previous</span><span class="pg-title">The Whole Machine</span></a>
+    <a class="pager-card" rel="next" href="links.html"><span class="cap">Next</span><span class="pg-title">Sources and Further Reading</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

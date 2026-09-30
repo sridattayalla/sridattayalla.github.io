@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Rust you need for async — Under the Await</title>
+  <meta name="description" content="Ownership, moves, trait objects, Send and Sync, Arc, 'static, and drop: the Rust features async leans on, each tied to its async payoff.">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/vendor/theme-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="../assets/vendor/theme-dark.css" media="(prefers-color-scheme: dark)">
+  <script src="../assets/vendor/highlight.min.js" defer></script>
+  <script src="../assets/main.js" defer></script>
+</head>
+<body data-page="p03-01">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <aside id="site-nav" class="sidebar" aria-label="Site contents"></aside>
+
+  <main id="content" tabindex="-1">
+    <!-- ==================== CONTENT-START ==================== -->
+    <article>
+      <h1>The Rust you need for async</h1>
+
+      <p>Parts 1 and 2 gave you the machine and the classic strategies for juggling
+        many concurrent things on it. Now Rust enters the story. Over the next eight
+        pages you will build the country's entire async machinery out of the standard
+        library alone: the trait at the center, the wake-up mechanism, a suspended
+        computation written by hand, what the compiler does with <code>async</code> and <code>.await</code>,
+        and a working mini engine that drives it all. Tokio gets named along the way as
+        the destination, but we will not open it until Part 4.</p>
+
+      <p>Before any of that, this page rounds up the specific Rust features that async
+        leans on. This is not a general Rust tutorial. Every concept here earns its
+        place by paying an async bill later, and each section ends by naming that bill.
+        If you know Rust well, skim the code and read the payoff lines.</p>
+
+      <h2>Ownership: values that move</h2>
+
+      <p><strong>Ownership</strong> is the rule that every value has exactly one owner
+        at any moment: a variable, a field, a slot in a collection. You can
+        <em>lend</em> a value out by reference, but when the owner is passed somewhere
+        by value, the value <em>moves</em>, and the old binding goes dead. The compiler
+        enforces this at build time, and there is no garbage collector standing behind
+        it. When an owner dies, the value dies with it, right then. That second half of
+        the deal matters so much it gets its own section below.</p>
+
+      <pre><code class="language-rust">fn main() {
+    let text = String::from("hello");
+    let moved = text;          // the String moves: `text` is now dead
+    // println!("{text}");     // would not compile: value moved out
+    println!("{moved}");
+}</code></pre>
+
+      <p>The async payoff comes in two parts. First, a suspended async computation is
+        itself a value, a plain object you can store, pass around, and hand to other
+        code, and it will be <em>moved</em> as it travels. Second, because there is no
+        garbage collector, the moment such a computation is dropped, every resource it
+        holds is released immediately and deterministically. Part 4 turns that
+        precision into Rust's entire approach to aborting work: there is no kill
+        signal, there is only "the value went away."</p>
+
+      <h2>Drop: death has a schedule</h2>
+
+      <p>When a value's owner goes out of scope, Rust runs the value's destructor
+        before freeing it. The destructor is the <code>Drop</code> trait's
+        <code>drop</code> method, and it runs at a moment you can point at in the
+        source, not "eventually" the way a garbage collector would have it.</p>
+
+      <pre><code class="language-rust">struct Connection(&'static str);
+
+impl Drop for Connection {
+    fn drop(&amp;mut self) {
+        println!("closing {}", self.0);
+    }
+}
+
+fn main() {
+    {
+        let _c = Connection("session-1");
+        println!("working");
+    }                        // Drop runs HERE, not later
+    println!("after the scope");
+}</code></pre>
+
+      <p>Run that and the closing line prints before "after the scope". The async
+        payoff: when an engine abandons a suspended computation mid-flight, dropping it
+        runs every destructor in its state: buffers, guards, sockets. Nothing leaks,
+        nothing lingers, and no separate cleanup call is needed. Aborting work, when
+        you meet it in Part 4, is literally just this.</p>
+
+      <h2>Traits, trait objects, and vtables</h2>
+
+      <p>A <strong>trait</strong> is an interface: a set of methods a type can
+        implement. There are two ways to call trait methods. Generics
+        (<code>fn f&lt;T: Greeter&gt;(g: T)</code>) make the compiler stamp out a copy
+        of <code>f</code> per concrete type, so calls are direct and inlinable. That is
+        <em>static dispatch</em>, and the word static here just means "resolved at
+        compile time".</p>
+
+      <p>The other way is a <strong>trait object</strong>: <code>dyn Greeter</code>,
+        usually behind a pointer like <code>Box&lt;dyn Greeter&gt;</code>. One box can
+        hold any type that implements the trait, and the type can even be chosen at
+        engine. The cost is <em>dynamic dispatch</em>. A trait object is a fat
+        pointer: the data pointer plus a pointer to a <strong>vtable</strong>, a table
+        of one function pointer per trait method. Every call loads the address out of
+        the table and jumps through it.</p>
+
+      <pre><code class="language-rust">trait Greeter {
+    fn greet(&amp;self) -&gt; String;
+}
+
+struct Casual(&amp;'static str);
+struct Formal(&amp;'static str);
+
+impl Greeter for Casual {
+    fn greet(&amp;self) -&gt; String { format!("hey, {}!", self.0) }
+}
+
+impl Greeter for Formal {
+    fn greet(&amp;self) -&gt; String { format!("Good evening, {}.", self.0) }
+}
+
+fn main() {
+    let greeters: Vec&lt;Box&lt;dyn Greeter&gt;&gt; = vec![
+        Box::new(Casual("ada")),
+        Box::new(Formal("grace")),
+    ];
+    for g in &amp;greeters {
+        println!("{}", g.greet()); // dynamic dispatch through the vtable
+    }
+}</code></pre>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 640 200" role="img" aria-label="A Box dyn Greeter is a fat pointer: one word of data, one word of vtable pointer">
+          <title>A trait object is a fat pointer: data pointer plus vtable pointer</title>
+          <rect class="box" x="10" y="70" width="150" height="60" rx="8"/>
+          <text class="label mono" x="85" y="95" text-anchor="middle">Box&lt;dyn Greeter&gt;</text>
+          <text class="label muted" x="85" y="115" text-anchor="middle">on the heap</text>
+          <line class="arrow" x1="160" y1="85" x2="250" y2="60"/>
+          <polygon class="arrow-head" points="250,55 258,62 248,66"/>
+          <line class="arrow" x1="160" y1="115" x2="250" y2="135"/>
+          <polygon class="arrow-head" points="250,140 258,133 248,129"/>
+          <rect class="box" x="260" y="35" width="120" height="45" rx="8"/>
+          <text class="label" x="320" y="62" text-anchor="middle">Casual value</text>
+          <rect class="box" x="260" y="120" width="120" height="60" rx="8"/>
+          <text class="label" x="320" y="145" text-anchor="middle">vtable for</text>
+          <text class="label" x="320" y="165" text-anchor="middle">Casual</text>
+          <line class="arrow" x1="380" y1="150" x2="450" y2="150"/>
+          <polygon class="arrow-head" points="450,145 460,150 450,155"/>
+          <rect class="box accent" x="460" y="115" width="160" height="70" rx="8"/>
+          <text class="label mono" x="540" y="142" text-anchor="middle">greet -&gt; 0x40a1f0</text>
+          <text class="label muted" x="540" y="165" text-anchor="middle" style="font-size:11px">one fn pointer per method</text>
+        </svg>
+        <figcaption>Figure 1: a trait object carries its vtable next to its data;
+          calls jump through the table.</figcaption>
+      </figure>
+
+      <p>The async payoff: an engine that juggles thousands of suspended computations
+        of a hundred different types cannot give each one its own monomorphized type.
+        It stores them uniformly behind trait objects, one vtable per distinct
+        suspended type, and calls the one method that matters through it. You will write the
+        trait being called on the next page, and meet the boxed form of it in the mini
+        engine on page 7.</p>
+
+      <h2>Send and Sync: can it cross a thread?</h2>
+
+      <p><strong>Send</strong> and <strong>Sync</strong> are auto traits: the compiler
+        derives them for your types automatically when their contents qualify, and
+        almost everything in std qualifies. <code>Send</code> means the value can be
+        <em>moved</em> to another <a href="../01-foundations/02-processes-threads-context-switches.html">thread</a>
+        safely. <code>Sync</code> means several threads can hold
+        <code>&amp;</code>references to it at once safely. A type that fails the test,
+        like <code>Rc</code>, is simply marked <code>!Send</code>, and the compiler
+        refuses at the boundary.</p>
+
+      <p>Why does async care? Because real engines do not run on one thread. They run
+        a pool of OS threads, like the <a href="../02-concurrency-models/01-thread-pools.html">thread
+        pools</a> you met in Part 2, and suspended computations migrate between those
+        threads. Anything that crosses must be <code>Send</code>. This is exactly why
+        the function that hands a computation to Tokio demands <code>Send</code> plus
+        the lifetime bound below: the workers are different threads, and the value will
+        be moved to whichever one gets it.</p>
+
+      <pre><code class="language-rust">use std::rc::Rc;
+use std::sync::Arc;
+
+fn main() {
+    let shared = Rc::new(vec![1, 2, 3]);
+    let cloned = Rc::clone(&amp;shared);
+    // std::thread::spawn(move || println!("{:?}", cloned));
+    // would NOT compile: Rc is !Send (its refcount is not atomic)
+    let _ = shared;
+
+    let shared = Arc::new(vec![1, 2, 3]);
+    let cloned = Arc::clone(&amp;shared);
+    let handle = std::thread::spawn(move || println!("{:?}", cloned));
+    handle.join().unwrap();        // Arc is Send: fine
+    println!("{:?}", shared);
+}</code></pre>
+
+      <!-- fs: research/page-outlines.md p03-01 — Send/Sync auto traits, Arc vs Rc, why engines demand Send; research/rust-async.md §2 — cross-thread wakers require Send+Sync data -->
+      <p>The difference between the two reference counters in that example is one
+        word, and it is the next section's subject.</p>
+
+      <h2>Atomics: counting without a lock</h2>
+
+      <p>An <strong>atomic</strong> operation is a hardware instruction that reads and
+        writes memory in one indivisible step, even under concurrent access from
+        multiple cores. Types like <code>AtomicUsize</code> wrap those instructions:
+        <code>fetch_add</code>, <code>compare_exchange</code>, <code>load</code>,
+        <code>store</code>, each with a memory-ordering annotation that tells the
+        compiler and CPU how far other operations may be reordered around it. Atomics
+        are the cheap end of shared mutable state: no thread ever sleeps waiting for
+        one.</p>
+
+      <pre><code class="language-rust">use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+fn main() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let hits = Arc::clone(&amp;hits);
+        handles.push(std::thread::spawn(move || {
+            hits.fetch_add(1, Ordering::Relaxed);
+        }));
+    }
+    for h in handles { h.join().unwrap(); }
+    println!("hits = {}", hits.load(Ordering::Relaxed)); // hits = 4
+}</code></pre>
+
+      <p><code>Arc</code> ("atomically reference counted") shares ownership across
+        threads by keeping its count in atomics, which is what makes it
+        <code>Send</code> and <code>Sync</code>. <code>Rc</code> keeps a plain
+        counter, which two threads could increment simultaneously and lose an update,
+        so it stays thread-bound forever. The async payoff: the wake-up handles you
+        will build on page 3 get cloned on one thread and fired from another, so they
+        are reference counted exactly the way <code>Arc</code> is, and every
+        coordination counter inside a real engine's queues is an atomic.</p>
+
+      <h2>'static: owning your whole body</h2>
+
+      <p>The <code>'static</code> lifetime is Rust's longest and most misunderstood
+        label. A value is <code>'static</code> when it can live for the entire rest
+        of the program: either it is a compile-time constant baked into the binary,
+        or it simply <em>owns</em> everything it touches, so nothing can dangle out
+        from under it. A <code>String</code> you build while the program runs is
+        <code>'static</code> in this sense; a <code>&amp;'a str</code> borrowed from
+        someone else's buffer is not.</p>
+
+      <p>When an engine takes your suspended computation and keeps it in a queue of
+        unbounded lifetime, it demands <code>'static</code>: no borrowed locals from
+        the function that created it, because that function will have returned long before
+        the computation finishes. The standard escape hatch is to move owned data in,
+        wrapped in an <code>Arc</code> if several computations need to share it. You
+        will see this exact bound on Tokio's hand-off function when Part 4 dissects
+        it.</p>
+
+      <h2>Move closures: capture by value</h2>
+
+      <p>A closure is a function value plus the environment it captured. By default
+        Rust captures by the least demanding access that works: borrow where
+        possible, move only when forced. The <code>move</code> keyword forces
+        capture by value, ownership and all.</p>
+
+      <pre><code class="language-rust">fn main() {
+    let name = String::from("ferris");
+    let greet = move || println!("hello, {name}");
+    // println!("{name}");  // would not compile: moved into the closure
+    greet();
+}</code></pre>
+
+      <p>The async payoff is the deepest one on this page. An <code>async</code>
+        block or function captures its environment exactly like a <code>move</code>
+        closure does, because that is more or less what it compiles to: a generated
+        structure holding the captured variables, plus the machinery to run the body
+        a step at a time. Page 5 opens that structure up on the table. When you write
+        <code>async move</code> you are choosing this capture mode explicitly.</p>
+
+      <h2>The bill, itemized</h2>
+
+      <table>
+        <thead>
+          <tr><th>Concept</th><th>What it is</th><th>Where async cashes it in</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Ownership</td><td>One owner per value; passing moves it</td>
+            <td>Suspended computations are movable values</td></tr>
+          <tr><td>Drop</td><td>Destructor runs at a precise moment</td>
+            <td>Abandoning a computation releases its resources instantly</td></tr>
+          <tr><td>Trait object + vtable</td><td>Fat pointer, methods via table</td>
+            <td>Uniform storage of many computation types in one queue</td></tr>
+          <tr><td>Send / Sync</td><td>Safe to move / share across threads</td>
+            <td>Computations migrate between engine threads</td></tr>
+          <tr><td>Arc + atomics</td><td>Thread-safe shared ownership</td>
+            <td>Wake-up handles cloned on one thread, fired on another</td></tr>
+          <tr><td>'static</td><td>Owns everything it touches</td>
+            <td>Work outlives the function that created it</td></tr>
+          <tr><td>move closures</td><td>Capture environment by value</td>
+            <td>Async blocks are move closures that can pause</td></tr>
+        </tbody>
+      </table>
+
+      <p>That is the whole toolkit. Nothing exotic: no macros beyond the surface
+        syntax, no hidden engine secreted into your binary. Everything Rust's async story
+        is built from is either on this page or gets built by hand in the next six
+        pages, starting with a trait that is one method long.</p>
+
+      <aside class="takeaways">
+        <h2>In this chapter</h2>
+        <ul>
+          <li>Ownership makes a suspended async computation a movable value with a
+            deterministic death, and death runs <code>Drop</code> at a moment you can
+            point at.</li>
+          <li>Trait objects (<code>dyn Trait</code>) pair data with a vtable of
+            function pointers, letting one queue hold many computation types
+            uniformly.</li>
+          <li><code>Send</code> and <code>Sync</code> are compiler-derived promises
+            about crossing threads; engines demand them because their threads are
+            different and work migrates.</li>
+          <li><code>Arc</code> is <code>Rc</code> with an atomic counter; the wake-up
+            machinery of page 3 is built on exactly this.</li>
+          <li>Async blocks capture their environment like <code>move</code> closures,
+            because that is roughly what they compile to.</li>
+        </ul>
+      </aside>
+    </article>
+    <!-- ==================== CONTENT-END ==================== -->
+
+    <nav id="page-nav" class="page-nav" aria-label="Previous and next page"></nav>
+  </main>
+</body>
+</html>

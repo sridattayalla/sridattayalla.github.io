@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speculative Decoding — LLM Internals</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('llmi-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="speculative">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">LLM Internals</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">How LLMs Actually Work</a>
+  <p class="nav-group">Part One — The Machine</p>
+  <a href="core-idea.html">The Core Idea</a>
+  <a href="tokens.html">Tokens</a>
+  <a href="embeddings.html">Embeddings</a>
+  <a href="position.html">Position</a>
+  <a href="attention.html">Attention</a>
+  <a href="multihead.html">Multi-Head &amp; GQA</a>
+  <a href="ffn.html">Feed-Forward Network</a>
+  <a href="block.html">The Transformer Block</a>
+  <p class="nav-group">Part Two — Training</p>
+  <a href="training-objective.html">The Training Objective</a>
+  <a href="backprop.html">Backpropagation</a>
+  <a href="gpus.html">GPUs</a>
+  <a href="scaling.html">Scaling Laws</a>
+  <p class="nav-group">Part Three — The Assistant</p>
+  <a href="post-training.html">Post-Training</a>
+  <a href="sampling.html">Sampling</a>
+  <p class="nav-group">Part Four — Inference at Scale</p>
+  <a href="inference-loop.html">The Inference Loop</a>
+  <a href="kv-cache.html">The KV Cache</a>
+  <a href="serving.html">Serving</a>
+  <a href="quantization.html">Quantization</a>
+  <a href="speculative.html">Speculative Decoding</a>
+  <p class="nav-group">Part Five — The Frontier</p>
+  <a href="context.html">Long Context</a>
+  <a href="e2e.html">End to End</a>
+  <a href="finale.html">The Whole Machine</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Four — Inference at Scale</p>
+    <h1>Speculative Decoding</h1>
+    <p class="lede">The last page made each sweep carry more pieces
+    by shrinking the bytes. This page makes one sweep carry more
+    pieces by making them free to propose: a small model guesses
+    several, the big model checks them all at once — and the check
+    is arranged so the output is provably identical to the big model
+    working alone.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#sec-idea">Propose, then verify</a></li>
+        <li><a href="#sec-verify">The check that keeps it honest</a></li>
+        <li><a href="#sec-math">When it pays</a></li>
+        <li><a href="#sec-breaks">Where it stops, and what came after</a></li>
+        <li><a href="#sec-stack">Part Four, stacked</a></li>
+      </ol>
+    </nav>
+
+    <section id="sec-idea">
+      <h2>Propose, then verify</h2>
+      <p>The floor has survived every attack so far: one sweep of
+      the big model's weights per piece.
+      <dfn><a href="glossary.html#t-speculative-decoding">Speculative
+      decoding</a></dfn> does not touch the sweep — it changes how
+      many pieces one sweep buys
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.
+      Two players: a
+      <dfn><a href="glossary.html#t-draft-model">draft model</a></dfn>
+      — small, cheap to run, a hundredth the size in the classic
+      setup — and the
+      <dfn><a href="glossary.html#t-target-model">target
+      model</a></dfn> — the real one, whose weights are the
+      expensive sweep
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+      <p>One round runs in two moves. The draft generates a handful
+      of pieces — four to eight, say — the ordinary way, one at a
+      time; each of its steps is small and cheap
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.
+      Then the target runs one forward pass over the prompt plus
+      every drafted piece, and produces its own probability
+      distribution at every position — the same parallel scoring
+      that prefill does over a prompt, turned onto the draft's
+      proposals
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+
+      <figure>
+        <svg role="img" viewBox="0 0 640 180"><title>Timeline of one round: a small model proposes four pieces one at a time, the big model then scores all of them in a single pass, three pieces are kept and the fourth is resampled</title>
+          <text x="145" y="28" text-anchor="middle" font-size="11" class="t-dim">draft — serial, cheap per piece</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="40" y="40" width="55" height="44"/>
+          <text x="67" y="66" text-anchor="middle" font-size="12">piece</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="105" y="40" width="55" height="44"/>
+          <text x="132" y="66" text-anchor="middle" font-size="12">piece</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="170" y="40" width="55" height="44"/>
+          <text x="197" y="66" text-anchor="middle" font-size="12">piece</text>
+          <rect fill="none" class="s-ink" stroke-width="1.5" x="235" y="40" width="55" height="44"/>
+          <text x="262" y="66" text-anchor="middle" font-size="12">piece</text>
+          <line class="s-ink" stroke-width="1.5" x1="95" y1="62" x2="105" y2="62"/>
+          <line class="s-ink" stroke-width="1.5" x1="160" y1="62" x2="170" y2="62"/>
+          <line class="s-ink" stroke-width="1.5" x1="225" y1="62" x2="235" y2="62"/>
+          <line class="s-ink" stroke-width="1.5" x1="290" y1="62" x2="310" y2="62"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="310" y="40" width="170" height="44"/>
+          <text x="395" y="58" text-anchor="middle" font-size="12">big model — one pass</text>
+          <text x="395" y="76" text-anchor="middle" font-size="11" class="t-dim">scores all of them</text>
+          <line class="s-ink" stroke-width="1.5" x1="480" y1="64" x2="500" y2="64"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="500" y="49" width="30" height="30"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="535" y="49" width="30" height="30"/>
+          <rect class="f-accent s-ink" stroke-width="1" x="570" y="49" width="30" height="30"/>
+          <rect fill="none" class="s-ink" stroke-width="1" stroke-dasharray="4 3" x="605" y="49" width="30" height="30"/>
+          <text x="535" y="100" text-anchor="middle" font-size="11" class="t-dim">kept</text>
+          <text x="615" y="100" text-anchor="middle" font-size="11" class="t-dim">resampled</text>
+          <text x="320" y="150" text-anchor="middle" font-size="11" class="t-dim">one round: the small model proposes, the big model verifies all proposals in a single sweep</text>
+        </svg>
+        <figcaption>One round: the draft model proposes pieces one
+        at a time — each step cheap — and the target model scores
+        every proposal in a single pass. Pieces are accepted left to
+        right; the first rejection is resampled, and the round ends
+        there.</figcaption>
+      </figure>
+
+      <p>Read the shape of that twice, because it is the whole
+      trick: the big model can score many positions in one sweep at
+      almost no extra cost, because decode at a lone request is
+      memory-bound — the weights stream past whether the step
+      computes one piece's arithmetic or five. The draft spends
+      cheap serial steps; the target spends one sweep that was going
+      to happen anyway
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+    </section>
+
+    <section id="sec-verify">
+      <h2>The check that keeps it honest</h2>
+      <p>The target's distributions could be used to simply overrule
+      the draft — take the best piece at every position and keep
+      whatever matches. That would be fast and wrong: the output
+      would no longer be a sample from the target, and the sampling
+      page showed why sampling matters. The real rule is finer
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+      <p>Accept pieces left to right. Piece i, which the draft
+      proposed with probability q, is accepted with probability p
+      over q, where p is the target's probability for the same
+      piece. If the target likes the piece at least as much as the
+      draft did, the ratio is at least one and the piece is always
+      kept; if the target likes it less, the piece survives only
+      sometimes — exactly in the ratio
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+      <p>Make the rule concrete. Suppose the draft proposed a piece
+      with probability one half, and the target likes the same piece
+      at four fifths: the ratio is well past one, and the piece is
+      always kept. Flip it — the draft was confident at nine tenths,
+      the target lukewarm at one half: the ratio sits below one, and
+      the piece survives five times in nine. Overconfidence is
+      punished in exact proportion; humility is never paid more than
+      certainty.</p>
+      <p>The first rejection ends the streak, and the repair is
+      precise: resample that position from the normalized positive
+      part of p minus q — the target's preference left over after
+      the draft's claim is subtracted
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+      <p>Why this shape? It is rejection sampling, a classical
+      statistics device, dressed for sequences: draw from the cheap
+      proposal, accept by the ratio of true to proposed, repair from
+      the remainder. The composite provably emits exactly the
+      target's distribution — the paper's first theorem — so nothing
+      about the output changes, only its speed
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+      <p>The number to watch is the
+      <dfn><a href="glossary.html#t-acceptance-rate">acceptance
+      rate</a></dfn> — how often the draft's pieces survive the
+      target's check, call it alpha
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+    </section>
+
+    <section id="sec-math">
+      <h2>When it pays</h2>
+      <p>Price a round: a few cheap draft steps plus one target
+      sweep, with an expected yield that grows with the acceptance
+      rate
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>:</p>
+
+      <div class="worked">
+        <p class="worked-head">Worked example — one round, priced</p>
+        <div class="worked-body">
+<pre><code class="language-text">one round, priced
+(gamma = 4 drafted pieces, alpha = 0.75):
+
+  draft:    4 x T_draft     (serial, small model)
+  verify:   1 x T_target    (one pass, all pieces)
+
+  expected pieces out per round:
+    (1 - 0.75^5) / (1 - 0.75) = 3.05
+
+  win condition: four cheap steps plus one sweep
+  must beat 3.05 full sweeps</code></pre>
+        </div>
+      </div>
+
+      <p>At an acceptance rate near three quarters — what the
+      original paper measured with a small draft on an
+      eleven-billion-parameter model — four drafted pieces yield
+      about three pieces out per target sweep. End to end: up to
+      3.4x faster at temperature zero, where the draft's certainty
+      is highest, and 2.6x at temperature one
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+      <p>See where the formula comes from. The round always nets at
+      least one piece — the resampled repair after a rejection, or a
+      bonus piece drawn from the target itself when every proposal
+      survives — and each accepted proposal adds one more, with the
+      odds of surviving k checks in a row falling as alpha to the k.
+      The yield stacks as one plus alpha plus alpha squared, capped
+      at the drafted count plus one terms, which is exactly the
+      panel's quotient. The cap is also why drafting more pieces
+      stops helping: when alpha is low the stack's tail is nearly
+      empty, and every extra proposal still costs a serial step.</p>
+      <p>The reason one verification pass is nearly free: arithmetic
+      intensity. At a lone request, decode runs at about one unit of
+      arithmetic per byte read — the starving arithmetic units of
+      the GPU page. Scoring five positions in one pass multiplies
+      the arithmetic by five on the same weight read: intensity
+      five, still far below the machine's balance point. The card
+      had compute going spare; speculation feeds it
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+    </section>
+
+    <section id="sec-breaks">
+      <h2>Where it stops, and what came after</h2>
+      <p>The spare compute is not infinite, and the trick fails
+      where it was already spent. At high request counts the card is
+      compute-bound — the verification arithmetic now competes with
+      real traffic, and speculation costs more than it saves; it is
+      a low-load optimization
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.
+      At high temperature the acceptance rate drops — a diverse
+      target is harder to predict — and every rejection wastes a
+      draft step. And a draft that cannot track the target accepts
+      too little to pay for itself
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+      <p>The lineage refined the draft. Self-speculation reuses the
+      target itself — exiting early, or skipping layers — as its own
+      small model. Medusa bolts extra heads onto the model that
+      predict several future pieces in one pass, verified as a tree
+      of candidates.
+      <dfn><a href="glossary.html#t-eagle">EAGLE</a></dfn> drafts at
+      the feature level: a light head predicts the target's hidden
+      states rather than its pieces, and reads pieces off those,
+      reusing the target's own representations; acceptance is high
+      enough for three to six-and-a-half times speedups, and it
+      ships as a config flag in the modern serving engines
+      <a class="prov" data-src="research/speculative.md" href="links.html#s-speculative" title="speculative — research/speculative.md">[speculative]</a>.</p>
+    </section>
+
+    <section id="sec-stack">
+      <h2>Part Four, stacked</h2>
+      <p>Stand back and the part is one campaign against a single
+      floor: every piece costs one sweep of the weights. The loop
+      page priced the sweep and split it into phases. The cache page
+      stopped the sweep from redoing attention's work. The serving
+      page amortized the sweep across requests. The quantization
+      page shrank the bytes the sweep must move. This page bundled
+      several pieces into one sweep. Five moves, one division —
+      bytes over bandwidth — made friendly five different ways.</p>
+      <p>Part Five turns from the cost of a piece to the reach of
+      the machine: what happens when the window must stretch far
+      past what training prepared — and what the machine actually
+      does with a million pieces of room.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Speculative decoding splits the work: a small draft
+        model proposes several pieces serially; the target model
+        verifies them all in one parallel pass — the same scoring
+        prefill does.</li>
+        <li>The acceptance rule — accept with probability p/q,
+        resample the first rejection from the leftover p minus q —
+        makes the output provably identical to sampling the target
+        alone. Rejection sampling, dressed for sequences.</li>
+        <li>Expected pieces out per round: (1 - alpha^(gamma+1)) /
+        (1 - alpha) — about three per target sweep at alpha 0.75
+        with four drafted.</li>
+        <li>It pays because decode starves the arithmetic units: one
+        verification pass over gamma+1 pieces multiplies intensity on
+        the same weight read — compute the card had going spare.</li>
+        <li>It stops paying when the card is already compute-bound,
+        at high temperature, or with a weak draft; EAGLE-style
+        feature-level drafts are the shipping refinement
+        (3-6.5x).</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="quantization.html"><span class="cap">Previous</span><span class="pg-title">Quantization: int8 and int4</span></a>
+    <a class="pager-card" rel="next" href="context.html"><span class="cap">Next</span><span class="pg-title">Long Context: Extending the Window</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

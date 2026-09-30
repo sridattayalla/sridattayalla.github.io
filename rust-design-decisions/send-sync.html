@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send and Sync: Thread Safety in the Type System — Rust Design Decisions</title>
+<script>
+/* no flash of wrong theme: flag JS, apply stored choice before first paint */
+(function () {
+  var d = document.documentElement;
+  d.classList.add('js');
+  try {
+    var t = localStorage.getItem('rdd-theme');
+    if (t === 'dark' || t === 'light') d.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="send-sync">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="mark" href="index.html">Rust Design Decisions</a>
+  <button class="theme-toggle" type="button" aria-label="Toggle dark theme" aria-pressed="false">
+    <svg class="i-moon" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M15.6 12.4A7 7 0 0 1 7.6 4.4 7 7 0 1 0 15.6 12.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg class="i-sun" aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+  <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-nav">
+    <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path d="M3 5.5h14M3 10h14M3 14.5h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<nav class="site-nav" id="site-nav" aria-label="Site navigation">
+  <p class="nav-group">Start</p>
+  <a href="index.html">Why Rust Is Shaped the Way It Is</a>
+  <p class="nav-group">Part One — The Constraint</p>
+  <a href="founding-constraint.html">The Constraint</a>
+  <p class="nav-group">Part Two — Ownership</p>
+  <a href="ownership.html">Ownership</a>
+  <a href="move-copy-clone.html">Move, Copy, Clone</a>
+  <p class="nav-group">Part Three — Borrowing</p>
+  <a href="borrowing.html">Borrowing</a>
+  <a href="lifetimes.html">Lifetimes</a>
+  <p class="nav-group">Part Four — The Heap Menu</p>
+  <a href="stack-and-heap.html">Stack and Heap</a>
+  <a href="box.html">Box</a>
+  <a href="rc-arc.html">Rc and Arc</a>
+  <p class="nav-group">Part Five — Mutation and Threads</p>
+  <a href="interior-mutability.html">Interior Mutability</a>
+  <a href="send-sync.html">Send and Sync</a>
+  <p class="nav-group">Part Six — The Escape Hatches</p>
+  <a href="unsafe.html">Unsafe</a>
+  <a href="pin.html">Pin</a>
+  <a href="error-handling.html">Errors and Panics</a>
+  <p class="nav-group">Part Seven — Abstraction and Synthesis</p>
+  <a href="traits.html">Traits</a>
+  <a href="capstone.html">The Whole Language in Two Programs</a>
+  <p class="nav-group">Reference</p>
+  <a href="glossary.html">Glossary</a>
+  <a href="links.html">Sources</a>
+</nav>
+
+<div class="drawer-backdrop" aria-hidden="true"></div>
+
+<main id="main">
+  <article>
+    <p class="kicker">Part Five — Mutation and Threads</p>
+    <h1>Send and Sync: Thread Safety in the Type System</h1>
+    <p class="lede">The previous page moved one check into the types;
+    this page is about the two that were already there. Rust's entire
+    answer to thread safety is a pair of empty traits — badges named
+    Send and Sync — awarded to types automatically by their shape and
+    read by the compiler at every thread boundary. Two names, one rule
+    each, and the question "is this safe to share?" becomes a fact
+    you can read off a signature.</p>
+
+    <nav class="toc" aria-label="On this page">
+      <p class="cap">On this page</p>
+      <ol>
+        <li><a href="#two-questions">Two questions, two badges</a></li>
+        <li><a href="#the-matrix">The verified matrix</a></li>
+        <li><a href="#the-composition-rule">The composition rule, read bottom-up</a></li>
+        <li><a href="#fearless">Fearless concurrency — and what it does not promise</a></li>
+        <li><a href="#scoped">Scoped threads: fencing borrowed data</a></li>
+      </ol>
+    </nav>
+
+    <section id="two-questions">
+      <h2>Two questions, two badges</h2>
+      <p>Start where the last page ended: RefCell's counter is plain
+      memory, and two threads consulting it at once is the race the
+      language exists to prevent. How does the compiler know which
+      types may cross a thread boundary? Not by reading the code
+      inside them — the answer has to work for types whose bodies the
+      caller will never see.</p>
+      <p>The mechanism is a <dfn><a href="glossary.html#t-marker-trait">marker
+      trait</a></dfn>: a trait with no methods and no behavior, only
+      a name a type can carry, like a badge pinned to it. Nothing
+      calls the trait's functions, because there are none; the
+      compiler's checks read the badge, and that is the entire
+      mechanism.</p>
+      <p>The badge is also awarded without anyone asking. An
+      <dfn><a href="glossary.html#t-auto-trait">auto trait</a></dfn>
+      is a marker whose implementation is derived from a type's
+      shape: a struct earns it when every field earns it, and loses
+      it when any field loses it. The machinery is as old as the
+      ownership system — the same proposal that made moves the
+      default, RFC 0019 on opt-in builtin traits, introduced it —
+      and the negative half is the powerful one: one
+      non-thread-safe field refuses the badge for the whole
+      struct.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      <p>The two badges the thread system reads, in the
+      Rustonomicon's own words:</p>
+      <blockquote>
+        <p>"A type is <dfn><a href="glossary.html#t-send">Send</a></dfn>
+        if it is safe to send it to another thread. A type is
+        <dfn><a href="glossary.html#t-sync">Sync</a></dfn> if it is
+        safe to share between threads (<code>T</code> is Sync if and
+        only if <code>&amp;T</code> is
+        Send)."<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      </blockquote>
+      <p>Unpacked: Send is about a move — ownership transfers, the
+      value travels, and the sending thread never touches it again.
+      Sync is about a share — the value stays put while references to
+      it live on several threads at once. The one-line link between
+      them is the parenthetical: sharing a <code>T</code> between
+      threads means handing out <code>&amp;T</code>, so
+      <code>T</code> is Sync exactly when <code>&amp;T</code> is
+      Send.</p>
+      <figure>
+        <svg role="img" viewBox="0 0 640 190"><title>Send versus Sync: on the left, the value itself moves from one thread to another, which then owns it; on the right, the value stays put while shared references fan out to three threads</title>
+          <text x="160" y="22" text-anchor="middle" font-size="12">Send — the value travels</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="30" y="44" width="96" height="44" rx="6"/>
+          <text x="78" y="62" text-anchor="middle" font-size="12">thread A</text>
+          <text class="t-dim" x="78" y="78" text-anchor="middle" font-size="12">lets go</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M130 66H200"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M194 60l8 6-8 6"/>
+          <text class="t-dim" x="165" y="40" text-anchor="middle" font-size="12">value moves</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="206" y="44" width="96" height="44" rx="6"/>
+          <text x="254" y="62" text-anchor="middle" font-size="12">thread B</text>
+          <text class="t-dim" x="254" y="78" text-anchor="middle" font-size="12">owns it now</text>
+          <text x="480" y="22" text-anchor="middle" font-size="12">Sync — the value stays</text>
+          <rect class="f-yellow s-ink" stroke-width="1.5" x="400" y="48" width="110" height="44" rx="6"/>
+          <text x="455" y="66" text-anchor="middle" font-size="12">the value</text>
+          <text class="t-dim" x="455" y="82" text-anchor="middle" font-size="12">stays put</text>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M510 70H530"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M530 44V132"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M530 44H560"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M554 38l8 6-8 6"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M530 88H560"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M554 82l8 6-8 6"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M530 132H560"/>
+          <path class="s-ink" fill="none" stroke-width="1.5" d="M554 126l8 6-8 6"/>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="564" y="30" width="64" height="28" rx="4"/>
+          <text x="596" y="48" text-anchor="middle" font-size="12">thread</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="564" y="74" width="64" height="28" rx="4"/>
+          <text x="596" y="92" text-anchor="middle" font-size="12">thread</text>
+          <rect class="f-blue s-ink" stroke-width="1.5" x="564" y="118" width="64" height="28" rx="4"/>
+          <text x="596" y="136" text-anchor="middle" font-size="12">thread</text>
+          <text class="t-dim" x="320" y="178" text-anchor="middle" font-size="12">one badge for the move, one for the share — T is Sync exactly when &amp;T is Send</text>
+        </svg>
+        <figcaption>The two badges side by side: a move transfers
+        ownership; a share fans references out while the value never
+        moves.</figcaption>
+      </figure>
+    </section>
+
+    <section id="the-matrix">
+      <h2>The verified matrix</h2>
+      <p>Put the definitions to work. Each line below is a
+      compile-time claim that a type carries a badge — the function
+      bodies are empty, so the assertion is the whole point:</p>
+      <figure class="codeblock accept">
+        <figcaption>send_sync_matrix.rs — assertions the compiler must prove</figcaption>
+<pre data-verify="run" data-expect="the marks are in the types"><code class="language-rust">use std::cell::{Cell, RefCell};
+use std::sync::{Arc, Mutex};
+
+fn is_send&lt;T: Send&gt;() {}
+fn is_sync&lt;T: Sync&gt;() {}
+
+fn main() {
+    is_send::&lt;u32&gt;();
+    is_sync::&lt;u32&gt;();
+    is_send::&lt;Arc&lt;Vec&lt;u32&gt;&gt;&gt;();
+    is_sync::&lt;Arc&lt;Vec&lt;u32&gt;&gt;&gt;();
+    is_send::&lt;Cell&lt;u32&gt;&gt;();
+    is_send::&lt;RefCell&lt;u32&gt;&gt;();
+    is_send::&lt;Mutex&lt;u32&gt;&gt;();
+    is_sync::&lt;Mutex&lt;u32&gt;&gt;();
+    println!("every assertion compiled: the marks are in the types");
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">every assertion compiled: the marks are in the types</code></pre>
+      </figure>
+      <p>If any line were false — if <code>Cell&lt;u32&gt;</code> were
+      Sync, say — the call would not compile. That is the trick: an
+      empty function with a bound parameter forces the compiler to
+      prove the bound or refuse the call. The full matrix, with the
+      refusals filled in:</p>
+      <figure>
+        <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>type</th><th>Send</th><th>Sync</th><th>why</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>u32</code></td><td>yes</td><td>yes</td><td>plain data</td></tr>
+            <tr><td><code>Rc&lt;u32&gt;</code></td><td>no</td><td>no</td><td>non-atomic counts</td></tr>
+            <tr><td><code>Arc&lt;Vec&lt;u32&gt;&gt;</code></td><td>yes</td><td>yes</td><td>atomic counts over plain data</td></tr>
+            <tr><td><code>Arc&lt;Cell&lt;u32&gt;&gt;</code></td><td>no</td><td>no</td><td>Cell is not Sync — composition fails</td></tr>
+            <tr><td><code>Cell&lt;u32&gt;</code></td><td>yes</td><td>no</td><td>whole-value swaps, non-atomic</td></tr>
+            <tr><td><code>RefCell&lt;u32&gt;</code></td><td>yes</td><td>no</td><td>non-atomic borrow counter</td></tr>
+            <tr><td><code>Mutex&lt;u32&gt;</code></td><td>yes</td><td>yes</td><td>locked access</td></tr>
+            <tr><td><code>*const u8</code></td><td>no</td><td>no</td><td>aliasing with no discipline</td></tr>
+            <tr><td><code>PhantomData&lt;*const u8&gt;</code></td><td>no</td><td>no</td><td>badges propagate, absence included</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <figcaption>the verified matrix: the yes entries are asserted
+        by the program above; the no entries are the refusals — this
+        page's captured error below and the previous page's.</figcaption>
+      </figure>
+      <p>Read the no column as one story told twice. Rc refuses both
+      badges because its count is non-atomic memory — the previous
+      page's refusal was exactly the Send half. Cell and RefCell are
+      Send — a move makes them single-owner again — but not Sync,
+      because the shared case is the racy one. The bare pointer type
+      <code>*const u8</code>, aliasing with no discipline, refuses
+      both; so does a wrapper that merely carries it, because auto
+      traits propagate absence as faithfully as presence. And Mutex
+      earns both: the lock restores the discipline that sharing
+      demands.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+    </section>
+
+    <section id="the-composition-rule">
+      <h2>The composition rule, read bottom-up</h2>
+      <p>The matrix hides the most instructive rule of all: badges
+      compose, and the composition is written by hand.
+      <code>Arc&lt;Vec&lt;u32&gt;&gt;</code> is Send — not by
+      exemption, but by an assertion in the standard library whose
+      entire content is a bound:</p>
+      <figure class="codeblock">
+        <figcaption>the standard library's assertion, from the Arc
+        documentation</figcaption>
+<pre data-verify="skip" data-reason="standard-library fragment quoted from the Arc documentation; not a standalone program"><code class="language-rust">unsafe impl&lt;T: ?Sized + Send + Sync&gt; Send for Arc&lt;T&gt; {}</code></pre>
+      </figure>
+      <p>Read it as a promise with two conditions:
+      <code>Arc&lt;T&gt;</code> may move to a new thread exactly when
+      <code>T</code> may move and <code>T</code> may be shared. Why
+      the second condition, when a move sounds like the single-owner
+      case? Because moving an Arc is never really a move: the sending
+      thread usually keeps a clone, and now both threads hold handles
+      to the same contents. If both can act through
+      <code>&amp;T</code> at once, <code>T</code> had better be Sync
+      — the share, not the move, is what actually
+      happened.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      <p>Watch the rule fire. The program below moves an
+      <code>Arc&lt;Cell&lt;u32&gt;&gt;</code> into a spawned thread —
+      plain data behind an Arc, the innocent-looking combination:</p>
+      <figure class="codeblock reject">
+        <figcaption>arc_send_requires.rs — plain data behind an Arc</figcaption>
+<pre data-verify="fail" data-error="E0277" data-expect="cannot be shared between threads safely"><code class="language-rust">use std::cell::Cell;
+use std::sync::Arc;
+use std::thread;
+
+fn main() {
+    let counter = Arc::new(Cell::new(0u32));
+    let handle = thread::spawn(move || {
+        counter.set(counter.get() + 1);
+    });
+    handle.join().unwrap();
+    println!("count: {}", counter.get());
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the refusal, captured</figcaption>
+<pre><code class="language-text">error[E0277]: `Cell&lt;u32&gt;` cannot be shared between threads safely
+   --&gt; arc_send_requires.rs:7:32
+    |
+  7 |       let handle = thread::spawn(move || {
+    |  __________________-------------_^
+    | |                  |
+    | |                  required by a bound introduced by this call
+  8 | |         counter.set(counter.get() + 1);
+  9 | |     });
+    | |_____^ `Cell&lt;u32&gt;` cannot be shared between threads safely
+    |
+    = help: the trait `Sync` is not implemented for `Cell&lt;u32&gt;`
+    = note: if you want to do aliasing and mutation between multiple threads,
+            use `std::sync::RwLock` or `std::sync::atomic::AtomicU32` instead
+    = note: required for `Arc&lt;Cell&lt;u32&gt;&gt;` to implement `Send`
+note: required because it's used within this closure
+   --&gt; arc_send_requires.rs:7:32
+    |
+  7 |     let handle = thread::spawn(move || {
+    |                                ^^^^^^^
+note: required by a bound in `spawn`
+   --&gt; library/std/src/thread/functions.rs:128:8
+    |
+125 | pub fn spawn&lt;F, T&gt;(f: F) -&gt; JoinHandle&lt;T&gt;
+    |        ----- required by a bound in this function
+...
+128 |     F: Send + 'static,
+    |        ^^^^ required by this bound in `spawn`</code></pre>
+      </figure>
+      <p>Read the refusal bottom-up, in the order the compiler proved
+      it. The bottom note is spawn's own demand:
+      <code>F: Send + 'static</code> — a closure may start a thread
+      only if it is Send and owns what it captures (more on
+      <code>'static</code> below). The closure captures
+      <code>counter</code>, so the compiler asks whether
+      <code>Arc&lt;Cell&lt;u32&gt;&gt;</code> is Send. The middle note
+      answers with the composition rule: required for
+      <code>Arc&lt;Cell&lt;u32&gt;&gt;</code> to implement Send. And
+      the top of the stack is the actual failure: the trait Sync is
+      not implemented for <code>Cell&lt;u32&gt;</code>. One missing
+      badge, three notes of explanation, and no guessing about which
+      handle erred — the error names the exact composition
+      chain.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      <p>Two lessons ride along. First, the help line is the language
+      pointing at the door you meant: aliasing and mutation between
+      threads want <code>RwLock</code> or an atomic — the checking
+      and blocking wrappers from the previous page. Second, that word
+      at the start of the standard library's assertion is the
+      language's marker for a hand-made promise, the one the
+      marked-code hatch at the end of this book is about. Arc pays
+      it; Rc declines — which is the entire behavioral difference
+      between the two counting
+      siblings.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+    </section>
+
+    <section id="fearless">
+      <h2>Fearless concurrency — and what it does not promise</h2>
+      <p>Step back and state what the badges buy. A data race — the
+      memory-level bug, not the logic-level one — needs four
+      ingredients together:</p>
+      <ul>
+        <li>two aliases to the same location,</li>
+        <li>at least one of them writing,</li>
+        <li>access from more than one thread at the same moment,</li>
+        <li>and no synchronization ordering them.</li>
+      </ul>
+      <p>Safe Rust makes the first two unwritable in every
+      composition. <code>&amp;mut</code> is exclusive — the borrowing
+      page's refusals, E0502 and E0499, are exactly the aliasing
+      rejection. <code>&amp;</code> looks shared but does not write —
+      except through the interior-mutability wrappers, and those
+      restore the fourth ingredient by checking or blocking. Crossing
+      a thread boundary demands the badges: Send for the move, Sync
+      for the share. The race needs all four ingredients; the types
+      will not hand you two of them at
+      once.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      <p>The community named the result. The Book's concurrency
+      chapter: "We've nicknamed this aspect of Rust
+      <dfn><a href="glossary.html#t-fearless-concurrency">fearless
+      concurrency</a></dfn>." The post that introduced the phrase in
+      2015 said it more plainly: the type system prevents data races
+      at compile time, and thread-safe usage is checked like memory
+      usage. And the language's first developer had said the same
+      from the start: correct concurrency and general memory safety
+      "are two sides of the same coin," both served by isolation and
+      control of
+      mutation.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      <p>What the nickname does not promise is drawn just as
+      carefully. Deadlocks: two mutexes taken in opposite orders wait
+      forever — the badges were fine, the schedule was not. Logic
+      races: atomics order memory, not intent; your flag flips in an
+      order that is valid and still wrong. Leaks: the honesty clause
+      from the counting page applies across threads too. The
+      guarantee is data races only — but that one is total, and it is
+      checked before the program runs.</p>
+    </section>
+
+    <section id="scoped">
+      <h2>Scoped threads: fencing borrowed data</h2>
+      <p>One demand in the captured error deserves its own ending:
+      <code>'static</code>. A spawned thread may outlive the function
+      that started it, so it may capture only owned data. What if the
+      data is borrowed — a buffer several threads should scan? Plain
+      spawn refuses the borrow; the answer is to shrink the promise
+      instead:</p>
+      <figure class="codeblock accept">
+        <figcaption>scope_threads.rs — two threads scanning a borrowed buffer</figcaption>
+<pre data-verify="run" data-expect="sum: 60, len: 3"><code class="language-rust">use std::thread;
+
+fn main() {
+    let data = vec![10, 20, 30];
+    thread::scope(|s| {
+        let a = s.spawn(|| data.iter().sum::&lt;i32&gt;());
+        let b = s.spawn(|| data.len());
+        println!("sum: {}, len: {}", a.join().unwrap(), b.join().unwrap());
+    });
+}</code></pre>
+      </figure>
+      <figure class="codeblock">
+        <figcaption>the run's output, captured</figcaption>
+<pre><code class="language-text">sum: 60, len: 3</code></pre>
+      </figure>
+      <p><code>thread::scope</code> takes a closure and guarantees,
+      structurally, that every thread spawned inside it joins before
+      the closure returns — the scope itself holds the join handles.
+      Inside that fence, borrowing is fine: the threads cannot
+      outlive the borrowed data because they cannot outlive the
+      scope. The closures above capture <code>data</code> by
+      reference — no move, no clone — and the compiler accepts them
+      because the fence is in the signature, not in a
+      convention.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      <p>That fence has a history. The original design relied on
+      destructors to join at scope end; a thread arranged to leak
+      itself could break that promise, so the API was pulled before
+      the first stable release. It returned in version 1.63 with the
+      guarantee made structural — the scope holds the handles, and
+      joining no longer depends on destructors
+      running.<a class="prov" data-src="research/send-sync.md" href="links.html#s-send-sync" title="send sync — research/send-sync.md">[send-sync]</a></p>
+      <p>Every guarantee so far was checked from types alone. The
+      checker is deliberately conservative — some correct programs it
+      cannot prove. Rust's answer is a marked region where the
+      promise is yours to make — the next page.</p>
+    </section>
+
+    <aside class="takeaways">
+      <h2>Takeaways</h2>
+      <ul>
+        <li>Send and Sync are marker traits: empty of behavior, full
+        of meaning — the compiler reads them at every thread boundary
+        and nothing else does.</li>
+        <li>Both are auto traits, derived from a type's shape: one
+        non-thread-safe field refuses the badge for the whole struct,
+        and wrappers propagate absence as faithfully as presence.</li>
+        <li>Send is the move and Sync is the share, linked by one
+        line — T is Sync exactly when &amp;T is Send — because
+        sharing means handing out references.</li>
+        <li>Badges compose through hand-stated bounds: Arc is Send
+        when its contents are Send and Sync, so
+        <code>Arc&lt;Cell&lt;u32&gt;&gt;</code> is refused for
+        Cell's missing badge — read the E0277 bottom-up.</li>
+        <li>Fearless concurrency covers data races and only those:
+        deadlocks, logic races, and leaks remain yours; scoped
+        threads fence borrowed data by joining structurally.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <footer class="pager">
+    <a class="pager-card" rel="prev" href="interior-mutability.html"><span class="cap">Previous</span><span class="pg-title">Interior Mutability: Mutation Through a Shared Handle</span></a>
+    <a class="pager-card" rel="next" href="unsafe.html"><span class="cap">Next</span><span class="pg-title">Unsafe: The Escape Hatch</span></a>
+  </footer>
+</main>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>
