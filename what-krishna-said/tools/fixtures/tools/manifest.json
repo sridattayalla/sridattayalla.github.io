@@ -1,0 +1,62 @@
+{
+  "book": {
+    "title": "Fixture Book",
+    "subtitle": "checker selftest",
+    "index": "index.html",
+    "wordsWindow": [
+      100,
+      500
+    ]
+  },
+  "pages": [
+    {
+      "file": "01-valid.html",
+      "num": "01",
+      "title": "Alpha Valid",
+      "part": 0,
+      "partName": "Part One",
+      "defines": [
+        "alpha-term",
+        "beta-compound"
+      ],
+      "verses": [
+        "3.1"
+      ]
+    },
+    {
+      "file": "02-broken.html",
+      "num": "02",
+      "title": "Beta Broken",
+      "part": 0,
+      "partName": "Part One",
+      "defines": [
+        "beta-term",
+        "extra-term"
+      ],
+      "verses": [
+        "2.47",
+        "3.1"
+      ]
+    },
+    {
+      "file": "03-todo.html",
+      "num": "03",
+      "title": "Gamma Todo",
+      "part": 0,
+      "partName": "Part One",
+      "defines": [],
+      "verses": []
+    },
+    {
+      "file": "04-broken2.html",
+      "num": "04",
+      "title": "Delta High",
+      "part": 0,
+      "partName": "Part One",
+      "defines": [
+        "delta-term"
+      ],
+      "verses": []
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "FS-ONE": {"sheet": "research/one.md", "label": "Fixture fact sheet one", "urls": []},
+  "FS-TWO": {"sheet": "research/two.md", "label": "Fixture fact sheet two", "urls": []}
+}
