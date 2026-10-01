@@ -1,0 +1,432 @@
+/* What Krishna Said — book stylesheet.
+   Tokens and structure per docs/DESIGN.md. Offline-pure: no external imports. */
+
+:root {
+  --bg: #faf7f2;
+  --ink: #1c1917;
+  --ink-soft: #57534e;
+  --rule: #e7e0d5;
+  --card: #fffdf9;
+  --accent: #8a3324;
+  --accent-ink: #fffdf9;
+  --font-body: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --font-ui: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --measure: 42rem;
+  --gutter: 1.25rem;
+}
+
+[data-theme="dark"] {
+  --bg: #191614;
+  --ink: #ece7df;
+  --ink-soft: #b3aba0;
+  --rule: #3a342e;
+  --card: #211d1a;
+  --accent: #d99a83;
+  --accent-ink: #191614;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.65;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+/* Theme cross-fade: surfaces that own a background or rule color fade with
+   the body instead of snapping during the 150ms switch. */
+.topbar, figure.verse, aside.takeaways {
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+/* ---------- skip link ---------- */
+.skip {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0.5rem 1rem;
+  z-index: 70;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+}
+.skip:focus { left: 0.5rem; top: 0.5rem; }
+
+/* ---------- top bar ---------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem var(--gutter);
+  background: var(--bg);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--font-ui);
+}
+
+.topbar .home {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: 0.01em;
+  flex: 1;
+}
+.topbar .home:hover { color: var(--accent); }
+
+.toc-toggle, .theme-toggle {
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  color: var(--ink);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+.toc-toggle:hover, .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.theme-toggle { width: 2.4rem; }
+
+/* ---------- table of contents ---------- */
+.toc {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(19rem, 85vw);
+  background: var(--card);
+  border-right: 1px solid var(--rule);
+  z-index: 50;
+  padding: 1.25rem;
+  overflow-y: auto;
+  transform: translateX(-100%);
+  transition: transform 200ms ease-out;
+  font-family: var(--font-ui);
+}
+.toc.open { transform: translateX(0); }
+
+.toc h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  margin: 0 0 0.75rem;
+}
+.toc .toc-part {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  margin: 1.1rem 0 0.3rem;
+}
+.toc .toc-part:first-of-type { margin-top: 0; }
+.toc ul { list-style: none; margin: 0; padding: 0; }
+.toc li { margin: 0.15rem 0; }
+.toc a {
+  display: block;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--ink);
+  text-decoration: none;
+  padding: 0.2rem 0.45rem;
+  border-radius: 3px;
+}
+.toc a:hover { color: var(--accent); }
+.toc a[aria-current="page"] {
+  color: var(--accent);
+  font-weight: 700;
+  border-left: 3px solid var(--accent);
+  padding-left: 0.4rem;
+}
+.toc .toc-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  font-size: 1rem;
+}
+
+.toc-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 45;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+.toc-scrim.show { opacity: 1; pointer-events: auto; }
+
+@media (min-width: 1024px) {
+  :root { --gutter: 2rem; }
+  .toc-toggle { display: none; }
+  .toc {
+    transform: none;
+    width: 16rem;
+    top: 3rem;
+  }
+  .toc .toc-close { display: none; }
+  .toc-scrim { display: none; }
+  main.page { margin-left: 16rem; }
+  /* min-height >= .toc top, else a gap opens above the sidebar */
+  .topbar { z-index: 60; min-height: 3rem; }
+}
+
+/* ---------- page ---------- */
+main.page {
+  padding: 2.5rem var(--gutter) 4rem;
+  max-width: calc(var(--measure) + 2 * var(--gutter) + 16rem);
+}
+
+article { max-width: var(--measure); margin: 0 auto; }
+
+.kicker {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--accent);
+  margin: 0 0 0.6rem;
+}
+
+h1 {
+  font-size: 1.75rem;
+  line-height: 1.2;
+  margin: 0 0 0.9rem;
+  font-weight: 700;
+}
+
+.lede {
+  font-size: 1.12rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  margin: 0 0 2rem;
+  font-style: italic;
+}
+
+h2 {
+  font-size: 1.35rem;
+  line-height: 1.25;
+  margin: 2.5rem 0 0.75rem;
+}
+
+h3 {
+  font-size: 1.08rem;
+  margin: 1.6rem 0 0.5rem;
+}
+
+p { margin: 0 0 1rem; overflow-wrap: break-word; }
+
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- bridge section ---------- */
+section.bridge {
+  border-left: 3px solid var(--rule);
+  padding: 0.35rem 0 0.35rem 1rem;
+  margin: 0 0 2rem;
+  color: var(--ink-soft);
+  font-size: 0.98rem;
+}
+
+/* ---------- verse figure ---------- */
+figure.verse {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 1.1rem 1.25rem;
+  margin: 1.75rem 0;
+}
+
+figure.verse figcaption {
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+
+figure.verse .iast {
+  font-style: italic;
+  font-size: 1.05rem;
+  line-height: 1.8;
+  margin: 0 0 0.75rem;
+  overflow-wrap: break-word;
+}
+
+figure.verse .gloss {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+figure.verse .note {
+  margin: 0.75rem 0 0;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--rule);
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+figure.verse .note strong {
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* ---------- takeaways ---------- */
+aside.takeaways {
+  background: var(--card);
+  border-top: 2px solid var(--rule);
+  border-bottom: 2px solid var(--rule);
+  padding: 1.25rem 1.4rem;
+  margin: 3rem 0 2rem;
+}
+aside.takeaways h2 {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--accent);
+  margin: 0 0 0.6rem;
+}
+aside.takeaways ol, aside.takeaways ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  list-style: square;
+}
+aside.takeaways li { margin: 0.45rem 0; }
+
+/* ---------- page nav ---------- */
+nav.page-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--rule);
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+}
+nav.page-nav a {
+  text-decoration: none;
+  color: var(--ink);
+  max-width: 48%;
+}
+nav.page-nav a:hover { color: var(--accent); }
+nav.page-nav .dir {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-soft);
+}
+
+/* ---------- sources footer ---------- */
+footer.sources {
+  margin-top: 2rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+}
+footer.sources h2 {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--ink-soft);
+  margin: 0 0 0.5rem;
+}
+footer.sources ul { list-style: square; margin: 0; padding-left: 1.2rem; }
+footer.sources li {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  margin: 0.25rem 0;
+}
+
+/* ---------- diagrams ---------- */
+figure.diagram {
+  margin: 2rem 0;
+  text-align: center;
+  overflow-x: auto;
+}
+/* Pinned render width keeps every label >= 12px (DESIGN.md: SVG text >= 12px
+   equivalent): the tightest ratio is 15px in an 800-unit viewBox
+   (15 x 650 / 800 = 12.2px). Below ~690px viewports the figure scrolls
+   horizontally instead of shrinking the text. */
+figure.diagram svg {
+  display: block;
+  width: 650px;
+  margin: 0 auto;
+  height: auto;
+}
+figure.diagram figcaption {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin-top: 0.5rem;
+}
+
+/* ---------- index page ---------- */
+.cover {
+  text-align: center;
+  padding: 4rem 1rem 2rem;
+}
+.cover .book-title {
+  font-size: 2.6rem;
+  margin: 0 0 0.5rem;
+  line-height: 1.1;
+}
+.cover .book-sub {
+  font-size: 1.15rem;
+  font-style: italic;
+  color: var(--ink-soft);
+  margin: 0 0 2.5rem;
+}
+.cover .open-book {
+  display: inline-block;
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0.7rem 1.6rem;
+  border-radius: 4px;
+  text-decoration: none;
+}
+.cover .open-book:hover { opacity: 0.9; }
+
+.toc-index { max-width: var(--measure); margin: 2rem auto; }
+.toc-index .toc-part {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin: 1.6rem 0 0.4rem;
+}
+.toc-index ol, .toc-index ul { list-style: none; margin: 0; padding: 0; }
+.toc-index li { margin: 0.3rem 0; }
+.toc-index a { text-decoration: none; }
+.toc-index a:hover { text-decoration: underline; }
+
+/* ---------- the-loop links section ---------- */
+section.links ul { list-style: square; padding-left: 1.2rem; }
+section.links li { margin: 0.4rem 0; }
+
+/* ---------- reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
