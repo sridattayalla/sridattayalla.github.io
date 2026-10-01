@@ -1,0 +1,71 @@
+{
+  "FS-TEXT": {
+    "sheet": "research/text-facts.md",
+    "label": "Text and structure facts",
+    "urls": [
+      "https://bhagwadgita.info/",
+      "https://ignca.gov.in/sanskrit/bhagavad_gita_introduction.pdf"
+    ]
+  },
+  "FS-MAH": {
+    "sheet": "research/mahabharata-facts.md",
+    "label": "Mahabharata frame facts",
+    "urls": [
+      "https://asiainstitutetorino.it/indologica/volumes/vol30/19_Sarin.pdf"
+    ]
+  },
+  "FS-LENSES": {
+    "sheet": "research/lenses-facts.md",
+    "label": "Classical commentators",
+    "urls": [
+      "https://ignca.gov.in/sanskrit/bhagavad_gita_introduction.pdf",
+      "https://www.advaita-vedanta.org/archives/advaita-l/1996-August/005228.html"
+    ]
+  },
+  "FS-MOD": {
+    "sheet": "research/modern-facts.md",
+    "label": "Modern readings (Tilak, Gandhi, Aurobindo, Bhaktivedanta, Ambedkar, Oppenheimer, Wilkins)",
+    "urls": [
+      "https://www.mkgandhi.org/swmgandhi/chap01.php",
+      "http://www.ambedkar.org/riddleinhinduism/21B.Riddles%20in%20Hinduism%20PART%20II.htm",
+      "https://prabhupadagita.com/preface/",
+      "https://gacbe.ac.in/images/E%20books/EssaysontheGita.pdf",
+      "https://kamat.com/database/articles/gita_rahasya.htm",
+      "https://www.thehindu.com/books/first-translation-of-the-gita/article20104419.ece",
+      "https://ia802907.us.archive.org/8/items/gitaandoppenheimer/Gita%20and%20Oppenheimer_text.pdf",
+      "https://ramakrishnavivekananda.info/"
+    ]
+  },
+  "FS-PATT": {
+    "sheet": "research/pattanaik-facts.md",
+    "label": "Pattanaik's My Gita and its critique",
+    "urls": [
+      "https://scroll.in/article/770902",
+      "https://swarajyamag.com/books/my-gita-hindered-by-his-truth"
+    ]
+  },
+  "FS-ACAD": {
+    "sheet": "research/academic-facts.md",
+    "label": "Academic scholarship: dating, layers, methods",
+    "urls": [
+      "https://www.academia.edu/29054330",
+      "https://www.britannica.com/topic/Bhagavad-Gita"
+    ]
+  },
+  "FS-GLOBAL": {
+    "sheet": "research/global-facts.md",
+    "label": "Global journeys and receptions",
+    "urls": [
+      "https://www.thehindu.com/books/first-translation-of-the-gita/article20104419.ece",
+      "https://ia802907.us.archive.org/8/items/gitaandoppenheimer/Gita%20and%20Oppenheimer_text.pdf"
+    ]
+  },
+  "SRC-IAST": {
+    "sheet": "research/text-facts.md",
+    "label": "Pinned Sanskrit (IAST) verse source, cross-checked between two editions",
+    "urls": [
+      "https://sanskritdocuments.org/languagescripts/bhagavadgita/bhagvadnew_IAST.html",
+      "https://kevincarmody.com/vedic/bhagavadgitaiast.html"
+    ]
+  }
+}

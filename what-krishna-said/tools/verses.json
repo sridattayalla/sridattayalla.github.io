@@ -1,0 +1,1010 @@
+{
+ "1.1": {
+  "id": "1.1",
+  "iast": "dharmakṣetre kurukṣetre samavetā yuyutsavaḥ . | māmakāḥ pāṇḍavāścaiva kimakurvata sañjaya",
+  "gloss": "Dhritarashtra: On the field of dharma, the field of the Kurus, gathered and eager to fight — what did my sons and the sons of Pandu do, Sanjaya?",
+  "note": "The opening word-pair 'dharmakṣetre kurukṣetre' is itself read two ways: a literal place name, and a pun — 'the field where dharma is at stake'.",
+  "src": "SRC-IAST"
+ },
+ "1.21": {
+  "id": "1.21",
+  "iast": "senayorubhayormadhye rathaṃ sthāpaya me'cyuta",
+  "gloss": "Arjuna to Krishna: Position my chariot between the two armies, unfailing one.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "1.22": {
+  "id": "1.22",
+  "iast": "yāvadetānnirīkṣe'haṃ yoddhukāmānavasthitān . | kairmayā saha yoddhavyamasmin raṇasamudyame",
+  "gloss": "So that I may see those who stand here drawn up, longing for the fight, and know whom I am to face in this undertaking.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "1.28": {
+  "id": "1.28",
+  "iast": "kṛpayā parayāviṣṭo viṣīdannidamabravīt . | dṛṣṭvemaṃ svajanaṃ kṛṣṇa yuyutsuṃ samupasthitam",
+  "gloss": "Sanjaya: Overwhelmed by great compassion, grieving, he said — Arjuna: seeing these my own people assembled, Krishna, eager for battle...",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "1.29": {
+  "id": "1.29",
+  "iast": "sīdanti mama gātrāṇi mukhaṃ ca pariśuṣyati . | vepathuśca śarīre me romaharṣaśca jāyate",
+  "gloss": "My limbs sink, my mouth goes dry, my body trembles, my hair stands on end.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "1.30": {
+  "id": "1.30",
+  "iast": "gāṇḍīvaṃ sraṃsate hastāttvakcaiva paridahyate . | na ca śaknomyavasthātuṃ bhramatīva ca me manaḥ",
+  "gloss": "The Gandiva bow slips from my hand, my skin burns; I cannot stand steady, and my mind whirls.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "1.41": {
+  "id": "1.41",
+  "iast": "adharmābhibhavātkṛṣṇa praduṣyanti kulastriyaḥ . | strīṣu duṣṭāsu vārṣṇeya jāyate varṇasaṅkaraḥ",
+  "gloss": "When lawlessness overwhelms, Krishna, the women of the family are corrupted; and when women are corrupted, Varshneya, mixing of varnas is born.",
+  "note": "Arjuna's own argument, not Krishna's. The social-anxiety logic here (women → lineage purity → varna order) is exactly what later critics such as Ambedkar targeted.",
+  "src": "SRC-IAST"
+ },
+ "1.42": {
+  "id": "1.42",
+  "iast": "saṅkaro narakāyaiva kulaghnānāṃ kulasya ca . | patanti pitaro hyeṣāṃ luptapiṇḍodakakriyāḥ",
+  "gloss": "That mixing drags down the destroyers of the family and the family itself; their ancestors fall, cut off from the rice-ball and water offerings.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "1.47": {
+  "id": "1.47",
+  "iast": "evamuktvārjunaḥ saṅkhye rathopastha upāviśat . | visṛjya saśaraṃ cāpaṃ śokasaṃvignamānasaḥ",
+  "gloss": "Having spoken thus, Arjuna sat down on the chariot seat, casting aside bow and arrows, his mind drowned in sorrow.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.11": {
+  "id": "2.11",
+  "iast": "aśocyānanvaśocastvaṃ prajñāvādāṃśca bhāṣase . | gatāsūnagatāsūṃśca nānuśocanti paṇḍitāḥ",
+  "gloss": "Krishna: You grieve for what deserves no grief, and speak what sounds like wisdom; the truly learned grieve neither for the living nor for the dead.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.13": {
+  "id": "2.13",
+  "iast": "dehino'sminyathā dehe kaumāraṃ yauvanaṃ jarā . | tathā dehāntaraprāptirdhīrastatra na muhyati",
+  "gloss": "As the embodied one passes through childhood, youth and old age in this body, so it passes on to another body; the composed one is not misled by this.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.20": {
+  "id": "2.20",
+  "iast": "na jāyate mriyate vā kadācin | nāyaṃ bhūtvā bhavitā vā na bhūyaḥ . | ajo nityaḥ śāśvato'yaṃ purāṇo | na hanyate hanyamāne śarīre",
+  "gloss": "It is never born, nor does it ever die; having once been, it never ceases to be — unborn, eternal, everlasting, primeval, it is not killed when the body is killed.",
+  "note": "The Gita's most quoted statement of the self. It assumes rebirth as background, not as something to prove.",
+  "src": "SRC-IAST"
+ },
+ "2.22": {
+  "id": "2.22",
+  "iast": "vāsāṃsi jīrṇāni yathā vihāya | navāni gṛhṇāti naro'parāṇi . | tathā śarīrāṇi vihāya jīrṇā- | nyanyāni saṃyāti navāni dehī",
+  "gloss": "As a man casts off worn-out garments and puts on new ones, so the embodied one casts off worn-out bodies and takes up others that are new.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.23": {
+  "id": "2.23",
+  "iast": "nainaṃ chindanti śastrāṇi nainaṃ dahati pāvakaḥ . | na cainaṃ kledayantyāpo na śoṣayati mārutaḥ",
+  "gloss": "Weapons do not cut it; fire does not burn it; waters do not wet it; wind does not wither it.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.27": {
+  "id": "2.27",
+  "iast": "jātasya hi dhruvo mṛtyurdhruvaṃ janma mṛtasya ca . | tasmādaparihārye'rthe na tvaṃ śocitumarhasi",
+  "gloss": "For one who is born, death is certain; for one who is dead, birth is certain; over this, which cannot be otherwise, you should not grieve.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.31": {
+  "id": "2.31",
+  "iast": "svadharmamapi cāvekṣya na vikampitumarhasi . | dharmyāddhi yuddhācchreyo'nyatkṣatriyasya na vidyate",
+  "gloss": "And as regards your own duty, you should not waver: for a kshatriya there is nothing better than a battle lawful by dharma.",
+  "note": "The chapter pivots here from the metaphysics of the self to the argument from warrior duty — svadharma.",
+  "src": "SRC-IAST"
+ },
+ "2.32": {
+  "id": "2.32",
+  "iast": "yadṛcchayā copapannaṃ svargadvāramapāvṛtam . | sukhinaḥ kṣatriyāḥ pārtha labhante yuddhamīdṛśam",
+  "gloss": "Kshatriyas who meet with such a battle, Partha, a chance-opened gate of heaven, are the fortunate ones.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.37": {
+  "id": "2.37",
+  "iast": "hato vā prāpsyasi svargaṃ jitvā vā bhokṣyase mahīm . | tasmāduttiṣṭha kaunteya yuddhāya kṛtaniścayaḥ",
+  "gloss": "Slain — you will win heaven; victorious — you will enjoy the earth. Rise therefore, son of Kunti, your mind made up to fight.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.38": {
+  "id": "2.38",
+  "iast": "sukhaduḥkhe same kṛtvā lābhālābhau jayājayau . | tato yuddhāya yujyasva naivaṃ pāpamavāpsyasi",
+  "gloss": "Making pleasure and pain the same, gain and loss, victory and defeat — gird for battle then; so you will incur no wrong.",
+  "note": "'Pāpam' here ranges from 'sin' to 'wrong' to 'misfortune'; translations differ.",
+  "src": "SRC-IAST"
+ },
+ "2.39": {
+  "id": "2.39",
+  "iast": "eṣā te'bhihitā sāṅkhye buddhiryoge tvimāṃ śṛṇu . | buddhyā yukto yayā pārtha karmabandhaṃ prahāsyasi",
+  "gloss": "This much has been set out by way of analysis; now hear it in yoga: yoked by this understanding, Partha, you will cast off the bond of action.",
+  "note": "'Sāṅkhya' here means analysis/discipline of knowledge; 'buddhi-yoga' the disciplined intelligence applied to action.",
+  "src": "SRC-IAST"
+ },
+ "2.47": {
+  "id": "2.47",
+  "iast": "karmaṇyevādhikāraste mā phaleṣu kadācana . | mā karmaphalaheturbhūrmā te saṅgo'stvakarmaṇi",
+  "gloss": "Your right is to the action alone, never to its fruits; do not let the fruits be your motive; neither let there be attachment to inaction.",
+  "note": "The most translated verse of the Gita. 'Adhikāra' = right/claim/jurisdiction; 'phala-hetu' = cause/reason-in-the-fruit. Whether this counsels detachment from outcome, selfless service, devotional service, or psychological non-clutching is the fork the whole book turns on.",
+  "src": "SRC-IAST"
+ },
+ "2.48": {
+  "id": "2.48",
+  "iast": "yogasthaḥ kuru karmāṇi saṅgaṃ tyaktvā dhanañjaya . | siddhyasiddhyoḥ samo bhūtvā samatvaṃ yoga ucyate",
+  "gloss": "Established in yoga, do your work, letting go of attachment, Dhanañjaya; even in success and failure — that evenness is called yoga.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.54": {
+  "id": "2.54",
+  "iast": "sthitaprajñasya kā bhāṣā samādhisthasya keśava . | sthitadhīḥ kiṃ prabhāṣeta kimāsīta vrajeta kim",
+  "gloss": "Arjuna: What is the description of the one of steady wisdom, of the one stable in absorption? How does the settled one speak, sit, walk about?",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.55": {
+  "id": "2.55",
+  "iast": "prajahāti yadā kāmānsarvānpārtha manogatān . | ātmanyevātmanā tuṣṭaḥ sthitaprajñastadocyate",
+  "gloss": "Krishna: When he casts off all the desires of the mind, content in the self alone through the self, he is said to be of steady wisdom.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.62": {
+  "id": "2.62",
+  "iast": "dhyāyato viṣayānpuṃsaḥ saṅgasteṣūpajāyate . | saṅgātsañjāyate kāmaḥ kāmātkrodho'bhijāyate",
+  "gloss": "In one who broods on sense-objects, attachment to them is born; from attachment, desire is born; from desire, anger is born.",
+  "note": "The Gita's causal chain of moral failure: attention → attachment → desire → anger. It is quoted in management and psychology writing as much as in theology.",
+  "src": "SRC-IAST"
+ },
+ "2.63": {
+  "id": "2.63",
+  "iast": "krodhādbhavati sammohaḥ sammohātsmṛtivibhramaḥ . | smṛtibhraṃśād buddhināśo buddhināśātpraṇaśyati",
+  "gloss": "From anger comes delusion; from delusion, loss of memory; from lost memory, the ruin of discernment; with discernment ruined, he is destroyed.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.70": {
+  "id": "2.70",
+  "iast": "āpūryamāṇamacalapratiṣṭhaṃ | samudramāpaḥ praviśanti yadvat . | tadvatkāmā yaṃ praviśanti sarve | sa śāntimāpnoti na kāmakāmī",
+  "gloss": "As the waters enter a full, unmoving sea from every side, so into such a one all desires enter — he attains peace, not the desire-chaser.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "2.72": {
+  "id": "2.72",
+  "iast": "eṣā brāhmī sthitiḥ pārtha naināṃ prāpya vimuhyati . | sthitvāsyāmantakāle'pi brahmanirvāṇamṛcchati",
+  "gloss": "This is the state established in brahman, Partha; having reached it, one is not deluded; established in it even at the hour of death, one attains nirvana in brahman.",
+  "note": "The Gita uses the Buddhist term 'nirvāṇa' here — one thread in the debate about its relation to Buddhist thought.",
+  "src": "SRC-IAST"
+ },
+ "3.5": {
+  "id": "3.5",
+  "iast": "na hi kaścitkṣaṇamapi jātu tiṣṭhatyakarmakṛt . | kāryate hyavaśaḥ karma sarvaḥ prakṛtijairguṇaiḥ",
+  "gloss": "No one rests even for a moment without acting; all beings are made to act by the strands born of nature.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "3.9": {
+  "id": "3.9",
+  "iast": "yajñārthātkarmaṇo'nyatra loko'yaṃ karmabandhanaḥ . | tadarthaṃ karma kaunteya muktasaṅgaḥ samācara",
+  "gloss": "Action other than for sacrifice binds this world; acting for that end, be free of attachment, son of Kunti.",
+  "note": "'Yajña' (sacrifice/offering) is reinterpreted through the Gita from ritual offering to dedicated, other-regarding action.",
+  "src": "SRC-IAST"
+ },
+ "3.19": {
+  "id": "3.19",
+  "iast": "tasmādasaktaḥ satataṃ kāryaṃ karma samācara . | asakto hyācarankarma paramāpnoti pūruṣaḥ",
+  "gloss": "Therefore, unattached, always do what work is to be done; the unattached one doing work attains the highest.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "3.27": {
+  "id": "3.27",
+  "iast": "prakṛteḥ kriyamāṇāni guṇaiḥ karmāṇi sarvaśaḥ . | ahaṅkāravimūḍhātmā kartāhamiti manyate",
+  "gloss": "All actions are performed by the strands of nature in every way; one deluded by ego thinks, 'I am the doer.'",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "3.35": {
+  "id": "3.35",
+  "iast": "śreyānsvadharmo viguṇaḥ paradharmātsvanuṣṭhitāt . | svadharme nidhanaṃ śreyaḥ paradharmo bhayāvahaḥ",
+  "gloss": "Better is one's own duty though flawed, than another's duty well done; better is death in one's own duty — another's duty is full of fear.",
+  "note": "With 18.47, the most socially consequential verse of the Gita: read as vocational integrity by some, as birth-duty apologetics by others.",
+  "src": "SRC-IAST"
+ },
+ "3.37": {
+  "id": "3.37",
+  "iast": "kāma eṣa krodha eṣa rajoguṇasamudbhavaḥ . | mahāśano mahāpāpmā viddhyenamiha vairiṇam",
+  "gloss": "It is desire, it is anger, born of the strand of passion, all-devouring, most impure — know this here as the enemy.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "3.42": {
+  "id": "3.42",
+  "iast": "indriyāṇi parāṇyāhurindriyebhyaḥ paraṃ manaḥ . | manasastu parā buddhiryo buddheḥ paratastu saḥ",
+  "gloss": "The senses, they say, are higher than the body; higher than the senses, the mind; higher than the mind, discernment; and higher than discernment, that.",
+  "note": "The last 'that' (saḥ) is read as the self or as the lord, depending on the commentator.",
+  "src": "SRC-IAST"
+ },
+ "3.43": {
+  "id": "3.43",
+  "iast": "evaṃ buddheḥ paraṃ buddhvā saṃstabhyātmānamātmanā . | jahi śatruṃ mahābāho kāmarūpaṃ durāsadam",
+  "gloss": "Thus knowing it as higher than discernment, steadying the self by the self, strike down this enemy in the form of desire, so hard to master, mighty-armed one.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "4.1": {
+  "id": "4.1",
+  "iast": "imaṃ vivasvate yogaṃ proktavānahamavyayam . | vivasvānmanave prāha manurikṣvākave'bravīt",
+  "gloss": "I spoke this imperishable yoga to Vivasvan the sun; Vivasvan spoke it to Manu; Manu spoke it to Ikshvaku.",
+  "note": "The genealogy frames the Gita as an eternal teaching restored — the verse Bhaktivedanta Swami builds his 'disciplic succession' reading on.",
+  "src": "SRC-IAST"
+ },
+ "4.2": {
+  "id": "4.2",
+  "iast": "evaṃ paramparāprāptamimaṃ rājarṣayo viduḥ . | sa kāleneha mahatā yogo naṣṭaḥ parantapa",
+  "gloss": "Thus received down the line, the royal seers knew it; by the great lapse of time this yoga was lost here, burner of foes.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "4.6": {
+  "id": "4.6",
+  "iast": "ajo'pi sannavyayātmā bhūtānāmīśvaro'pi san . | prakṛtiṃ svāmadhiṣṭhāya sambhavāmyātmamāyayā",
+  "gloss": "Though unborn, of imperishable self, and lord of beings — resting on my own nature I come to be by my own māyā.",
+  "note": "'Māyā' here means the lord's own power of self-manifestation, not (yet) 'illusion'. Shankara and the Vaishnava schools part ways over this word.",
+  "src": "SRC-IAST"
+ },
+ "4.7": {
+  "id": "4.7",
+  "iast": "yadā yadā hi dharmasya glānirbhavati bhārata . | abhyutthānamadharmasya tadātmānaṃ sṛjāmyaham",
+  "gloss": "Whenever dharma declines, Bharata, and adharma rises — I bring myself into being.",
+  "note": "The avatāra doctrine in two lines. The word 'avatāra' itself never appears in the Gita; the concept does.",
+  "src": "SRC-IAST"
+ },
+ "4.8": {
+  "id": "4.8",
+  "iast": "paritrāṇāya sādhūnāṃ vināśāya ca duṣkṛtām . | dharmasaṃsthāpanārthāya sambhavāmi yuge yuge",
+  "gloss": "To shelter the good, to destroy the wicked, to set dharma on its feet — I come into being age after age.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "4.13": {
+  "id": "4.13",
+  "iast": "cāturvarṇyaṃ mayā sṛṣṭaṃ guṇakarmavibhāgaśaḥ . | tasya kartāramapi māṃ viddhyakartāramavyayam",
+  "gloss": "The four-varna order I made, according to strand and action; though its maker, know me as non-maker, imperishable.",
+  "note": "The fork of forks. 'Guṇa-karma' = 'by quality and function' or 'by quality-born action' — read as anti-birth by some devotee commentators, as divine sanction of hierarchy by critics such as Ambedkar, and as a later interpolation by some historians.",
+  "src": "SRC-IAST"
+ },
+ "4.34": {
+  "id": "4.34",
+  "iast": "tadviddhi praṇipātena paripraśnena sevayā . | upadekṣyanti te jñānaṃ jñāninastattvadarśinaḥ",
+  "gloss": "Know this by bowing, by asking, by serving; those who see the real will teach you knowledge.",
+  "note": "The Gita's teacher-verse: prostration, inquiry, service — claimed by every guru-led tradition.",
+  "src": "SRC-IAST"
+ },
+ "4.37": {
+  "id": "4.37",
+  "iast": "yathaidhāṃsi samiddho'gnirbhasmasātkurute'rjuna . | jñānāgniḥ sarvakarmāṇi bhasmasātkurute tathā",
+  "gloss": "As a fire well-lit turns kindling to ash, Arjuna, so the fire of knowledge turns all actions to ash.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "4.38": {
+  "id": "4.38",
+  "iast": "na hi jñānena sadṛśaṃ pavitramiha vidyate . | tatsvayaṃ yogasaṃsiddhaḥ kālenātmani vindati",
+  "gloss": "Nothing that purifies equals knowledge; perfected in yoga, one finds it in oneself in time.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "5.2": {
+  "id": "5.2",
+  "iast": "saṃnyāsaḥ karmayogaśca niḥśreyasakarāvubhau . | tayostu karmasaṃnyāsātkarmayogo viśiṣyate",
+  "gloss": "Both renunciation and karma-yoga carry one to the highest; of the two, karma-yoga excels renunciation of action.",
+  "note": "The verdict Tilak built his whole Gita Rahasya on.",
+  "src": "SRC-IAST"
+ },
+ "5.8": {
+  "id": "5.8",
+  "iast": "naiva kiñcitkaromīti yukto manyeta tattvavit . | paśyañśṛṇvanspṛśañjighrannaśnangacchansvapañśvasan",
+  "gloss": "The one yoked in knowledge, knowing the real, thinks 'I do nothing at all' — while seeing, hearing, touching, smelling, eating, walking, sleeping, breathing.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "5.9": {
+  "id": "5.9",
+  "iast": "pralapanvisṛjangṛhṇannunmiṣannimiṣannapi . | indriyāṇīndriyārtheṣu vartanta iti dhārayan",
+  "gloss": "Speaking, releasing, taking, opening and closing the eyes, he holds firmly: 'it is the senses that move among their objects.'",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "5.18": {
+  "id": "5.18",
+  "iast": "vidyāvinayasampanne brāhmaṇe gavi hastini . | śuni caiva śvapāke ca paṇḍitāḥ samadarśinaḥ",
+  "gloss": "The learned see the same in a brahmin of learning and courtesy, in a cow, in an elephant, in a dog — and in a dog-cooker.",
+  "note": "'Śvapāka' literally 'dog-cooker', an outcaste occupation. The verse's radical equality claim coexists in the same text with 4.13 and 18.41 — a tension every reader must place somewhere.",
+  "src": "SRC-IAST"
+ },
+ "5.29": {
+  "id": "5.29",
+  "iast": "bhoktāraṃ yajñatapasāṃ sarvalokamaheśvaram . | suhṛdaṃ sarvabhūtānāṃ jñātvā māṃ śāntimṛcchati",
+  "gloss": "Knowing me as the enjoyer of sacrifices and austerities, as the great lord of all worlds, as the friend of all beings — one attains peace.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "6.5": {
+  "id": "6.5",
+  "iast": "uddharedātmanātmānaṃ nātmānamavasādayet . | ātmaiva hyātmano bandhurātmaiva ripurātmanaḥ",
+  "gloss": "Let a man lift himself by himself; let him not degrade himself; the self alone is the self's friend, the self alone its enemy.",
+  "note": "One of the Gita's most-quoted self-reliance verses — 'uddhared ātmanātmānam'.",
+  "src": "SRC-IAST"
+ },
+ "6.16": {
+  "id": "6.16",
+  "iast": "nātyaśnatastu yogo'sti na caikāntamanaśnataḥ . | na cātisvapnaśīlasya jāgrato naiva cārjuna",
+  "gloss": "Yoga is not for one who overeats, Arjuna, nor for one who does not eat at all; nor for one who oversleeps, nor for one who keeps awake.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "6.17": {
+  "id": "6.17",
+  "iast": "yuktāhāravihārasya yuktaceṣṭasya karmasu . | yuktasvapnāvabodhasya yogo bhavati duḥkhahā",
+  "gloss": "For one measured in eating and in recreation, measured in effort, measured in sleeping and waking — yoga becomes the destroyer of sorrow.",
+  "note": "The 'moderation verse' — often quoted as the Gita's middle way, echoing Buddhist phrasing.",
+  "src": "SRC-IAST"
+ },
+ "6.19": {
+  "id": "6.19",
+  "iast": "yathā dīpo nivātastho neṅgate sopamā smṛtā . | yogino yatacittasya yuñjato yogamātmanaḥ",
+  "gloss": "As a lamp in a windless place does not flicker — so runs the likeness of the yogi of subdued mind, practicing yoga of the self.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "6.34": {
+  "id": "6.34",
+  "iast": "cañcalaṃ hi manaḥ kṛṣṇa pramāthi balavad dṛḍham . | tasyāhaṃ nigrahaṃ manye vāyoriva suduṣkaram",
+  "gloss": "Arjuna: The mind is restless, Krishna — turbulent, powerful, obstinate; to curb it seems to me as hard as to curb the wind.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "6.35": {
+  "id": "6.35",
+  "iast": "asaṃśayaṃ mahābāho mano durnigrahaṃ calam . | abhyāsena tu kaunteya vairāgyeṇa ca gṛhyate",
+  "gloss": "Krishna: No doubt, mighty-armed one — the mind is restless and hard to curb; yet by practice and by non-attachment, son of Kunti, it is held.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "6.47": {
+  "id": "6.47",
+  "iast": "yogināmapi sarveṣāṃ madgatenāntarātmanā . | śraddhāvānbhajate yo māṃ sa me yuktatamo mataḥ",
+  "gloss": "And of all yogis, the one who worships me with faith, his self absorbed in me — that one I hold the most yoked of all.",
+  "note": "Chapter 6, devoted to meditation, ends by ranking the devotee above the meditator — a hinge toward the devotion chapters.",
+  "src": "SRC-IAST"
+ },
+ "7.5": {
+  "id": "7.5",
+  "iast": "apareyamitastvanyāṃ prakṛtiṃ viddhi me parām . | jīvabhūtāṃ mahābāho yayedaṃ dhāryate jagat",
+  "gloss": "This is my lower nature; know my other, higher nature — the life-element, mighty-armed one, by which this world is held fast.",
+  "note": "The Gita's two-natures doctrine: matter (apara prakṛti) and life/soul (para prakṛti).",
+  "src": "SRC-IAST"
+ },
+ "7.14": {
+  "id": "7.14",
+  "iast": "daivī hyeṣā guṇamayī mama māyā duratyayā . | māmeva ye prapadyante māyāmetāṃ taranti te",
+  "gloss": "For divine is this strand-woven māyā of mine, hard to cross; those who take refuge in me alone cross over this māyā.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "7.16": {
+  "id": "7.16",
+  "iast": "caturvidhā bhajante māṃ janāḥ sukṛtino'rjuna . | ārto jijñāsurarthārthī jñānī ca bharatarṣabha",
+  "gloss": "Four kinds of virtuous folk worship me, Arjuna: the distressed, the knowledge-seeker, the wealth-seeker — and the wise.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "7.19": {
+  "id": "7.19",
+  "iast": "bahūnāṃ janmanāmante jñānavānmāṃ prapadyate . | vāsudevaḥ sarvamiti sa mahātmā sudurlabhaḥ",
+  "gloss": "At the end of many births, the wise one comes to refuge in me: 'Vasudeva is everything.' Such a great soul is very rare.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "7.21": {
+  "id": "7.21",
+  "iast": "yo yo yāṃ yāṃ tanuṃ bhaktaḥ śraddhayārcitumicchati . | tasya tasyācalāṃ śraddhāṃ tāmeva vidadhāmyaham",
+  "gloss": "Whatever form any devotee wishes to worship in faith — that very faith of theirs I make firm.",
+  "note": "The Gita's most pluralism-friendly verse: other gods are given a place within Krishna's economy.",
+  "src": "SRC-IAST"
+ },
+ "7.22": {
+  "id": "7.22",
+  "iast": "sa tayā śraddhayā yuktastasyārādhanamīhate . | labhate ca tataḥ kāmānmayaiva vihitānhi tān",
+  "gloss": "Yoked in that faith, such a one seeks the favor of that form — and from it gains the desires wished; the arranging is mine.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "8.3": {
+  "id": "8.3",
+  "iast": "akṣaraṃ brahma paramaṃ svabhāvo'dhyātmamucyate . | bhūtabhāvodbhavakaro visargaḥ karmasaṃjñitaḥ",
+  "gloss": "The imperishable — that is the highest brahman; its dwelling in each body is called the self; the letting-forth that brings beings to birth is called action.",
+  "note": "The Gita defining its own key terms: brahman, adhyātma, karma.",
+  "src": "SRC-IAST"
+ },
+ "8.5": {
+  "id": "8.5",
+  "iast": "antakāle ca māmeva smaranmuktvā kalevaram . | yaḥ prayāti sa madbhāvaṃ yāti nāstyatra saṃśayaḥ",
+  "gloss": "Whoever, at the time of death, lets go of the body remembering me alone — that one goes to my being; there is no doubt.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "8.6": {
+  "id": "8.6",
+  "iast": "yaṃ yaṃ vāpi smaranbhāvaṃ tyajatyante kalevaram . | taṃ tamevaiti kaunteya sadā tadbhāvabhāvitaḥ",
+  "gloss": "Whatever state of being one remembers when quitting the body at the end — to that very state one goes, always made of that memory.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "8.7": {
+  "id": "8.7",
+  "iast": "tasmātsarveṣu kāleṣu māmanusmara yudhya ca . | mayyarpitamanobuddhirmāmevaiṣyasyasaṃśayaḥ",
+  "gloss": "Therefore at all times remember me — and fight. With mind and understanding entrusted to me, you shall come to me; there is no doubt.",
+  "note": "'Remember me and fight' — devotion and battle in one breath; the verse that most embarrasses pacifist readings and energizes activist ones.",
+  "src": "SRC-IAST"
+ },
+ "8.22": {
+  "id": "8.22",
+  "iast": "puruṣaḥ sa paraḥ pārtha bhaktyā labhyastvananyayā . | yasyāntaḥsthāni bhūtāni yena sarvamidaṃ tatam",
+  "gloss": "That is the highest person, Partha, in whom beings dwell, by whom all this is pervaded — attained by devotion and by nothing else.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "9.4": {
+  "id": "9.4",
+  "iast": "mayā tatamidaṃ sarvaṃ jagadavyaktamūrtinā . | matsthāni sarvabhūtāni na cāhaṃ teṣvavasthitaḥ",
+  "gloss": "All this world is pervaded by me in unmanifest form; in me all beings stand — yet I do not stand in them.",
+  "note": "The classic panentheist formula: God in the world, the world in God, and yet not identical.",
+  "src": "SRC-IAST"
+ },
+ "9.22": {
+  "id": "9.22",
+  "iast": "ananyāścintayanto māṃ ye janāḥ paryupāsate . | teṣāṃ nityābhiyuktānāṃ yogakṣemaṃ vahāmyaham",
+  "gloss": "Those who, meditating, worship me with minds nowhere else — I myself carry for them, ever-yoked ones, their yoga and their kshema.",
+  "note": "'Yoga-kṣema' is a technical pair: what is attained and what is safeguarded. Rendered variously as 'what they need and what they have'.",
+  "src": "SRC-IAST"
+ },
+ "9.26": {
+  "id": "9.26",
+  "iast": "patraṃ puṣpaṃ phalaṃ toyaṃ yo me bhaktyā prayacchati . | tadahaṃ bhaktyupahṛtamaśnāmi prayatātmanaḥ",
+  "gloss": "A leaf, a flower, a fruit, water — whoever offers it to me with devotion, that I receive from the striving soul.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "9.29": {
+  "id": "9.29",
+  "iast": "samo'haṃ sarvabhūteṣu na me dveṣyo'sti na priyaḥ . | ye bhajanti tu māṃ bhaktyā mayi te teṣu cāpyaham",
+  "gloss": "I am the same toward all beings; to me none is hateful, and none is dear; but those who worship me with devotion are in me — and I in them.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "9.30": {
+  "id": "9.30",
+  "iast": "api cetsudurācāro bhajate māmananyabhāk . | sādhureva sa mantavyaḥ samyagvyavasito hi saḥ",
+  "gloss": "Even if one of utterly wicked conduct worships me with single devotion, that one is to be counted righteous — rightly resolved.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "9.31": {
+  "id": "9.31",
+  "iast": "kṣipraṃ bhavati dharmātmā śaśvacchāntiṃ nigacchati . | kaunteya pratijānīhi na me bhaktaḥ praṇaśyati",
+  "gloss": "Soon he becomes a man of dharma and attains lasting peace; know this for certain, son of Kunti: my devotee is never lost.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "9.32": {
+  "id": "9.32",
+  "iast": "māṃ hi pārtha vyapāśritya ye'pi syuḥ pāpayonayaḥ . | striyo vaiśyāstathā śūdrāste'pi yānti parāṃ gatim",
+  "gloss": "Taking refuge in me, even those born of ill wombs — women, vaishyas, shudras likewise — even they go the highest way.",
+  "note": "The Gita's most debated inclusion verse: does 'even they' open heaven's door to the excluded, or confirm who was excluded? Read both ways across two millennia.",
+  "src": "SRC-IAST"
+ },
+ "9.34": {
+  "id": "9.34",
+  "iast": "manmanā bhava madbhakto madyājī māṃ namaskuru . | māmevaiṣyasi yuktvaivamātmānaṃ matparāyaṇaḥ",
+  "gloss": "Set your mind on me, be my devotee, sacrifice to me, bow to me; yoked to me, with me as your highest end — you will come to me.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "10.8": {
+  "id": "10.8",
+  "iast": "ahaṃ sarvasya prabhavo mattaḥ sarvaṃ pravartate . | iti matvā bhajante māṃ budhā bhāvasamanvitāḥ",
+  "gloss": "I am the source of all; from me everything moves onward; knowing this, the wise worship me, moved by feeling.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "10.20": {
+  "id": "10.20",
+  "iast": "ahamātmā guḍākeśa sarvabhūtāśayasthitaḥ . | ahamādiśca madhyaṃ ca bhūtānāmanta eva ca",
+  "gloss": "I am the self seated in the hearts of all beings, Gudakesha; I am the beginning and the middle, and the end too of beings.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "10.41": {
+  "id": "10.41",
+  "iast": "yadyadvibhūtimatsattvaṃ śrīmadūrjitameva vā . | tattadevāvagaccha tvaṃ mama tejoṃ'śasambhavam",
+  "gloss": "Whatever being has glory, or beauty, or strength — know it as born of a spark of my splendor.",
+  "note": "Oppenheimer's 'brighter than a thousand suns' belongs to this chapter's neighborhood (11.12) — radiance as a divine signature.",
+  "src": "SRC-IAST"
+ },
+ "11.12": {
+  "id": "11.12",
+  "iast": "divi sūryasahasrasya bhavedyugapadutthitā . | yadi bhāḥ sadṛśī sā syādbhāsastasya mahātmanaḥ",
+  "gloss": "If the light of a thousand suns were to rise at once in the sky, that might resemble the splendor of that great one.",
+  "note": "The verse behind 'brighter than a thousand suns' — though the exact English phrasing comes from Robert Jungk's 1958 retelling of Oppenheimer, not from Oppenheimer's own lips at Trinity.",
+  "src": "SRC-IAST"
+ },
+ "11.28": {
+  "id": "11.28",
+  "iast": "yathā nadīnāṃ bahavo'mbuvegāḥ | samudramevābhimukhā dravanti . | tathā tavāmī naralokavīrā | viśanti vaktrāṇyabhivijvalanti",
+  "gloss": "As the many streams of rivers run headlong into the ocean, so these heroes of the world of men enter your blazing mouths.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "11.32": {
+  "id": "11.32",
+  "iast": "kālo'smi lokakṣayakṛtpravṛddho | lokānsamāhartumiha pravṛttaḥ . | ṛte'pi tvāṃ na bhaviṣyanti sarve | ye'vasthitāḥ pratyanīkeṣu yodhāḥ",
+  "gloss": "I am time, grown great, the destroyer of worlds, set in motion here to gather in the worlds; even without you, none of these warriors in the opposing ranks shall remain.",
+  "note": "'Kāla' = time, not 'death' (that is mṛtyu). Oppenheimer's 'Now I am become Death' follows his teacher Ryder's rendering. Readings differ on what identifying with 'time' does to the speaker's guilt.",
+  "src": "SRC-IAST"
+ },
+ "11.33": {
+  "id": "11.33",
+  "iast": "tasmāttvamuttiṣṭha yaśo labhasva | jitvā śatrūn bhuṅkṣva rājyaṃ samṛddham . | mayaivaite nihatāḥ pūrvameva | nimittamātraṃ bhava savyasācin",
+  "gloss": "Therefore rise, win glory; conquering your enemies, enjoy a flourishing kingdom. By me these have already been slain — be you merely the instrument, left-handed archer.",
+  "note": "'Nimitta-mātra' = mere instrument/occasion. The strongest verse for the 'divine determinism' reading — and the one Ambedkar called a lunatic's defense of murder.",
+  "src": "SRC-IAST"
+ },
+ "11.53": {
+  "id": "11.53",
+  "iast": "nāhaṃ vedairna tapasā na dānena na cejyayā . | śakya evaṃvidho draṣṭuṃ dṛṣṭavānasi māṃ yathā",
+  "gloss": "Not by the Vedas, nor by austerity, nor by giving, nor by ritual — can I be seen as you have seen me.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "11.54": {
+  "id": "11.54",
+  "iast": "bhaktyā tvananyayā śakya ahamevaṃvidho'rjuna . | jñātuṃ draṣṭuṃ ca tattvena praveṣṭuṃ ca parantapa",
+  "gloss": "By unwavering devotion alone can I be known in this way, Arjuna — seen in truth, entered into.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "11.55": {
+  "id": "11.55",
+  "iast": "matkarmakṛnmatparamo madbhaktaḥ saṅgavarjitaḥ . | nirvairaḥ sarvabhūteṣu yaḥ sa māmeti pāṇḍava",
+  "gloss": "Who works for me, holds me supreme, is devoted to me, free of attachment, bearing no enmity toward any being — that one comes to me, Pandava.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "12.2": {
+  "id": "12.2",
+  "iast": "mayyāveśya mano ye māṃ nityayuktā upāsate . | śraddhayā parayopetāḥ te me yuktatamā matāḥ",
+  "gloss": "Those who set their minds on me, ever-yoked, worshipping with supreme faith — them I hold the highest.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "12.5": {
+  "id": "12.5",
+  "iast": "kleśo'dhikatarasteṣāmavyaktāsaktacetasām . | avyaktā hi gatirduḥkhaṃ dehavadbhiravāpyate",
+  "gloss": "For those attached to the unmanifest, the struggle is greater; the way of the unmanifest is hard for the embodied to attain.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "12.13": {
+  "id": "12.13",
+  "iast": "adveṣṭā sarvabhūtānāṃ maitraḥ karuṇa eva ca . | nirmamo nirahaṅkāraḥ samaduḥkhasukhaḥ kṣamī",
+  "gloss": "Free of ill-will toward all beings, friendly, compassionate; without possessiveness, without ego; even in pain and pleasure, patient.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "12.14": {
+  "id": "12.14",
+  "iast": "santuṣṭaḥ satataṃ yogī yatātmā dṛḍhaniścayaḥ . | mayyarpitamanobuddhiryo madbhaktaḥ sa me priyaḥ",
+  "gloss": "Content, ever a yogi, self-possessed, firm of resolve; with mind and understanding offered to me — my devotee, dear to me.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "12.15": {
+  "id": "12.15",
+  "iast": "yasmānnodvijate loko lokānnodvijate ca yaḥ . | harṣāmarṣabhayodvegairmukto yaḥ sa ca me priyaḥ",
+  "gloss": "He from whom the world is not disturbed, and who is not disturbed by the world; freed from delight, envy, fear and dread — dear to me.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "12.16": {
+  "id": "12.16",
+  "iast": "anapekṣaḥ śucirdakṣa udāsīno gatavyathaḥ . | sarvārambhaparityāgī yo madbhaktaḥ sa me priyaḥ",
+  "gloss": "Asking nothing, pure, capable, indifferent, untroubled, letting go of every undertaking — my devotee, dear to me.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.1": {
+  "id": "13.1",
+  "iast": "prakṛtiṃ puruṣaṃ caiva kṣetraṃ kṣetrajñameva ca . | etadveditumicchāmi jñānaṃ jñeyaṃ ca keśava",
+  "gloss": "Arjuna: Nature and the person, the field and the knower of the field, knowledge and the knowable — these I wish to know, Keshava.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.2": {
+  "id": "13.2",
+  "iast": "idaṃ śarīraṃ kaunteya kṣetramityabhidhīyate . | etadyo vetti taṃ prāhuḥ kṣetrajña iti tadvidaḥ",
+  "gloss": "Krishna: This body is called the field, son of Kunti; and the one who knows it — those who know call that one the knower of the field.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.7": {
+  "id": "13.7",
+  "iast": "icchā dveṣaḥ sukhaṃ duḥkhaṃ saṅghātaścetanā dhṛtiḥ . | etatkṣetraṃ samāsena savikāramudāhṛtam",
+  "gloss": "Desire, aversion, pleasure, pain, the aggregate, awareness, resolve — this, in brief, with its workings, is what is called the field.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.8": {
+  "id": "13.8",
+  "iast": "amānitvamadambhitvamahiṃsā kṣāntirārjavam . | ācāryopāsanaṃ śaucaṃ sthairyamātmavinigrahaḥ",
+  "gloss": "Humility, unpretentiousness, non-injury, patience, uprightness; serving the teacher, purity, steadiness, self-restraint.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.19": {
+  "id": "13.19",
+  "iast": "iti kṣetraṃ tathā jñānaṃ jñeyaṃ coktaṃ samāsataḥ . | madbhakta etadvijñāya madbhāvāyopapadyate",
+  "gloss": "Thus have the field, knowledge and the knowable been set out in brief; my devotee, knowing this, enters into my being.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.20": {
+  "id": "13.20",
+  "iast": "prakṛtiṃ puruṣaṃ caiva viddhyanādī ubhāvapi . | vikārāṃśca guṇāṃścaiva viddhi prakṛtisambhavān",
+  "gloss": "Know nature and the person alike as without beginning; know the alterations and the strands as born of nature.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.23": {
+  "id": "13.23",
+  "iast": "upadraṣṭānumantā ca bhartā bhoktā maheśvaraḥ . | paramātmeti cāpyukto dehe'sminpuruṣaḥ paraḥ",
+  "gloss": "The witness, the permitter, the supporter, the enjoyer, the great lord — and what is also called the highest self — this is the person in this body.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.27": {
+  "id": "13.27",
+  "iast": "yāvatsañjāyate kiñcitsattvaṃ sthāvarajaṅgamam . | kṣetrakṣetrajñasaṃyogāttadviddhi bharatarṣabha",
+  "gloss": "Whatever comes into being, moving or unmoving — know, bull of Bharata, that it is born of the union of the field and its knower.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "13.28": {
+  "id": "13.28",
+  "iast": "samaṃ sarveṣu bhūteṣu tiṣṭhantaṃ parameśvaram . | vinaśyatsvavinaśyantaṃ yaḥ paśyati sa paśyati",
+  "gloss": "Who sees the same lord standing within all beings, perishing as they perish — that one truly sees.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "14.5": {
+  "id": "14.5",
+  "iast": "sattvaṃ rajastama iti guṇāḥ prakṛtisambhavāḥ . | nibadhnanti mahābāho dehe dehinamavyayam",
+  "gloss": "Strand-lucidity, passion and inertia — these strands, born of nature, bind the embodied one, the imperishable, fast in the body.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "14.6": {
+  "id": "14.6",
+  "iast": "tatra sattvaṃ nirmalatvātprakāśakamanāmayam . | sukhasaṅgena badhnāti jñānasaṅgena cānagha",
+  "gloss": "Of these, lucidity — stainless, luminous, unailing — binds through attachment to happiness and to knowledge.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "14.7": {
+  "id": "14.7",
+  "iast": "rajo rāgātmakaṃ viddhi tṛṣṇāsaṅgasamudbhavam . | tannibadhnāti kaunteya karmasaṅgena dehinam",
+  "gloss": "Know passion as born of desire, attachment-bred; it binds the embodied one, son of Kunti, by attachment to action.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "14.8": {
+  "id": "14.8",
+  "iast": "tamastvajñānajaṃ viddhi mohanaṃ sarvadehinām . | pramādālasyanidrābhistannibadhnāti bhārata",
+  "gloss": "And know inertia as born of ignorance, bewildering all embodied beings; it binds through heedlessness, sloth and sleep.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "14.19": {
+  "id": "14.19",
+  "iast": "nānyaṃ guṇebhyaḥ kartāraṃ yadā draṣṭānupaśyati . | guṇebhyaśca paraṃ vetti madbhāvaṃ so'dhigacchati",
+  "gloss": "When the seer sees no doer apart from the strands, and knows what is beyond the strands — that one reaches my being.",
+  "note": "The mechanistic fork: if the strands do everything, where is free will? Chapter 14's determinism is the text's sharpest.",
+  "src": "SRC-IAST"
+ },
+ "14.26": {
+  "id": "14.26",
+  "iast": "māṃ ca yo'vyabhicāreṇa bhaktiyogena sevate . | sa guṇānsamatītyaitānbrahmabhūyāya kalpate",
+  "gloss": "And whoever serves me with unwavering devotion — that one crosses beyond these strands and is made fit for brahman.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.1": {
+  "id": "15.1",
+  "iast": "ūrdhvamūlamadhaḥśākhamaśvatthaṃ prāhuravyayam . | chandāṃsi yasya parṇāni yastaṃ veda sa vedavit",
+  "gloss": "They speak of an imperishable banyan, roots above, branches below, whose leaves are the Vedic hymns; who knows it, knows the Vedas.",
+  "note": "'Aśvattha' = the banyan/peepul fig — 'that which will not stand the same till tomorrow', an etymology the tradition savors.",
+  "src": "SRC-IAST"
+ },
+ "15.2": {
+  "id": "15.2",
+  "iast": "adhaścordhvaṃ prasṛtāstasya śākhā | guṇapravṛddhā viṣayapravālāḥ . | adhaśca mūlānyanusantatāni | karmānubandhīni manuṣyaloke",
+  "gloss": "Below and above stretch its branches, grown by the strands, their shoots the sense-fields; and its secondary roots run below, binding through action, in the world of humans.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.3": {
+  "id": "15.3",
+  "iast": "na rūpamasyeha tathopalabhyate | nānto na cādirna ca sampratiṣṭhā . | aśvatthamenaṃ suvirūḍhamūlaṃ | asaṅgaśastreṇa dṛḍhena chittvā",
+  "gloss": "Its form here is not grasped like that — no end, no beginning, no resting place. This banyan of firm-rooted form is to be cut down with the strong axe of non-attachment.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.4": {
+  "id": "15.4",
+  "iast": "tataḥ padaṃ tatparimārgitavyaṃ | yasmingatā na nivartanti bhūyaḥ . | tameva cādyaṃ puruṣaṃ prapadye . | yataḥ pravṛttiḥ prasṛtā purāṇī",
+  "gloss": "Then that resting-place is to be sought, going where one does not return again: 'I take refuge in that first person from whom this ancient current set forth.'",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.6": {
+  "id": "15.6",
+  "iast": "na tadbhāsayate sūryo na śaśāṅko na pāvakaḥ . | yadgatvā na nivartante taddhāma paramaṃ mama",
+  "gloss": "That, my highest abode, is lit by neither sun nor moon nor fire; going there, none return.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.15": {
+  "id": "15.15",
+  "iast": "sarvasya cāhaṃ hṛdi sanniviṣṭo | mattaḥ smṛtirjñānamapohanañca . | vedaiśca sarvairahameva vedyo | vedāntakṛdvedavideva cāham",
+  "gloss": "And I am seated in the hearts of all; from me come memory, knowledge and their loss; by all the Vedas I alone am to be known; I am the maker of Vedanta, the knower of the Veda.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.16": {
+  "id": "15.16",
+  "iast": "dvāvimau puruṣau loke kṣaraścākṣara eva ca . | kṣaraḥ sarvāṇi bhūtāni kūṭastho'kṣara ucyate",
+  "gloss": "There are two persons in this world: the perishable and the imperishable; the perishable is all beings; the fixed one is called the imperishable.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.17": {
+  "id": "15.17",
+  "iast": "uttamaḥ puruṣastvanyaḥ paramātmetyudāhṛtaḥ . | yo lokatrayamāviśya bibhartyavyaya īśvaraḥ",
+  "gloss": "But other than both is the highest person, called the highest self — entering the three worlds, upholding them, the imperishable lord.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "15.18": {
+  "id": "15.18",
+  "iast": "yasmātkṣaramatīto'hamakṣarādapi cottamaḥ . | ato'smi loke vede ca prathitaḥ puruṣottamaḥ",
+  "gloss": "Because I am beyond the perishable, and higher even than the imperishable — in the world and in the Veda I am celebrated as the highest person.",
+  "note": "The 'puruṣottama' three-tier ontology — the verse that gives the chapter its name.",
+  "src": "SRC-IAST"
+ },
+ "16.1": {
+  "id": "16.1",
+  "iast": "abhayaṃ sattvasaṃśuddhirjñānayogavyavasthitiḥ . | dānaṃ damaśca yajñaśca svādhyāyastapa ārjavam",
+  "gloss": "Fearlessness, purity of one's being, steadfastness in the yoga of knowledge; giving, self-restraint, sacrifice, recitation, austerity, uprightness.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "16.2": {
+  "id": "16.2",
+  "iast": "ahiṃsā satyamakrodhastyāgaḥ śāntirapaiśunam . | dayā bhūteṣvaloluptvaṃ mārdavaṃ hrīracāpalam",
+  "gloss": "Non-injury, truth, absence of anger, relinquishing, calm, non-slander; compassion for beings, freedom from craving, gentleness, modesty, steadiness.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "16.3": {
+  "id": "16.3",
+  "iast": "tejaḥ kṣamā dhṛtiḥ śaucamadroho nātimānitā . | bhavanti sampadaṃ daivīmabhijātasya bhārata",
+  "gloss": "Vigor, forgiveness, fortitude, purity, freedom from envy, absence of pride — these are of one born to the divine estate.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "16.4": {
+  "id": "16.4",
+  "iast": "dambho darpo'bhimānaśca krodhaḥ pāruṣyameva ca . | ajñānaṃ cābhijātasya pārtha sampadamāsurīm",
+  "gloss": "Ostentation, arrogance, self-conceit, anger, harshness, ignorance — these are of one born to the demonic estate.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "16.8": {
+  "id": "16.8",
+  "iast": "asatyamapratiṣṭhaṃ te jagadāhuranīśvaram . | aparasparasambhūtaṃ kimanyatkāmahaitukam",
+  "gloss": "They say the world is unreal, without foundation, without a lord; born of mutual union — of desire alone, without other cause.",
+  "note": "The Gita's sketch of nihilists — often read as a swipe at materialist (Cārvāka) and some Buddhist schools.",
+  "src": "SRC-IAST"
+ },
+ "16.13": {
+  "id": "16.13",
+  "iast": "idamadya mayā labdhamimaṃ prāpsye manoratham . | idamastīdamapi me bhaviṣyati punardhanam",
+  "gloss": "'This I have gained today; this desire I shall fulfill; this much is mine — and this wealth too shall be mine.'",
+  "note": "The Gita ventriloquizes the demonic self — the only place it stages an inner monologue.",
+  "src": "SRC-IAST"
+ },
+ "16.14": {
+  "id": "16.14",
+  "iast": "asau mayā hataḥ śatrurhaniṣye cāparānapi . | īśvaro'hamahaṃ bhogī siddho'haṃ balavānsukhī",
+  "gloss": "'That enemy has been slain by me; these others too I shall slay. I am lord, I am enjoyer, I am perfected, mighty, happy.'",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "16.21": {
+  "id": "16.21",
+  "iast": "trividhaṃ narakasyedaṃ dvāraṃ nāśanamātmanaḥ . | kāmaḥ krodhastathā lobhastasmādetattrayaṃ tyajet",
+  "gloss": "Threefold is the gate of hell, ruinous to the self: desire, anger and greed; therefore let a man abandon these three.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "16.23": {
+  "id": "16.23",
+  "iast": "yaḥ śāstravidhimutsṛjya vartate kāmakārataḥ . | na sa siddhimavāpnoti na sukhaṃ na parāṃ gatim",
+  "gloss": "Who, casting off the rule of scripture, acts by whim of desire — attains no perfection, no happiness, no highest way.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "16.24": {
+  "id": "16.24",
+  "iast": "tasmācchāstraṃ pramāṇaṃ te kāryākāryavyavasthitau . | jñātvā śāstravidhānoktaṃ karma kartumihārhasi",
+  "gloss": "Therefore, let scripture be your measure for what is to be done and not done; knowing the rule of scripture, act here.",
+  "note": "The Gita's own statement of textual authority — the verse that makes the commentator's job sacred, and the reformer's job hard.",
+  "src": "SRC-IAST"
+ },
+ "17.3": {
+  "id": "17.3",
+  "iast": "sattvānurūpā sarvasya śraddhā bhavati bhārata . | śraddhāmayo'yaṃ puruṣo yo yacchraddhaḥ sa eva saḥ",
+  "gloss": "The faith of each follows its strand; this person is made of faith: whatever one's faith, that is what one is.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "17.8": {
+  "id": "17.8",
+  "iast": "āyuḥsattvabalārogyasukhaprītivivardhanāḥ . | rasyāḥ snigdhāḥ sthirā hṛdyā āhārāḥ sāttvikapriyāḥ",
+  "gloss": "Foods that grow life, lucidity, strength, health, gladness, cheer — juicy, unctuous, substantial, agreeable — are dear to the lucid.",
+  "note": "The verse behind generations of vegetarian sattvic-diet claims.",
+  "src": "SRC-IAST"
+ },
+ "17.9": {
+  "id": "17.9",
+  "iast": "kaṭvamlalavaṇātyuṣṇatīkṣṇarūkṣavidāhinaḥ . | āhārā rājasasyeṣṭā duḥkhaśokāmayapradāḥ",
+  "gloss": "Foods too bitter, sour, salty, hot, pungent, dry, burning — dear to the passionate — breed pain, grief, sickness.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "17.10": {
+  "id": "17.10",
+  "iast": "yātayāmaṃ gatarasaṃ pūti paryuṣitaṃ ca yat . | ucchiṣṭamapi cāmedhyaṃ bhojanaṃ tāmasapriyam",
+  "gloss": "Food stale, tasteless, putrid, left overnight, leavings, unfit for offering — is dear to the inert.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "17.15": {
+  "id": "17.15",
+  "iast": "anudvegakaraṃ vākyaṃ satyaṃ priyahitaṃ ca yat . | svādhyāyābhyasanaṃ caiva vāṅmayaṃ tapa ucyate",
+  "gloss": "Speech that gives no offense, that is true, pleasing and beneficial — and the practice of reciting scripture — this is called the austerity of speech.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "17.23": {
+  "id": "17.23",
+  "iast": "oṃtatsaditi nirdeśo brahmaṇastrividhaḥ smṛtaḥ . | brāhmaṇāstena vedāśca yajñāśca vihitāḥ purā",
+  "gloss": "'Oṃ Tat Sat' — this is held to be the threefold designation of brahman; by this were of old marked the brahmins, the Vedas and the sacrifices.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "18.1": {
+  "id": "18.1",
+  "iast": "saṃnyāsasya mahābāho tattvamicchāmi veditum . | tyāgasya ca hṛṣīkeśa pṛthakkeśiniṣūdana",
+  "gloss": "Arjuna: I wish to know the truth of renunciation, Hrishikesha, and of letting-go — and their difference, slayer of foes.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "18.2": {
+  "id": "18.2",
+  "iast": "kāmyānāṃ karmaṇāṃ nyāsaṃ saṃnyāsaṃ kavayo viduḥ . | sarvakarmaphalatyāgaṃ prāhustyāgaṃ vicakṣaṇāḥ",
+  "gloss": "Krishna: The giving up of desire-driven actions — that the sages call renunciation; the relinquishing of the fruits of all actions — that the discerning call letting-go.",
+  "note": "The Gita's closing vocabulary fix: saṃnyāsa vs tyāga. Tilak and Gandhi both hang their readings on this distinction.",
+  "src": "SRC-IAST"
+ },
+ "18.13": {
+  "id": "18.13",
+  "iast": "pañcaitāni mahābāho kāraṇāni nibodha me . | sāṅkhye kṛtānte proktāni siddhaye sarvakarmaṇām",
+  "gloss": "Learn from me, mighty-armed one, these five causes, as declared in the analysis of the completion of all actions.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "18.14": {
+  "id": "18.14",
+  "iast": "adhiṣṭhānaṃ tathā kartā karaṇaṃ ca pṛthagvidham . | vividhāśca pṛthakceṣṭā daivaṃ caivātra pañcamam",
+  "gloss": "The seat or body; the doer; the instruments, various; the several kinds of movement — and the divine, the fifth.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "18.15": {
+  "id": "18.15",
+  "iast": "śarīravāṅmanobhiryatkarma prārabhate naraḥ . | nyāyyaṃ vā viparītaṃ vā pañcaite tasya hetavaḥ",
+  "gloss": "Whatever act a person sets going by body, speech or mind — right or wrong — these five are its causes.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "18.41": {
+  "id": "18.41",
+  "iast": "brāhmaṇakṣatriyaviśāṃ śūdrāṇāṃ ca parantapa . | karmāṇi pravibhaktāni svabhāvaprabhavairguṇaiḥ",
+  "gloss": "The actions of brahmins, kshatriyas, vaishyas and shudras, scorcher of foes, are distributed by the strands born of each one's own nature.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "18.47": {
+  "id": "18.47",
+  "iast": "śreyānsvadharmo viguṇaḥ paradharmātsvanuṣṭhitāt . | svabhāvaniyataṃ karma kurvannāpnoti kilbiṣam",
+  "gloss": "Better one's own duty, though imperfect, than another's well done; acting by the work born of one's own nature, one incurs no wrong.",
+  "note": "The second svadharma verse. In Sanskrit law-commentary tradition these verses underwrote hereditary occupation; in modern readings they are defended, allegorized or condemned.",
+  "src": "SRC-IAST"
+ },
+ "18.61": {
+  "id": "18.61",
+  "iast": "īśvaraḥ sarvabhūtānāṃ hṛddeśe'rjuna tiṣṭhati . | bhrāmayansarvabhūtāni yantrārūḍhāni māyayā",
+  "gloss": "The lord dwells in the hearts of all beings, Arjuna, whirling all beings, seated as if on a machine, by his māyā.",
+  "note": "The machine image (yantra) — determinism's sharpest image in the Gita; the verses after it pivot immediately to refuge as the exit.",
+  "src": "SRC-IAST"
+ },
+ "18.65": {
+  "id": "18.65",
+  "iast": "manmanā bhava madbhakto madyājī māṃ namaskuru . | māmevaiṣyasi satyaṃ te pratijāne priyo'si me",
+  "gloss": "Set your mind on me, be my devotee, sacrifice to me, bow to me; so you will come to me — truly I promise: you are dear to me.",
+  "note": "",
+  "src": "SRC-IAST"
+ },
+ "18.66": {
+  "id": "18.66",
+  "iast": "sarvadharmānparityajya māmekaṃ śaraṇaṃ vraja . | ahaṃ tvā sarvapāpebhyo mokṣayiṣyāmi mā śucaḥ",
+  "gloss": "Letting go all duties, come take refuge in me alone; I will free you from all wrongs — do not grieve.",
+  "note": "The 'charama śloka'. Whether 'abandoning all dharmas' means abandoning works for grace (Ramanuja), or the ego's claim on outcomes (Gandhi), or exclusive devotion (Bhaktivedanta) — this single verse holds the entire interpretive war.",
+  "src": "SRC-IAST"
+ },
+ "18.73": {
+  "id": "18.73",
+  "iast": "naṣṭo mohaḥ smṛtirlabdhā tvatprasādānmayācyuta . | sthito'smi gatasandehaḥ kariṣye vacanaṃ tava",
+  "gloss": "Arjuna: My delusion is destroyed; memory is recovered — by your grace, unfailing one. I stand, my doubt gone: I will do as you say.",
+  "note": "The poem ends with consent, not conviction — Arjuna says 'I will act on your word', and the war proceeds.",
+  "src": "SRC-IAST"
+ },
+ "18.78": {
+  "id": "18.78",
+  "iast": "yatra yogeśvaraḥ kṛṣṇo yatra pārtho dhanurdharaḥ . | tatra śrīrvijayo bhūtirdhruvā nītirmatirmama",
+  "gloss": "Sanjaya: Where Krishna is the lord of yoga, where Partha is the wielder of the bow — there are splendor, victory, growth, and unshakable counsel — such is my thought.",
+  "note": "The closing verse, from the reporter Sanjaya — the Gita's own last word is about the pair: teacher and archer, in that order.",
+  "src": "SRC-IAST"
+ }
+}
